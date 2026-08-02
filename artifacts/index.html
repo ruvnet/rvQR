@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<meta name="description" content="rvQR — move RVF containers and WASM artifacts between devices with a screen and a camera.">
+<title>rvQR — Artifacts</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --surface: #121821;
+    --surface-2: #1a2230;
+    --line: #24303f;
+    --text: #e6edf6;
+    --muted: #8b9bb0;
+    --accent: #2dd4bf;
+    --accent-ink: #06231f;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --ok: #4ade80;
+    --radius: 14px;
+    --tabbar: 62px;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #f6f8fb;
+      --surface: #ffffff;
+      --surface-2: #eef2f7;
+      --line: #dbe3ed;
+      --text: #101720;
+      --muted: #5b6b7f;
+      --accent: #0d9488;
+      --accent-ink: #ffffff;
+      --danger: #b91c1c;
+      --warn: #92610a;
+      --ok: #15803d;
+    }
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    overflow-x: hidden;
+    overscroll-behavior-y: contain;
+  }
+  h1, h2, h3 { line-height: 1.25; margin: 0 0 .5rem; }
+  h2 { font-size: 1.15rem; letter-spacing: -.01em; }
+  h3 { font-size: .95rem; }
+  p { margin: 0 0 .75rem; }
+  a { color: var(--accent); }
+  code, .mono {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: .82em;
+    overflow-wrap: anywhere;
+  }
+
+  header {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: .6rem;
+    padding: calc(env(safe-area-inset-top) + .7rem) 1rem .7rem;
+    background: color-mix(in srgb, var(--bg) 88%, transparent);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid var(--line);
+  }
+  .wordmark { font-weight: 700; letter-spacing: -.02em; font-size: 1.05rem; }
+  .wordmark span { color: var(--accent); }
+  .chip {
+    margin-left: auto; font-size: .72rem; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 999px; padding: .2rem .55rem;
+    white-space: nowrap;
+  }
+
+  main {
+    padding: 1rem 1rem calc(var(--tabbar) + env(safe-area-inset-bottom) + 1.5rem);
+    max-width: 680px; margin: 0 auto;
+  }
+  section[hidden] { display: none; }
+  .stack > * + * { margin-top: .9rem; }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 1rem;
+  }
+  .card.tight { padding: .75rem; }
+  .muted { color: var(--muted); }
+  .small { font-size: .84rem; }
+  .row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .grow { flex: 1 1 auto; min-width: 0; }
+  .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  button, .btn {
+    font: inherit; font-weight: 600;
+    min-height: 48px; padding: 0 1.05rem;
+    border-radius: 12px; border: 1px solid var(--line);
+    background: var(--surface-2); color: var(--text);
+    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+    gap: .45rem; touch-action: manipulation;
+  }
+  button:active { transform: translateY(1px); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn-danger { color: var(--danger); }
+  .btn-sm { min-height: 38px; padding: 0 .7rem; font-size: .85rem; font-weight: 500; }
+  .btn-block { width: 100%; }
+
+  input[type=file] { display: none; }
+  input[type=range] { width: 100%; accent-color: var(--accent); height: 34px; }
+  select, input[type=text], textarea {
+    font: inherit; width: 100%; min-height: 48px;
+    background: var(--surface-2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 12px; padding: .5rem .7rem;
+  }
+  textarea { min-height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
+  label.field { display: block; font-size: .84rem; color: var(--muted); margin-bottom: .2rem; }
+
+  .badge {
+    display: inline-block; font-size: .7rem; font-weight: 600;
+    padding: .15rem .5rem; border-radius: 999px;
+    border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+  }
+  .badge.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+  .badge.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+
+  .dropzone {
+    border: 1.5px dashed var(--line); border-radius: var(--radius);
+    padding: 1.4rem 1rem; text-align: center; color: var(--muted);
+    transition: border-color .15s, background .15s;
+  }
+  body.dragging .dropzone { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+
+  .artifact {
+    display: flex; align-items: center; gap: .75rem;
+    width: 100%; text-align: left; min-height: 62px;
+    padding: .7rem .85rem; margin: 0;
+  }
+  .artifact + .artifact { margin-top: .5rem; }
+  .artifact .name { font-weight: 600; font-size: .95rem; }
+  .glyph {
+    flex: 0 0 auto; width: 38px; height: 38px; border-radius: 10px;
+    display: grid; place-items: center; font-size: .68rem; font-weight: 700;
+    background: var(--surface-2); color: var(--muted);
+  }
+  .glyph.rvf { color: var(--accent); }
+  .glyph.wasm { color: var(--warn); }
+
+  .empty { text-align: center; padding: 2rem 1rem; color: var(--muted); }
+
+  #qrStage {
+    display: grid; place-items: center;
+    background: #ffffff; border-radius: var(--radius); padding: 10px;
+  }
+  #qrCanvas { width: 100%; height: auto; max-width: 420px; image-rendering: pixelated; display: block; }
+
+  .ring { display: block; width: 76px; height: 76px; flex: 0 0 auto; }
+  .ring circle { fill: none; stroke-width: 7; }
+  .ring .track { stroke: var(--line); }
+  .ring .fill { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .2s linear; }
+  .ring text { fill: var(--text); font-size: 19px; font-weight: 700; text-anchor: middle; }
+
+  .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .bar > i { display: block; height: 100%; width: 0%; background: var(--accent); transition: width .2s; }
+
+  .frameGrid {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(9px, 1fr));
+    gap: 2px; margin-top: .6rem;
+  }
+  .frameGrid i { aspect-ratio: 1; border-radius: 2px; background: var(--surface-2); }
+  .frameGrid i.have { background: var(--accent); }
+
+  video { width: 100%; border-radius: var(--radius); background: #000; display: block; aspect-ratio: 3/4; object-fit: cover; }
+
+  .notice { border-left: 3px solid var(--warn); padding: .6rem .8rem; background: var(--surface-2); border-radius: 8px; font-size: .88rem; }
+  .notice.bad { border-color: var(--danger); }
+  .notice.good { border-color: var(--ok); }
+
+  dialog {
+    width: min(680px, 100%); max-height: 88vh; margin: auto auto 0;
+    border: 1px solid var(--line); border-radius: 18px 18px 0 0;
+    background: var(--surface); color: var(--text); padding: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  @media (min-width: 700px) { dialog { margin: auto; border-radius: 18px; } }
+  dialog::backdrop { background: rgba(0,0,0,.6); }
+  .sheet-head { display: flex; align-items: center; gap: .5rem; padding: 1rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface); }
+  .sheet-body { padding: 1rem; overflow-y: auto; }
+  dl.kv { margin: 0; }
+  dl.kv dt { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: .8rem; }
+  dl.kv dt:first-child { margin-top: 0; }
+  dl.kv dd { margin: .15rem 0 0; }
+
+  nav.tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    background: color-mix(in srgb, var(--surface) 94%, transparent);
+    backdrop-filter: blur(12px);
+    border-top: 1px solid var(--line);
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  nav.tabbar button {
+    flex-direction: column; gap: .15rem; min-height: var(--tabbar);
+    border: 0; border-radius: 0; background: none; color: var(--muted);
+    font-size: .68rem; font-weight: 600; letter-spacing: .01em;
+  }
+  nav.tabbar button[aria-selected="true"] { color: var(--accent); }
+  nav.tabbar svg { width: 22px; height: 22px; }
+
+  .toast {
+    position: fixed; left: 50%; transform: translateX(-50%);
+    bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 14px);
+    background: var(--surface-2); border: 1px solid var(--line);
+    color: var(--text); padding: .6rem .9rem; border-radius: 999px;
+    font-size: .85rem; z-index: 40; max-width: 90vw; text-align: center;
+    opacity: 0; pointer-events: none; transition: opacity .2s;
+  }
+  .toast.show { opacity: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">rv<span>QR</span></div>
+  <div class="chip" id="statusChip">alpha</div>
+</header>
+
+<main>
+  <!-- ============================ VAULT ============================ -->
+  <section id="tab-vault" class="stack">
+    <div class="card">
+      <h2>Artifact vault</h2>
+      <p class="small muted">Files live in this browser's storage on this device. Nothing is uploaded anywhere, and nothing here is ever executed.</p>
+      <div class="dropzone" id="dropzone">
+        <p style="margin:0 0 .7rem"><strong>Drop a file here</strong><br><span class="small">or</span></p>
+        <div class="row" style="justify-content:center">
+          <button class="btn-primary" id="importBtn">Import file</button>
+          <button id="demoBtn">Load demo artifact</button>
+        </div>
+      </div>
+      <input type="file" id="fileInput" multiple>
+    </div>
+
+    <div class="row">
+      <h2 class="grow" style="margin:0">Stored <span class="muted small" id="vaultCount"></span></h2>
+      <button class="btn-sm" id="refreshBtn">Refresh</button>
+    </div>
+    <div id="vaultList"></div>
+  </section>
+
+  <!-- ============================ SEND ============================= -->
+  <section id="tab-send" class="stack" hidden>
+    <div class="card">
+      <h2>Send</h2>
+      <p class="small muted">Point the other device's camera at this screen. The stream loops until the receiver has every frame.</p>
+      <label class="field" for="sendPick">Artifact</label>
+      <select id="sendPick"></select>
+    </div>
+
+    <div class="card" id="sendStageCard" hidden>
+      <div id="qrStage"><canvas id="qrCanvas" width="512" height="512"></canvas></div>
+
+      <div class="row" style="margin-top:.9rem">
+        <svg class="ring" viewBox="0 0 80 80" aria-hidden="true">
+          <circle class="track" cx="40" cy="40" r="33"></circle>
+          <circle class="fill" id="ringFill" cx="40" cy="40" r="33"
+                  transform="rotate(-90 40 40)" stroke-dasharray="0 208"></circle>
+          <text x="40" y="47" id="ringText">0%</text>
+        </svg>
+        <div class="grow">
+          <div><strong id="sendFrameLabel">frame 0 / 0</strong></div>
+          <div class="small muted" id="sendMeta">—</div>
+        </div>
+      </div>
+
+      <div class="row" style="margin-top:.8rem">
+        <button class="btn-primary grow" id="playBtn">Pause</button>
+        <button id="restartBtn">Restart</button>
+      </div>
+
+      <label class="field" style="margin-top:.9rem" for="scrub">Scrub frames</label>
+      <input type="range" id="scrub" min="0" max="0" value="0">
+    </div>
+
+    <details class="card tight">
+      <summary style="cursor:pointer;font-weight:600">Transfer settings</summary>
+      <div style="margin-top:.8rem">
+        <label class="field" for="chunkRange">Chunk size — <span id="chunkLabel">512</span> bytes per frame</label>
+        <input type="range" id="chunkRange" min="128" max="1024" step="64" value="512">
+        <label class="field" for="fpsRange">Speed — <span id="fpsLabel">5</span> frames per second</label>
+        <input type="range" id="fpsRange" min="2" max="10" step="1" value="5">
+        <label class="field" for="eclPick">Error correction</label>
+        <select id="eclPick">
+          <option value="L" selected>L — densest, most payload per frame</option>
+          <option value="M">M — tolerates more glare and damage</option>
+        </select>
+        <p class="small muted" style="margin:.7rem 0 0">Smaller chunks scan more reliably on low-end cameras but take more frames. Larger chunks pack more bytes into a denser symbol.</p>
+      </div>
+    </details>
+  </section>
+
+  <!-- =========================== RECEIVE =========================== -->
+  <section id="tab-receive" class="stack" hidden>
+    <div class="card">
+      <h2>Receive</h2>
+      <p class="small muted">Hold this device's camera steady over the sending screen. Frames may arrive in any order; duplicates are free.</p>
+      <div id="capabilityNotice"></div>
+      <div class="row">
+        <button class="btn-primary grow" id="scanBtn">Start camera</button>
+        <button id="resetRxBtn">Reset</button>
+      </div>
+    </div>
+
+    <div class="card" id="scanCard" hidden>
+      <video id="video" playsinline muted autoplay></video>
+    </div>
+
+    <div class="card" id="rxCard" hidden>
+      <div class="row">
+        <div class="grow">
+          <strong id="rxTitle">Waiting for frames…</strong>
+          <div class="small muted" id="rxMeta">—</div>
+        </div>
+      </div>
+      <div class="bar" style="margin-top:.7rem"><i id="rxBar"></i></div>
+      <div class="frameGrid" id="rxGrid"></div>
+      <div id="rxResult" style="margin-top:.8rem"></div>
+    </div>
+
+    <details class="card tight">
+      <summary style="cursor:pointer;font-weight:600">Paste a frame by hand</summary>
+      <p class="small muted" style="margin-top:.7rem">Useful without a camera: paste one decoded frame per line and feed it to the same receiver.</p>
+      <textarea id="manualFrames" placeholder='{"v":1,"t":"…","h":"…","i":0,"n":42,"m":{…}}'></textarea>
+      <button class="btn-sm" id="manualBtn" style="margin-top:.5rem">Feed frames</button>
+    </details>
+  </section>
+
+  <!-- ============================ ABOUT ============================ -->
+  <section id="tab-about" class="stack" hidden>
+    <div class="card">
+      <h2>What this is</h2>
+      <p class="small">rvQR moves RVF cognitive containers and WASM artifacts between devices over an optical channel: one screen animates QR frames, one camera reads them. No network, no cable, no account. You can watch the whole transfer happen.</p>
+    </div>
+
+    <div class="card">
+      <h2>Security model</h2>
+      <p class="small"><strong>Transport is not trust.</strong> Receiving a file grants it no authority at all.</p>
+      <ul class="small" style="margin:0 0 .5rem 1.1rem; padding:0">
+        <li><strong>Nothing executes on arrival.</strong> Received bytes are inert data in local storage.</li>
+        <li><strong>WASM inspection is compile-only.</strong> The vault calls <code>WebAssembly.compile</code> to read export names. It never instantiates a module, never provides imports, and never calls a function.</li>
+        <li><strong>Integrity is always verified.</strong> A transfer is accepted only if the reassembled bytes hash to exactly the SHA-256 in the manifest frame. A mismatch discards the whole transfer — there is no partial acceptance.</li>
+        <li><strong>Signature verification is roadmap.</strong> Today the hash proves the bytes are intact, not who sent them. Signed manifests via rvf-crypto are planned.</li>
+        <li><strong>Activation stays separate.</strong> Turning an artifact into something that runs is a privileged operation outside this app.</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h2>Under the hood</h2>
+      <dl class="kv small">
+        <dt>Frame</dt>
+        <dd>A compact JSON header plus a base64url payload, encoded as one QR symbol in byte mode.</dd>
+        <dt>Manifest</dt>
+        <dd>Frame 0 carries the name, byte size, full SHA-256 and chunk size.</dd>
+        <dt>Receiver</dt>
+        <dd>Collects frames in any order, ignores duplicates and foreign transfers, then verifies before storing.</dd>
+      </dl>
+      <div class="row" style="margin-top:.9rem">
+        <a class="btn btn-sm" href="../docs/protocol.md">Protocol spec</a>
+        <a class="btn btn-sm" href="../docs/adr/README.md">ADRs</a>
+        <a class="btn btn-sm" href="./test.html">Self-tests</a>
+        <a class="btn btn-sm" href="https://github.com/ruvnet/RuVector">RuVector</a>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Browser support</h2>
+      <p class="small muted" style="margin:0">Sending works anywhere with a canvas. Receiving needs the native <code>BarcodeDetector</code> API — Chrome and Edge on Android and desktop, and Safari 17 and later. On older iOS Safari this device can still send; use the paste-a-frame fallback or a supported browser to receive.</p>
+    </div>
+  </section>
+</main>
+
+<nav class="tabbar" role="tablist">
+  <button role="tab" data-tab="vault" aria-selected="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 14h4"/></svg>
+    Vault
+  </button>
+  <button role="tab" data-tab="send" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 14h3v3h-3zM19 19h2v2h-2z"/></svg>
+    Send
+  </button>
+  <button role="tab" data-tab="receive" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3.2"/></svg>
+    Receive
+  </button>
+  <button role="tab" data-tab="about" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.6"/></svg>
+    About
+  </button>
+</nav>
+
+<dialog id="detail">
+  <div class="sheet-head">
+    <strong class="grow truncate" id="detailName">Artifact</strong>
+    <button class="btn-sm" id="detailClose">Close</button>
+  </div>
+  <div class="sheet-body" id="detailBody"></div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script src="./vendor/qrcode.js"></script>
+<script src="./core.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

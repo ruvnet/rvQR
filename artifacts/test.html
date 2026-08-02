@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark light">
+<title>rvQR — self tests</title>
+<style>
+  :root {
+    --bg:#0b0f14; --surface:#121821; --line:#24303f; --text:#e6edf6;
+    --muted:#8b9bb0; --ok:#4ade80; --bad:#f87171; --accent:#2dd4bf;
+  }
+  @media (prefers-color-scheme: light) {
+    :root { --bg:#f6f8fb; --surface:#fff; --line:#dbe3ed; --text:#101720;
+            --muted:#5b6b7f; --ok:#15803d; --bad:#b91c1c; --accent:#0d9488; }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--text); overflow-x:hidden;
+    font:16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding: calc(env(safe-area-inset-top) + 1rem) 1rem calc(env(safe-area-inset-bottom) + 2rem);
+  }
+  main { max-width: 720px; margin: 0 auto; }
+  h1 { font-size:1.2rem; margin:0 0 .3rem; letter-spacing:-.02em; }
+  h2 { font-size:1rem; margin:1.6rem 0 .6rem; }
+  a { color: var(--accent); }
+  .card { background:var(--surface); border:1px solid var(--line); border-radius:14px; padding:1rem; }
+  .summary { font-weight:700; font-size:1.05rem; margin:1rem 0; }
+  .summary.pass { color: var(--ok); }
+  .summary.fail { color: var(--bad); }
+  ul.results { list-style:none; margin:0; padding:0; }
+  ul.results li { display:flex; gap:.6rem; padding:.5rem 0; border-bottom:1px solid var(--line); align-items:baseline; }
+  ul.results li:last-child { border-bottom:0; }
+  .tag { flex:0 0 auto; font-size:.7rem; font-weight:700; padding:.1rem .4rem; border-radius:6px; }
+  .tag.ok { color:var(--ok); border:1px solid var(--ok); }
+  .tag.bad { color:var(--bad); border:1px solid var(--bad); }
+  .name { flex:1 1 auto; min-width:0; font-size:.9rem; }
+  .detail { color:var(--muted); font-size:.78rem; }
+  .qrRow { display:flex; flex-wrap:wrap; gap:1rem; align-items:flex-start; }
+  .qrBox { background:#fff; padding:10px; border-radius:12px; }
+  .qrBox canvas { display:block; width:min(260px, 70vw); height:auto; image-rendering: pixelated; }
+  .muted { color: var(--muted); font-size:.85rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>rvQR self tests</h1>
+  <p class="muted">The same assertions that run under Node, executed here in the browser against the real vendored encoder.</p>
+
+  <div class="summary" id="summary">Running…</div>
+  <div class="card"><ul class="results" id="results"></ul></div>
+
+  <h2>Scan check</h2>
+  <p class="muted">Point any QR scanner at these. The left symbol must read exactly <code>HELLO RVQR</code>; the right one is a real rvQR manifest frame and should read as JSON.</p>
+  <div class="qrRow">
+    <div>
+      <div class="qrBox"><canvas id="qrHello"></canvas></div>
+      <p class="muted" id="helloMeta"></p>
+    </div>
+    <div>
+      <div class="qrBox"><canvas id="qrFrame"></canvas></div>
+      <p class="muted" id="frameMeta"></p>
+    </div>
+  </div>
+
+  <h2>Round trip through the encoder</h2>
+  <p class="muted" id="roundtripNote">—</p>
+
+  <p style="margin-top:2rem"><a href="./index.html">← Back to the app</a></p>
+</main>
+
+<script src="./vendor/qrcode.js"></script>
+<script src="./core.js"></script>
+<script src="./tests.js"></script>
+<script>
+(function () {
+  'use strict';
+  var core = window.RVQRCore, qrlib = window.RVQRCode;
+  var results = window.RVQRTests.runAll(core, qrlib);
+  var sum = window.RVQRTests.summarize(results);
+
+  var list = document.getElementById('results');
+  results.forEach(function (r) {
+    var li = document.createElement('li');
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + (r.ok ? 'ok' : 'bad');
+    tag.textContent = r.ok ? 'PASS' : 'FAIL';
+    var name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = r.name;
+    if (r.detail) {
+      var d = document.createElement('div');
+      d.className = 'detail';
+      d.textContent = r.detail;
+      name.appendChild(d);
+    }
+    li.appendChild(tag);
+    li.appendChild(name);
+    list.appendChild(li);
+  });
+
+  var s = document.getElementById('summary');
+  s.textContent = sum.passed + ' / ' + sum.total + ' passed' +
+    (sum.failed ? ' — ' + sum.failed + ' FAILED' : '');
+  s.className = 'summary ' + (sum.failed ? 'fail' : 'pass');
+
+  // Scannable proof: a plain string and a genuine protocol frame.
+  var hello = qrlib.encodeText('HELLO RVQR', { ecl: 'M' });
+  qrlib.drawOnCanvas(hello, document.getElementById('qrHello'), { size: 520 });
+  document.getElementById('helloMeta').textContent =
+    'version ' + hello.version + ' · level M · mask ' + hello.mask + ' · ' +
+    hello.size + '×' + hello.size + ' modules';
+
+  var demoBytes = new Uint8Array(1500);
+  for (var i = 0; i < demoBytes.length; i++) demoBytes[i] = (i * 7 + 11) & 0xff;
+  var built = core.buildFrames(demoBytes, { name: 'selftest.bin', chunk: 512 });
+  var frameQr = qrlib.encodeText(built.frames[0], { ecl: 'L' });
+  qrlib.drawOnCanvas(frameQr, document.getElementById('qrFrame'), { size: 520 });
+  document.getElementById('frameMeta').textContent =
+    'manifest frame · ' + built.frames[0].length + ' bytes of text · version ' +
+    frameQr.version + ' · level L';
+
+  // Full send/receive round trip, reported live.
+  var rx = core.createReceiver();
+  built.frames.slice().reverse().forEach(function (f) { core.ingest(rx, f); });
+  var res = core.finalize(rx);
+  document.getElementById('roundtripNote').textContent = res.ok
+    ? built.total + ' frames sent in reverse order, reassembled and verified — SHA-256 ' +
+      res.sha256.slice(0, 24) + '…'
+    : 'ROUND TRIP FAILED: ' + res.reason;
+})();
+</script>
+</body>
+</html>
