@@ -4,8 +4,10 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file: 'wasm-unsafe-eval'; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: blob: data:; media-src 'self' file: blob:; connect-src 'self' file:; base-uri 'none'; form-action 'none'">
 <meta name="description" content="rvQR — move RVF containers and WASM artifacts between devices with a screen and a camera.">
 <title>rvQR — Artifacts</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f14'/%3E%3Cg fill='%232dd4bf'%3E%3Crect x='6' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='6' y='18' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='18' width='3.5' height='3.5'/%3E%3Crect x='24' y='18' width='2' height='2'/%3E%3Crect x='18' y='24' width='2' height='2'/%3E%3Crect x='22.5' y='22.5' width='3.5' height='3.5'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root {
     --bg: #0b0f14;
@@ -107,7 +109,7 @@
   button:disabled { opacity: .45; cursor: not-allowed; }
   .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
   .btn-danger { color: var(--danger); }
-  .btn-sm { min-height: 38px; padding: 0 .7rem; font-size: .85rem; font-weight: 500; }
+  .btn-sm { min-height: 44px; padding: 0 .8rem; font-size: .85rem; font-weight: 500; }
   .btn-block { width: 100%; }
 
   input[type=file] { display: none; }
@@ -127,6 +129,8 @@
   }
   .badge.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
   .badge.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .badge.received { color: var(--muted); border-style: dashed; }
+  .badges { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; flex: 0 0 auto; }
 
   .dropzone {
     border: 1.5px dashed var(--line); border-radius: var(--radius);
@@ -353,7 +357,8 @@
         <li><strong>Nothing executes on arrival.</strong> Received bytes are inert data in local storage.</li>
         <li><strong>WASM inspection is compile-only.</strong> The vault calls <code>WebAssembly.compile</code> to read export names. It never instantiates a module, never provides imports, and never calls a function.</li>
         <li><strong>Integrity is always verified.</strong> A transfer is accepted only if the reassembled bytes hash to exactly the SHA-256 in the manifest frame. A mismatch discards the whole transfer — there is no partial acceptance.</li>
-        <li><strong>Signature verification is roadmap.</strong> Today the hash proves the bytes are intact, not who sent them. Signed manifests via rvf-crypto are planned.</li>
+        <li><strong>Integrity is not authenticity.</strong> The hash proves the bytes arrived intact, not who sent them — the manifest travels in the same unauthenticated stream as the payload. Anyone who can put a screen in front of your camera can produce a perfectly valid transfer. Treat a received artifact like a download from a stranger. Signed manifests via rvf-crypto are roadmap.</li>
+        <li><strong>No trust gate yet.</strong> Received artifacts are marked <em>received</em> in the vault, but that tag is a label rather than an enforcement point: nothing here blocks exporting one. A real quarantine gate is roadmap, not shipped.</li>
         <li><strong>Activation stays separate.</strong> Turning an artifact into something that runs is a privileged operation outside this app.</li>
       </ul>
     </div>
@@ -369,8 +374,8 @@
         <dd>Collects frames in any order, ignores duplicates and foreign transfers, then verifies before storing.</dd>
       </dl>
       <div class="row" style="margin-top:.9rem">
-        <a class="btn btn-sm" href="../docs/protocol.md">Protocol spec</a>
-        <a class="btn btn-sm" href="../docs/adr/README.md">ADRs</a>
+        <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/protocol.md">Protocol spec</a>
+        <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/adr/README.md">ADRs</a>
         <a class="btn btn-sm" href="./test.html">Self-tests</a>
         <a class="btn btn-sm" href="https://github.com/ruvnet/RuVector">RuVector</a>
       </div>

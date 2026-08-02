@@ -105,12 +105,15 @@
     });
   }
 
+  // Single door into the vault, so the name clamp cannot be forgotten at a
+  // call site. Names from a received manifest are unauthenticated input.
   function storeArtifact(name, bytes, origin) {
+    var safeName = core.sanitizeName(name);
     return hashBytes(bytes).then(function (sha256) {
       var type = core.detectArtifactType(bytes);
       var record = {
-        id: sha256 + ':' + name,
-        name: name,
+        id: sha256 + ':' + safeName,
+        name: safeName,
         size: bytes.length,
         sha256: sha256,
         kind: type.kind,
@@ -151,7 +154,7 @@
       if (!rows.length) {
         var empty = el('div', 'card empty');
         empty.appendChild(el('p', '', 'No artifacts yet.'));
-        empty.appendChild(el('p', 'small', 'Import a file or load the 39 KB demo WASM module to try a transfer.'));
+        empty.appendChild(el('p', 'small', 'Import a file, or load the 40 KB demo WASM module to try a transfer.'));
         list.appendChild(empty);
         return rows;
       }
@@ -165,10 +168,16 @@
         meta.textContent = core.formatBytes(row.size) + ' · ' + row.sha256.slice(0, 12) + '…';
         mid.appendChild(nameLine);
         mid.appendChild(meta);
-        var badge = el('span', 'badge ' + row.kind, row.kind === 'generic' ? 'file' : row.kind);
+        var badges = el('div', 'badges');
+        if (row.origin === 'received') {
+          badges.appendChild(el('span', 'badge received', 'received'));
+        }
+        badges.appendChild(
+          el('span', 'badge ' + row.kind, row.kind === 'generic' ? 'file' : row.kind)
+        );
         btn.appendChild(g);
         btn.appendChild(mid);
-        btn.appendChild(badge);
+        btn.appendChild(badges);
         btn.addEventListener('click', function () { openDetail(row.id); });
         list.appendChild(btn);
       });
@@ -473,11 +482,14 @@
     box.textContent = '';
     if (barcodeSupported()) return;
     var n = el('div', 'notice');
-    n.innerHTML =
-      '<strong>This browser cannot scan.</strong> rvQR uses the native ' +
-      '<code>BarcodeDetector</code> API rather than bundling a megabyte of decoder. ' +
-      'It is available in Chrome and Edge on Android and desktop, and in Safari 17 and later. ' +
-      'You can still send from this device, or paste frames by hand below.';
+    n.appendChild(el('strong', '', 'This browser cannot scan. '));
+    n.appendChild(document.createTextNode('rvQR uses the native '));
+    n.appendChild(el('code', '', 'BarcodeDetector'));
+    n.appendChild(document.createTextNode(
+      ' API rather than bundling a megabyte of decoder. It is available in ' +
+      'Chrome and Edge on Android and desktop, and in Safari 17 and later. ' +
+      'You can still send from this device, or paste frames by hand below.'
+    ));
     box.appendChild(n);
     $('scanBtn').disabled = true;
   }
@@ -565,23 +577,39 @@
     var pct = need ? Math.round((have / need) * 100) : 100;
     $('rxBar').style.width = pct + '%';
     $('rxTitle').textContent = s.manifest
-      ? s.manifest.name + ' — ' + pct + '%'
+      ? core.sanitizeName(s.manifest.name) + ' — ' + pct + '%'
       : 'Collecting frames — ' + pct + '% (waiting for the manifest)';
     $('rxMeta').textContent =
       have + ' / ' + need + ' data frames · ' + s.duplicates + ' duplicates · ' +
       s.rejected + ' rejected' +
       (s.manifest ? ' · ' + core.formatBytes(s.manifest.size) : '');
 
+    // The cell count comes from gridPlan, never straight from s.total: the
+    // frame count is attacker-controlled and must not be able to drive how
+    // many DOM nodes this builds. Past the cap each cell stands for a run of
+    // frames and lights up once that whole run has landed.
+    var plan = core.gridPlan(s.total);
     var grid = $('rxGrid');
-    if (grid.childElementCount !== need) {
+    if (grid.childElementCount !== plan.cells) {
       grid.textContent = '';
-      for (var i = 1; i < s.total; i++) grid.appendChild(el('i'));
+      for (var i = 0; i < plan.cells; i++) grid.appendChild(el('i'));
     }
-    for (var j = 1; j < s.total; j++) {
-      var cell = grid.children[j - 1];
-      if (!cell) continue;
-      var have_j = j in s.chunks;
-      if (have_j !== cell.classList.contains('have')) cell.classList.toggle('have', have_j);
+    if (!plan.cells) return;
+
+    var counts = new Uint32Array(plan.cells);
+    for (var key in s.chunks) {
+      var idx = core.cellForSequence(plan, Number(key));
+      if (idx >= 0) counts[idx]++;
+    }
+    for (var c = 0; c < plan.cells; c++) {
+      var first = c * plan.framesPerCell + 1;
+      var span = Math.min(plan.framesPerCell, need - (first - 1));
+      var full = span > 0 && counts[c] >= span;
+      var cell = grid.children[c];
+      if (full !== cell.classList.contains('have')) cell.classList.toggle('have', full);
+    }
+    if (plan.bucketed) {
+      $('rxMeta').textContent += ' · grid shows ' + plan.framesPerCell + ' frames per cell';
     }
   }
 

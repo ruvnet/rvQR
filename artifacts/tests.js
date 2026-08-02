@@ -10,8 +10,28 @@
 (function (root, factory) {
   'use strict';
   var api = factory();
-  if (typeof module === 'object' && module.exports) module.exports = api;
-  else root.RVQRTests = api;
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+    // Run directly: `node artifacts/tests.js`. Without this the documented
+    // simple command is a silent no-op, which is worse than no command at all.
+    if (typeof require === 'function' && require.main === module) {
+      var core = require('./core.js');
+      var qrlib = require('./vendor/qrcode.js');
+      var results = api.runAll(core, qrlib);
+      results.forEach(function (r) {
+        console.log(
+          (r.ok ? 'ok   ' : 'FAIL ') + r.name + (r.detail ? '  [' + r.detail + ']' : '')
+        );
+      });
+      var summary = api.summarize(results);
+      console.log(
+        '\n' + summary.passed + '/' + summary.total + ' passed, ' + summary.failed + ' failed'
+      );
+      if (typeof process !== 'undefined') process.exit(summary.failed ? 1 : 0);
+    }
+  } else {
+    root.RVQRTests = api;
+  }
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
@@ -270,19 +290,201 @@
       return 'missing sequence ' + core.missingSequences(rx)[0];
     });
 
-    test('frames from another transfer are ignored', function () {
+    test('a foreign frame cannot hijack a transfer that is still progressing', function () {
+      var a = transfer(rndBytes(1200), { name: 'a.bin', chunk: 512, transferId: 'aaaaaaaa' });
+      var b = transfer(rndBytes(1200), { name: 'b.bin', chunk: 512, transferId: 'bbbbbbbb' });
+      var rx = core.createReceiver();
+      var t0 = 1000;
+      core.ingest(rx, a.frames[0], t0);
+      // Both a stray data frame and a stray manifest arrive while transfer a is
+      // healthy. Neither may take over.
+      var r1 = core.ingest(rx, b.frames[1], t0 + 100);
+      assert(!r1.accepted, 'foreign data frame accepted');
+      assertEqual(r1.reason, 'other-transfer', 'reason');
+      var r2 = core.ingest(rx, b.frames[0], t0 + 200);
+      assert(!r2.accepted, 'foreign manifest accepted while active');
+      assertEqual(r2.reason, 'other-transfer', 'manifest reason');
+
+      for (var i = 1; i < a.frames.length; i++) core.ingest(rx, a.frames[i], t0 + 300 + i);
+      var res = core.finalize(rx);
+      assert(res.ok, 'clean transfer should still verify');
+      assertEqual(res.name, 'a.bin', 'name');
+      assertEqual(rx.switches, 0, 'no switch should have happened');
+      return 'kept transfer aaaaaaaa through 2 intrusions';
+    });
+
+    test('a restarted sender is picked up once the old transfer goes quiet', function () {
+      var bytesA = rndBytes(3000);
+      var bytesB = rndBytes(2000);
+      var a = transfer(bytesA, { name: 'old.bin', chunk: 512, transferId: 'aaaaaaaa' });
+      var b = transfer(bytesB, { name: 'new.bin', chunk: 512, transferId: 'bbbbbbbb' });
+      var rx = core.createReceiver();
+
+      // Half of transfer a arrives, then the sender restarts with a new id —
+      // exactly what the app does on every fresh send or chunk-size change.
+      var t = 1000;
+      core.ingest(rx, a.frames[0], t);
+      core.ingest(rx, a.frames[1], (t += 200));
+      core.ingest(rx, a.frames[2], (t += 200));
+      assertEqual(rx.transferId, 'aaaaaaaa', 'still on the old transfer');
+
+      // The new sender's manifest lands after a gap longer than the manifest fuse.
+      var sw = core.ingest(rx, b.frames[0], t + core.STALE_MANIFEST_MS + 1);
+      assert(sw.accepted, 'restart manifest rejected: ' + sw.reason);
+      assert(sw.switched, 'should have reported a switch');
+      assertEqual(rx.transferId, 'bbbbbbbb', 'did not adopt the new transfer');
+      assertEqual(rx.received, 0, 'stale chunks were not cleared');
+      assertEqual(rx.switches, 1, 'switch counter');
+
+      t += core.STALE_MANIFEST_MS + 1;
+      for (var i = 1; i < b.frames.length; i++) core.ingest(rx, b.frames[i], (t += 100));
+      var res = core.finalize(rx);
+      assert(res.ok, 'restarted transfer failed to verify: ' + res.reason);
+      assert(bytesEqual(res.bytes, bytesB), 'wrong bytes after switch');
+      assertEqual(res.name, 'new.bin', 'name after switch');
+      return 'recovered onto transfer bbbbbbbb';
+    });
+
+    test('a stray data frame takes over only after the longer stall window', function () {
+      var a = transfer(rndBytes(1200), { name: 'a.bin', chunk: 512, transferId: 'aaaaaaaa' });
+      var b = transfer(rndBytes(1200), { name: 'b.bin', chunk: 512, transferId: 'bbbbbbbb' });
+      var rx = core.createReceiver();
+      core.ingest(rx, a.frames[0], 1000);
+
+      // Past the manifest fuse but short of the data fuse: still no takeover.
+      var early = core.ingest(rx, b.frames[1], 1000 + core.STALE_MANIFEST_MS + 50);
+      assert(!early.accepted, 'data frame took over too early');
+      // Past the data fuse: adopted.
+      var late = core.ingest(rx, b.frames[1], 1000 + core.STALE_TRANSFER_MS + 1);
+      assert(late.accepted, 'stalled receiver never recovered: ' + late.reason);
+      assertEqual(rx.transferId, 'bbbbbbbb', 'did not adopt');
+      return 'data fuse ' + core.STALE_TRANSFER_MS + 'ms, manifest fuse ' + core.STALE_MANIFEST_MS + 'ms';
+    });
+
+    test('without a clock the strict single-transfer rule still holds', function () {
       var a = transfer(rndBytes(1200), { name: 'a.bin', chunk: 512, transferId: 'aaaaaaaa' });
       var b = transfer(rndBytes(1200), { name: 'b.bin', chunk: 512, transferId: 'bbbbbbbb' });
       var rx = core.createReceiver();
       core.ingest(rx, a.frames[0]);
-      var r = core.ingest(rx, b.frames[1]);
-      assert(!r.accepted, 'foreign frame accepted');
+      var r = core.ingest(rx, b.frames[0]);
+      assert(!r.accepted, 'switched without any timestamps to justify it');
       assertEqual(r.reason, 'other-transfer', 'reason');
-      for (var i = 1; i < a.frames.length; i++) core.ingest(rx, a.frames[i]);
+      return 'no clock, no switching';
+    });
+
+    // -- hostile bounds ------------------------------------------------------
+
+    test('a frame claiming an absurd frame count is rejected outright', function () {
+      // The reported freeze: one QR whose n is Number.MAX_SAFE_INTEGER made the
+      // receiver try to allocate a DOM node per expected frame.
+      var poc = '{"v":1,"t":"00000000","h":"00000000","i":1,"n":9007199254740991,"p":""}';
+      var got = core.parseFrame(poc);
+      assert(!got.ok, 'the proof-of-concept frame parsed');
+      assertEqual(got.reason, 'too-many-frames', 'reason');
+
+      // The ceiling itself is inclusive, one past it is not.
+      var atCap = '{"v":1,"t":"00000000","h":"00000000","i":1,"n":' + core.MAX_FRAMES + ',"p":""}';
+      assert(core.parseFrame(atCap).ok, 'the cap itself should be accepted');
+      var overCap = '{"v":1,"t":"00000000","h":"00000000","i":1,"n":' + (core.MAX_FRAMES + 1) + ',"p":""}';
+      assertEqual(core.parseFrame(overCap).reason, 'too-many-frames', 'one past the cap');
+
+      // And a receiver never adopts it, so nothing downstream sees the value.
+      var rx = core.createReceiver();
+      var r = core.ingest(rx, poc);
+      assert(!r.accepted, 'hostile frame ingested');
+      assertEqual(rx.total, 0, 'hostile n reached receiver state');
+      assertEqual(rx.status, 'IDLE', 'receiver left IDLE on a rejected frame');
+      return 'cap ' + core.MAX_FRAMES + ' frames';
+    });
+
+    test('a self-consistent manifest can still be too big to accept', function () {
+      // Every internal check passes — the hash prefix matches, and the frame
+      // count agrees with size and chunk. It is refused on size alone.
+      var size = 1024 * 1024 * 1024;
+      var chunk = 128;
+      var hash = '00'.repeat(32);
+      var manifest = JSON.stringify({
+        v: 1, t: '00000000', h: hash.slice(0, 8), i: 0,
+        n: 1 + Math.ceil(size / chunk),
+        m: { name: 'big.bin', size: size, sha256: hash, chunk: chunk }
+      });
+      var got = core.parseFrame(manifest);
+      assert(!got.ok, 'oversized manifest accepted');
+      assertEqual(got.reason, 'too-many-frames', 'reason');
+
+      // Same idea with a chunk no QR symbol could ever have carried.
+      var wide = JSON.stringify({
+        v: 1, t: '00000000', h: hash.slice(0, 8), i: 0, n: 2,
+        m: { name: 'wide.bin', size: 5000, sha256: hash, chunk: 5000 }
+      });
+      assertEqual(core.parseFrame(wide).reason, 'chunk-too-large', 'chunk ceiling');
+
+      // And an over-long name.
+      var longName = JSON.stringify({
+        v: 1, t: '00000000', h: hash.slice(0, 8), i: 0, n: 2,
+        m: { name: 'x'.repeat(600) + '.bin', size: 10, sha256: hash, chunk: 512 }
+      });
+      assertEqual(core.parseFrame(longName).reason, 'name-too-long', 'name ceiling');
+      return 'size, chunk and name ceilings all enforced';
+    });
+
+    test('the receive grid is capped no matter what the frame count claims', function () {
+      var totals = [1, 2, 83, core.MAX_GRID_CELLS, core.MAX_GRID_CELLS + 2, core.MAX_FRAMES];
+      for (var i = 0; i < totals.length; i++) {
+        var plan = core.gridPlan(totals[i]);
+        assert(plan.cells <= core.MAX_GRID_CELLS,
+          'plan for total ' + totals[i] + ' wants ' + plan.cells + ' cells');
+        assert(plan.cells <= Math.max(0, totals[i] - 1), 'more cells than frames');
+        // Every data frame must land inside the drawn range, or the grid lies.
+        if (plan.cells) {
+          assertEqual(core.cellForSequence(plan, 1), 0, 'first frame cell');
+          var last = core.cellForSequence(plan, totals[i] - 1);
+          assert(last >= 0 && last < plan.cells, 'last frame maps outside the grid');
+        }
+      }
+      // The worst case a receiver will ever adopt still draws a bounded grid.
+      var worst = core.gridPlan(core.MAX_FRAMES);
+      assertEqual(worst.cells, core.MAX_GRID_CELLS, 'worst-case cell count');
+      assert(worst.bucketed, 'worst case should be bucketed');
+      assert(worst.framesPerCell * worst.cells >= worst.dataFrames, 'buckets do not cover all frames');
+      return core.MAX_FRAMES + ' frames -> ' + worst.cells + ' cells at ' +
+        worst.framesPerCell + ' frames each';
+    });
+
+    test('artifact names are stripped and clamped', function () {
+      assertEqual(core.sanitizeName('rvf_wasm_bg.wasm'), 'rvf_wasm_bg.wasm', 'plain name');
+      assertEqual(core.sanitizeName('my cool-file v2.wasm'), 'my cool-file v2.wasm', 'spaces kept');
+      assert(core.sanitizeName('../../etc/passwd').indexOf('/') === -1, 'path separator survived');
+      assert(core.sanitizeName('../../etc/passwd').charAt(0) !== '.', 'leading dot survived');
+      assertEqual(core.sanitizeName(''), 'artifact.bin', 'empty name');
+      assertEqual(core.sanitizeName('a\u0000b\u001fc.bin'), 'abc.bin', 'control characters');
+      var long = core.sanitizeName('n'.repeat(400) + '.wasm');
+      assertEqual(long.length, core.SAFE_NAME_LENGTH, 'clamped length');
+      assert(/\.wasm$/.test(long), 'extension preserved through the clamp');
+      return 'clamped to ' + core.SAFE_NAME_LENGTH + ' chars';
+    });
+
+    test('a verified transfer hands back a sanitized name', function () {
+      var bytes = rndBytes(600);
+      var hash = core.sha256Hex(bytes);
+      var hostile = '../../../etc/cron.d/payload';
+      var frames = [
+        JSON.stringify({
+          v: 1, t: 'aaaaaaaa', h: hash.slice(0, 8), i: 0, n: 2,
+          m: { name: hostile, size: bytes.length, sha256: hash, chunk: 1024 }
+        }),
+        JSON.stringify({
+          v: 1, t: 'aaaaaaaa', h: hash.slice(0, 8), i: 1, n: 2,
+          p: core.b64uEncode(bytes)
+        })
+      ];
+      var rx = core.createReceiver();
+      for (var i = 0; i < frames.length; i++) core.ingest(rx, frames[i]);
       var res = core.finalize(rx);
-      assert(res.ok, 'clean transfer should still verify');
-      assertEqual(res.name, 'a.bin', 'name');
-      return 'kept transfer aaaaaaaa';
+      assert(res.ok, 'transfer failed: ' + res.reason);
+      assert(res.name.indexOf('/') === -1, 'sanitized name still has a separator');
+      assertEqual(res.declaredName, hostile, 'the declared name should still be reported');
+      return res.name;
     });
 
     test('malformed and hostile frames are rejected without throwing', function () {

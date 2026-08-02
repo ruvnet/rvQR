@@ -40,7 +40,7 @@ Neither replaces the other.
 
 | Package | What it gives you |
 |---------|-------------------|
-| [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` | The RVF WebAssembly runtime, 39 KB. **rvQR's demo artifact is this exact binary** — the app carries it as cargo, never loads it. |
+| [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` | The RVF WebAssembly runtime, 40,989 bytes (published as "39 KB"). **rvQR's demo artifact is this exact binary** — the app carries it as cargo, never loads it. |
 | [`@ruvector/rvf`](https://www.npmjs.com/package/@ruvector/rvf) | The Node.js RVF store: the same open/ingest/query surface with native bindings. |
 | [`ruvector`](https://www.npmjs.com/package/ruvector) | The full vector database — HNSW, quantization, the works. RVF is its portable format. |
 
@@ -97,8 +97,16 @@ never becomes code because it was scanned.
 ## Delta transfer and segment enumeration
 
 The killer feature is not sending a 1 GB artifact; it is *not* sending the 99%
-of it the other device already has. A 1 GB container with 1% changed data drops
-from roughly two hours to roughly 75 seconds at 140 KB/s.
+of it the other device already has. Sending only the changed 1% of a 1 GB
+container moves about 10.7 MB instead of 1 GB — roughly 100× less data.
+
+Be careful with the absolute numbers here. Earlier research expressed this as
+"two hours down to 75 seconds at 140 KB/s"; that rate is about 14× what a single
+animated QR stream actually achieves (2.5 KB/s at the app's defaults, 10 KB/s at
+its ceiling), so it describes a denser optical channel than anything implemented
+today. At the real ceiling the same delta is roughly 29 hours down to 18
+minutes. The ratio is the durable claim; the wall-clock figures move with
+whatever channel is underneath.
 
 RVF makes this tractable because it was built append-only. A container is an
 ordered stream of independently verifiable segments, each with its own header
@@ -183,7 +191,7 @@ gate with a pass condition that a harness can evaluate mechanically:
 | `rvqr.integrity.no_false_accept` | 100 transfers of 100 MB, **zero** incorrectly accepted files | The only gate with a zero tolerance. A single false accept is a hard fail, not a score reduction — accepting corrupt bytes is categorically worse than accepting none. |
 | `rvqr.resilience.frame_loss_20pct` | Successful reconstruction with 20% of frames dropped | Meaningless until RaptorQ lands; today's loop-until-complete behaviour passes it only by taking longer, which the gate should measure separately as time-to-complete rather than credit as resilience. |
 | `rvqr.durability.resume` | Transfer resumes after browser termination | Requires persisted receiver state. |
-| `rvqr.throughput.effective_rate` | Sustained bytes/second at a fixed frame rate and chunk size | Scored, not pass/fail. The number that makes delta transfer worth building. |
+| `rvqr.throughput.effective_rate` | Sustained bytes/second at a fixed frame rate and chunk size | Scored, not pass/fail. Today's baseline is 2.5 KB/s at the defaults and 10 KB/s at the ceiling — the number that makes delta transfer worth building. |
 
 Framing them this way makes the asymmetry explicit: correctness gates are
 binary, performance gates are scored, and no amount of throughput compensates

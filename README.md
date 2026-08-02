@@ -11,7 +11,7 @@ No internet connection needed. No pairing, no accounts, no setup. The data physi
 ## Quick Start 📱
 
 1. Open [`./artifacts/`](./artifacts/) in your browser on two phones (or a phone and a laptop).
-2. On the first device, tap **Load demo artifact** to drop the 39 KB `rvf_wasm_bg.wasm` module into your vault.
+2. On the first device, tap **Load demo artifact** to drop the 40 KB `rvf_wasm_bg.wasm` module into your vault.
 3. Tap that artifact to open its detail sheet, then tap **Send this**. The QR stream starts immediately and loops.
 4. On the second device, open the **Receive** tab, tap **Start camera**, allow access, and hold it over the first screen.
 5. Watch the progress ring fill and the frame grid light up cell by cell. At 82 frames and 5 frames per second, the demo artifact takes about 17 seconds per pass.
@@ -21,12 +21,13 @@ No internet connection needed. No pairing, no accounts, no setup. The data physi
 
 | Vault | Send | Receive |
 |:---:|:---:|:---:|
-| ![The rvQR artifact vault on a phone, listing stored artifacts with type badges, byte sizes and truncated SHA-256 hashes](./docs/images/vault.png) | ![The Send tab animating a QR frame on a phone screen, with a circular progress ring and a frame counter beneath it](./docs/images/send.png) | ![The Receive tab on a phone, showing the camera view above a progress bar and a grid of frame cells filling in as frames arrive](./docs/images/receive.png) |
-| Stored artifacts, typed and hashed | One frame of the animated stream | Frames landing in any order |
+| ![The rvQR artifact vault on a phone, showing a drop zone with Import file and Load demo artifact buttons above one stored artifact: rvf_wasm_bg.wasm, 40.0 KB, with a WASM type badge and a truncated SHA-256](./docs/images/vault.png) | ![The Send tab on a phone showing a dense QR symbol mid-stream, a circular progress ring at 23 percent, and the caption "frame 19 / 82 · QR version 19"](./docs/images/send.png) | ![The Receive tab on a phone: a Start camera button above a transfer in progress reading "artifact.bin — 56%", 10 of 18 data frames, a progress bar and a grid of frame cells filling in unevenly, with the paste-a-frame-by-hand panel open below](./docs/images/receive.png) |
+| Stored artifacts, typed and hashed | Frame 19 of 82, QR version 19 | Frames landing out of order, 56% in |
 
 ## Features ✨
 
 - **Works fully offline**. No WiFi, no cellular, no servers. Optical air-gap transfer at its literal best.
+- **Honest about speed**. A single animated QR stream moves 2.5 KB/s at the defaults and 10 KB/s flat out. The 40 KB demo takes about 16 seconds; this is a channel for kilobytes and low megabytes, not for your photo library.
 - **Mobile-first**. Designed for phone screens and phone cameras, but works on desktops too.
 - **Integrity verified**. Every byte accepted into your vault is checked against the SHA-256 hash from the manifest. A single-bit error causes the entire transfer to be rejected and discarded.
 - **RVF-aware**. Detects RVF containers (append-only segment streams with tail-discovered 4096-byte root manifest) and shows their type. Sends and receives them as-is.
@@ -44,7 +45,7 @@ The core send/receive loop and the artifact vault are working today. Below are t
 | Single-QR-stream send/receive | ✅ Implemented | v1 protocol, deterministic frames, SHA-256 verification |
 | Artifact vault (storage, import, export, WASM inspection) | ✅ Implemented | IndexedDB-backed, no server sync |
 | RaptorQ fountain coding | 🗺️ Roadmap | RFC 6330 encoding symbols; receiver reconstructs after K+ε symbols regardless of which ones arrive |
-| Delta segment transfer | 🗺️ Roadmap | Receiver displays its root manifest; sender diffs and transmits only missing RVF segments. Transforms 2 hrs → 75 sec for 1 GB / 1% changed. |
+| Delta segment transfer | 🗺️ Roadmap | Receiver displays its root manifest; sender diffs and sends only the missing RVF segments. Moves ~100× less data for a 1 GB container with 1% changed — about 29 hours down to 18 minutes at this app's measured rate. |
 | Signed manifest verification | 🗺️ Roadmap | Detached signatures via rvf-crypto; pinned key on receiver |
 | BitChat session bootstrap | 🗺️ Roadmap | X25519 public-key exchange QR; HKDF-SHA256 session key derivation; encrypted optical payloads |
 | Resume after browser termination | 🗺️ Roadmap | Persist transfer state; resume from last received frame |
@@ -69,10 +70,11 @@ flowchart TD
 
 **Transport is not trust.** The optical channel moves bytes; it does not authorize execution.
 
-- **Integrity is mandatory.** Every byte verified against the manifest hash before storage. A single mismatch discards the entire transfer—there is no partial acceptance.
+- **Integrity is mandatory.** Every byte is verified against the manifest hash before storage. A single mismatch discards the entire transfer — there is no partial acceptance.
+- **Integrity is not authenticity.** The hash proves the bytes arrived intact. It says nothing about who sent them, because the manifest travels in the same unauthenticated stream as the payload. Anyone who can put a screen in front of your camera can produce a perfectly valid transfer of anything they like. Treat a received artifact the way you would treat a file downloaded from a stranger — that is precisely what it is.
 - **WASM is never instantiated.** Compile-only inspection lists exports and imports without executing any code.
-- **Quarantine by default.** Received artifacts sit in your vault as inert data. Downloading one is just handing you bytes. Turning an artifact into something that *runs* happens outside this app entirely, and in the planned design that step goes through a proof-gated installer that emits a witness record.
-- **Signature verification is roadmap.** Manifests will carry detached signatures verified against a pinned key before artifacts may leave quarantine.
+- **Nothing runs on arrival.** Received bytes land in IndexedDB as inert data, tagged with where they came from and shown with a `received` badge in the vault. rvQR itself never executes an artifact, and nothing in the app turns one into something that runs.
+- **But there is no trust gate yet.** Received and imported artifacts share one store, and the origin tag is a label, not an enforcement point: nothing blocks you from exporting a received file. A real quarantine — signature verification against a pinned key, and an explicit acknowledgement before a received artifact can leave the vault — is roadmap, not shipped. See [docs/protocol.md](./docs/protocol.md).
 
 ## Protocol
 
@@ -88,7 +90,14 @@ The protocol is minimal and deterministic. A frame is one QR code containing one
 {"v":1,"t":"<same transfer id>","h":"<same 8 hex>","i":<sequence>,"n":<total>,"p":"<base64url payload>"}
 ```
 
-Frames may arrive in any order. Duplicates are ignored. A mismatch in protocol version, transfer ID, hash prefix, or total frame count causes the frame to be silently dropped. When the manifest has arrived and every sequence is present, the payloads are concatenated in order, the SHA-256 is verified, and the artifact is stored.
+Frames may arrive in any order and duplicates are free. Unknown protocol
+versions, inconsistent hash prefixes and absurd frame counts are dropped. Frames
+belonging to a *different* transfer are ignored while the current one is still
+progressing, and adopted once it has visibly stalled — so a stray frame cannot
+hijack a live transfer, and a sender that restarts is picked up automatically
+rather than stonewalled. When the manifest has arrived and every sequence is
+present, the payloads are concatenated in order, the SHA-256 is verified, and
+only then is the artifact stored.
 
 See [docs/protocol.md](./docs/protocol.md) for implementation detail and the roadmap (RaptorQ, delta transfer, BitChat, signed manifests).
 
@@ -97,7 +106,7 @@ See [docs/protocol.md](./docs/protocol.md) for implementation detail and the roa
 rvQR is a transport layer for [RuVector](https://github.com/ruvnet/RuVector) artifacts and RVF cognitive containers.
 
 - **RVF container format**: Append-only segment streams with a 4096-byte root manifest discovered at the tail. Segment magic bytes `53 46 56 52` ("SFVR"), root manifest magic `30 4D 56 52` ("0MVR"). See ADR-009 in the RuVector repository.
-- **WASM runtime**: [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` is the RVF WebAssembly runtime — a 39 KB module. The copy bundled here as the demo artifact is that exact binary, carried as cargo rather than run.
+- **WASM runtime**: [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` is the RVF WebAssembly runtime. The copy bundled here as the demo artifact is that exact binary — 40,989 bytes, which the app shows as 40.0 KB and npm advertises as 39 KB — carried as cargo rather than run.
 
 The crates, packages and evaluation layer around all this are laid out below.
 
@@ -124,7 +133,7 @@ moves an artifact between two devices with no shared network.
 
 | Package | Role |
 |---------|------|
-| [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` | The 39 KB RVF WebAssembly runtime. rvQR's demo artifact *is* this binary — carried, never loaded |
+| [`@ruvector/rvf-wasm`](https://www.npmjs.com/package/@ruvector/rvf-wasm) `0.1.9` | The RVF WebAssembly runtime. rvQR's demo artifact *is* this binary, 40,989 bytes — carried, never loaded |
 | [`@ruvector/rvf`](https://www.npmjs.com/package/@ruvector/rvf) | The Node.js RVF store |
 | [`ruvector`](https://www.npmjs.com/package/ruvector) | The full vector database; RVF is its portable format |
 
@@ -175,7 +184,7 @@ const s=t.summarize(r); console.log(s.passed+'/'+s.total+' passed'); process.exi
 
 ## Contributing
 
-Contributions are welcome. Please open an issue or pull request on [GitHub](https://github.com/ruvnet/RuVector).
+Contributions are welcome. Please open an issue or pull request on [github.com/ruvnet/rvQR](https://github.com/ruvnet/rvQR). For the RVF format itself, see the [RuVector](https://github.com/ruvnet/RuVector) repository.
 
 ## License
 

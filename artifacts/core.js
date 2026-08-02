@@ -20,6 +20,42 @@
   var MIN_CHUNK = 128;
   var MAX_CHUNK = 1024;
 
+  // --- Hostile-input ceilings ------------------------------------------------
+  // Every one of these bounds something an attacker controls with a single QR
+  // code. A frame is unauthenticated input from whatever happens to be pointed
+  // at the camera, so any value a receiver takes from one has to be bounded
+  // before it reaches an allocation or a loop.
+
+  // Largest frame count a receiver will adopt. 65536 frames is 32 MB at the
+  // 512-byte default chunk and 64 MB at the 1024-byte maximum — far more than
+  // an optical channel running at kilobytes per second can deliver in one
+  // sitting, and small enough that the derived arrays stay trivial.
+  var MAX_FRAMES = 65536;
+
+  // A chunk larger than this cannot have arrived by QR: 2953 bytes is the
+  // absolute byte-mode capacity of a version 40 symbol at error correction
+  // level L, and the frame's JSON header and base64url expansion eat into that
+  // further. A manifest claiming more is lying about its own transport.
+  var MAX_RECEIVE_CHUNK = 2953;
+
+  // Ceiling on the artifact size a manifest may declare, independent of the
+  // frame maths. Bounds the single allocation in assemble().
+  var MAX_ARTIFACT_BYTES = 256 * 1024 * 1024;
+
+  // Longest artifact name accepted from a frame, and the length names are
+  // clamped to on the way in.
+  var MAX_NAME_LENGTH = 255;
+  var SAFE_NAME_LENGTH = 120;
+
+  // Most cells the receive grid will ever draw, whatever the frame count says.
+  var MAX_GRID_CELLS = 4096;
+
+  // How long a transfer must go without progress before a frame from a
+  // different transfer is allowed to take over. A manifest is a deliberate
+  // start-of-transfer marker so it gets the shorter fuse.
+  var STALE_TRANSFER_MS = 3000;
+  var STALE_MANIFEST_MS = 1000;
+
   // --- base64url (RFC 4648 §5, unpadded) -------------------------------------
 
   var B64U = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -246,8 +282,55 @@
     return chunk;
   }
 
+  // Pure arithmetic on the declared values. It must NOT clamp: a receiver
+  // checks a manifest against the chunk size that manifest declares, and
+  // silently substituting the sender's own limits here would make a consistent
+  // manifest look inconsistent.
   function frameCount(size, chunk) {
-    return 1 + Math.ceil(size / clampChunk(chunk));
+    return 1 + Math.ceil(size / chunk);
+  }
+
+  /**
+   * How many grid cells to draw for a transfer, and how many frames each cell
+   * stands for. Pure, and deliberately independent of the frame count a frame
+   * claims: the cell count is capped so a hostile n can never drive the DOM.
+   */
+  function gridPlan(total, maxCells) {
+    var limit = maxCells || MAX_GRID_CELLS;
+    var dataFrames = Math.max(0, (total || 0) - 1);
+    var cells = Math.min(dataFrames, limit);
+    return {
+      dataFrames: dataFrames,
+      cells: cells,
+      framesPerCell: cells ? Math.ceil(dataFrames / cells) : 0,
+      bucketed: cells > 0 && cells < dataFrames
+    };
+  }
+
+  /** Which cell a sequence number falls in, given a plan. */
+  function cellForSequence(plan, seq) {
+    if (!plan.cells) return -1;
+    return Math.min(plan.cells - 1, Math.floor((seq - 1) / plan.framesPerCell));
+  }
+
+  /**
+   * Strips anything that could confuse a filesystem or a UI out of an artifact
+   * name, and clamps the length while keeping a short extension readable.
+   * Names arrive from unauthenticated frames, so this runs on receive as well
+   * as on import.
+   */
+  function sanitizeName(name, maxLength) {
+    var limit = maxLength || SAFE_NAME_LENGTH;
+    var out = String(name === undefined || name === null ? '' : name)
+      .replace(/[\x00-\x1f\x7f]/g, '') // control characters
+      .replace(/[\\/]+/g, '_') // path separators: a name stays a name
+      .replace(/^\.+/, '') // no leading dots, so no '..' and no hidden files
+      .trim();
+    if (!out) out = 'artifact.bin';
+    if (out.length <= limit) return out;
+    var dot = out.lastIndexOf('.');
+    var ext = dot > 0 && out.length - dot <= 12 ? out.slice(dot) : '';
+    return out.slice(0, Math.max(1, limit - ext.length)) + ext;
   }
 
   function randomTransferId() {
@@ -321,16 +404,22 @@
     if (!Number.isInteger(obj.n) || obj.n < 1 || obj.i >= obj.n) {
       return { ok: false, reason: 'bad-total' };
     }
+    // n drives allocations and loops in every receiver, so it is bounded here,
+    // before any caller can act on it, rather than at each use site.
+    if (obj.n > MAX_FRAMES) return { ok: false, reason: 'too-many-frames' };
 
     if (obj.i === 0) {
       var m = obj.m;
       if (!m || typeof m !== 'object') return { ok: false, reason: 'missing-manifest' };
       if (typeof m.name !== 'string' || !m.name) return { ok: false, reason: 'bad-name' };
+      if (m.name.length > MAX_NAME_LENGTH) return { ok: false, reason: 'name-too-long' };
       if (!Number.isInteger(m.size) || m.size < 0) return { ok: false, reason: 'bad-size' };
+      if (m.size > MAX_ARTIFACT_BYTES) return { ok: false, reason: 'artifact-too-large' };
       if (typeof m.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(m.sha256)) {
         return { ok: false, reason: 'bad-sha256' };
       }
       if (!Number.isInteger(m.chunk) || m.chunk < 1) return { ok: false, reason: 'bad-chunk' };
+      if (m.chunk > MAX_RECEIVE_CHUNK) return { ok: false, reason: 'chunk-too-large' };
       if (m.sha256.slice(0, 8) !== obj.h) return { ok: false, reason: 'hash-prefix-mismatch' };
       if (frameCount(m.size, m.chunk) !== obj.n) return { ok: false, reason: 'frame-count-mismatch' };
       return { ok: true, frame: { kind: 'manifest', v: obj.v, t: obj.t, h: obj.h, i: 0, n: obj.n, m: m } };
@@ -363,8 +452,53 @@
       duplicates: 0,
       rejected: 0,
       startedAt: null,
+      lastProgressAt: null,
+      switches: 0,
       result: null
     };
+  }
+
+  /**
+   * Whether a frame from a different transfer should take over the receiver.
+   *
+   * Pinning the first transfer id forever is the safe-looking choice and the
+   * wrong one: a single stray frame would capture the receiver, and a sender
+   * that legitimately restarts — which it does on every new send, and whenever
+   * the chunk size changes — would be stonewalled until someone found the
+   * Reset button. So a new transfer wins once the current one has visibly
+   * stalled, and a manifest (an explicit start-of-transfer marker) gets a
+   * shorter fuse than a stray data frame.
+   *
+   * Without a clock the strict rule stands, so a caller that passes no
+   * timestamps keeps the old deterministic behaviour.
+   */
+  function shouldAdoptNewTransfer(state, frame, nowMs, opts) {
+    if (state.status === 'VERIFIED' || state.status === 'REJECTED') return true;
+    if (typeof nowMs !== 'number' || typeof state.lastProgressAt !== 'number') {
+      return false;
+    }
+    var stale = frame.kind === 'manifest'
+      ? (opts && opts.manifestMs) || STALE_MANIFEST_MS
+      : (opts && opts.staleMs) || STALE_TRANSFER_MS;
+    return nowMs - state.lastProgressAt >= stale;
+  }
+
+  function adoptTransfer(state, frame, nowMs) {
+    var switches = state.switches;
+    var rejected = state.rejected;
+    state.status = 'COLLECTING';
+    state.transferId = frame.t;
+    state.hashPrefix = frame.h;
+    state.total = frame.n;
+    state.manifest = null;
+    state.chunks = Object.create(null);
+    state.received = 0;
+    state.duplicates = 0;
+    state.rejected = rejected;
+    state.result = null;
+    state.startedAt = typeof nowMs === 'number' ? nowMs : null;
+    state.lastProgressAt = typeof nowMs === 'number' ? nowMs : null;
+    state.switches = switches + 1;
   }
 
   function receivedSequences(state) {
@@ -393,7 +527,7 @@
    * Feeds one decoded QR string (or a pre-parsed frame) into a receiver.
    * Returns { accepted, reason, complete } and mutates state in place.
    */
-  function ingest(state, textOrFrame, nowMs) {
+  function ingest(state, textOrFrame, nowMs, opts) {
     var parsed =
       typeof textOrFrame === 'string'
         ? parseFrame(textOrFrame)
@@ -403,16 +537,18 @@
       return { accepted: false, reason: parsed.reason, complete: false };
     }
     var f = parsed.frame;
+    var switched = false;
 
     if (state.status === 'IDLE') {
-      state.status = 'COLLECTING';
-      state.transferId = f.t;
-      state.hashPrefix = f.h;
-      state.total = f.n;
-      state.startedAt = nowMs === undefined ? null : nowMs;
+      adoptTransfer(state, f, nowMs);
+      state.switches = 0;
     } else if (f.t !== state.transferId) {
-      state.rejected++;
-      return { accepted: false, reason: 'other-transfer', complete: isComplete(state) };
+      if (!shouldAdoptNewTransfer(state, f, nowMs, opts)) {
+        state.rejected++;
+        return { accepted: false, reason: 'other-transfer', complete: isComplete(state) };
+      }
+      adoptTransfer(state, f, nowMs);
+      switched = true;
     } else if (f.h !== state.hashPrefix || f.n !== state.total) {
       // Same transfer id but inconsistent framing: refuse rather than mix bytes.
       state.rejected++;
@@ -434,9 +570,10 @@
       state.received++;
     }
 
+    if (typeof nowMs === 'number') state.lastProgressAt = nowMs;
     var complete = isComplete(state);
     if (complete && state.status === 'COLLECTING') state.status = 'COMPLETE';
-    return { accepted: true, reason: null, complete: complete };
+    return { accepted: true, reason: null, complete: complete, switched: switched };
   }
 
   /** Concatenates collected chunks in sequence order. Assumes isComplete(). */
@@ -482,7 +619,15 @@
       return state.result;
     }
     state.status = 'VERIFIED';
-    state.result = { ok: true, bytes: bytes, sha256: digest, name: state.manifest.name };
+    // The name is the one field a sender controls that the hash does not cover,
+    // so it is clamped and stripped here rather than trusted downstream.
+    state.result = {
+      ok: true,
+      bytes: bytes,
+      sha256: digest,
+      name: sanitizeName(state.manifest.name),
+      declaredName: state.manifest.name
+    };
     return state.result;
   }
 
@@ -507,6 +652,18 @@
     DEFAULT_CHUNK: DEFAULT_CHUNK,
     MIN_CHUNK: MIN_CHUNK,
     MAX_CHUNK: MAX_CHUNK,
+    MAX_FRAMES: MAX_FRAMES,
+    MAX_RECEIVE_CHUNK: MAX_RECEIVE_CHUNK,
+    MAX_ARTIFACT_BYTES: MAX_ARTIFACT_BYTES,
+    MAX_NAME_LENGTH: MAX_NAME_LENGTH,
+    SAFE_NAME_LENGTH: SAFE_NAME_LENGTH,
+    MAX_GRID_CELLS: MAX_GRID_CELLS,
+    STALE_TRANSFER_MS: STALE_TRANSFER_MS,
+    STALE_MANIFEST_MS: STALE_MANIFEST_MS,
+    gridPlan: gridPlan,
+    cellForSequence: cellForSequence,
+    sanitizeName: sanitizeName,
+    shouldAdoptNewTransfer: shouldAdoptNewTransfer,
     b64uEncode: b64uEncode,
     b64uDecode: b64uDecode,
     sha256Hex: sha256Hex,
