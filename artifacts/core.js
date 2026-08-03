@@ -796,8 +796,17 @@
     };
   }
 
+  // A v2 frame (see proto2.js) opens with the ASCII magic "RVQ2". v1 and v2
+  // senders will meet v1 and v2 receivers in the wild, so each protocol names
+  // the other rather than reporting it as noise — "this is a v2 frame and I
+  // only speak v1" is actionable, "not-a-frame" is not.
+  var PROTO2_MAGIC = 'RVQ2';
+
   /** Parses one frame string. Never throws; returns { ok:false, reason } instead. */
   function parseFrame(text) {
+    if (typeof text === 'string' && text.slice(0, 4) === PROTO2_MAGIC) {
+      return { ok: false, reason: 'v2-frame' };
+    }
     if (typeof text !== 'string' || text.length < 2 || text.charAt(0) !== '{') {
       return { ok: false, reason: 'not-a-frame' };
     }
@@ -1177,6 +1186,7 @@
 
   return {
     PROTOCOL_VERSION: PROTOCOL_VERSION,
+    PROTO2_MAGIC: PROTO2_MAGIC,
     DEFAULT_CHUNK: DEFAULT_CHUNK,
     MIN_CHUNK: MIN_CHUNK,
     MAX_CHUNK: MAX_CHUNK,
