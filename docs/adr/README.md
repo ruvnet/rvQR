@@ -34,8 +34,8 @@ identifier meaning two incompatible things.
 | | |
 |---|---|
 | **Claimed by mirrors** | 004, 005, 009, 029, 030, 032, 034, 057, 280 |
-| **rvQR-local, in use** | 001, 002, 003, 006, 007, 008, 010–028, 031, 033, 035 |
-| **Next free** | **036** |
+| **rvQR-local, in use** | 001, 002, 003, 006, 007, 008, 010–028, 031, 033, 035, 036 |
+| **Next free** | **037** |
 
 **A new rvQR-local ADR takes the next number not claimed by any mirror in this
 directory** — which is not the same as the next number after the last local one.
@@ -50,16 +50,16 @@ subject (`ADR-009-rvf-v1-wire-contract.md`). The `RVM-` prefix on
 space — and is the precedent for prefixing if this directory ever takes enough
 mirrors to make number-avoidance impractical.
 
-**Statuses are load-bearing, and most of this is not built.** Of 28 local ADRs,
-five are Accepted and one is Deferred; the rest are a deployment-plane programme
+**Statuses are load-bearing, and most of this is not built.** Of 29 local ADRs,
+six are Accepted and one is Deferred; the rest are a deployment-plane programme
 that is written down and largely unimplemented. Each file's header table says
 what exists in its own `Implementation` row, and
 [ADR-011](./ADR-011-rvqr-deployment-plane.md) §2.1 carries the summary: **of the
 eight links in the chain, two ship.**
 
 The set divides into three blocks: **the optical transport and its acceptance
-bar** (001–003, 006–008, 010, 031, 033, 035); **the deployment plane** (011–018);
-and **bulk transport, execution and delivery** (019–028).
+bar** (001–003, 006–008, 010, 031, 033, 035); **the deployment plane** (011–018,
+036); and **bulk transport, execution and delivery** (019–028).
 
 ### Optical transport and its acceptance bar
 
@@ -79,7 +79,10 @@ and 035 sit here rather than at the end.
 | [ADR-035 — Pinned-Fingerprint Admission](./ADR-035-rvqr-signature-admission.md) | Accepted | A pin must be enforced where the artifact is stored, not rendered as a badge. The pure `core.admitArtifact(pin, verification)`: pending never admits, unknown verdicts fail closed, no-pin is unchanged. Records the companion defect — `signManifest` called with reversed arguments, so signing silently never happened — and that the signing key currently sits in plaintext `localStorage`. |
 | [ADR-010 — The Acceptance Bar](./ADR-010-rvqr-acceptance-bar.md) | Accepted | Three bars. Milestone: 100 × 40 KB across iPhone Safari and Android Chrome, bright / dim / glare, 20% induced loss, p95 under 30 s. **The bar**: 100 signed 10 MB RVF transfers across three phone/laptop combinations, radios disabled — 100% verification, zero pre-verification vault writes or executions, zero accepted replayed ultrasonic commands, median raw > 100 KB/s, effective > 250 KB/s, p95 < 120 s, memory < 256 MB. Says plainly that the benchmark models frame loss but not optics, so today's figures are engineering baselines, and that the 10 MB bar is set above what any current projection delivers. |
 
-### The deployment plane (011–018)
+### The deployment plane (011–018, 036)
+
+Ordered by topic, so 036 sits next to the ADR it gives a structure to rather
+than at the end — the same reason 031, 033 and 035 sit in the block above.
 
 | ADR | Status | What it decides |
 |-----|--------|-----------------|
@@ -88,6 +91,7 @@ and 035 sit here rather than at the end.
 | [ADR-013 — Byte Minimisation](./ADR-013-rvqr-byte-minimisation.md) | Proposed | Dedup and delta beat codec choice for recurring deliveries — a measured 85.1× against a measured 1.320× on the same payload class. FastCDC content-defined chunking (USENIX ATC '16), BLAKE3-addressed chunks, RVF segment delta, Zstd dictionaries. **Corrects a naming drift: RVCOW and `agenticow` are one mechanism with two names.** Encrypts the receiver inventory, because a list of installed models and agents is itself sensitive. |
 | [ADR-014 — Fountain Code Selection](./ADR-014-rvqr-fountain-selection.md) | **Open** | Three options — keep the shipped RaptorQ-structured codec (measured 98.45% at exactly K), adopt Wirehair (its published N+0.02), or become RFC 6330 conformant. No winner asserted, because the evidence to pick one does not exist. Names the measurement that would decide it, and notes the choice blocks the fleet broadcast tier. |
 | [ADR-015 — Adaptive Transfer Control](./ADR-015-rvqr-adaptive-control.md) | Proposed | A bounded controller, then a constrained bandit, maximising G = R × C × E × P and J = 0.45T + 0.20E + 0.20B + 0.15R. **Hard rules always override learning** — a learned policy that can override a trust gate is not a policy, it is a vulnerability. Records the 278 and 612 KB/s worked figures as projections resting on Decimen's published claims, not our measurements. |
+| [ADR-036 — The Transfer Planner: Filter Before Score](./ADR-036-rvqr-transfer-planner.md) | Proposed | The structure that makes ADR-015's "hard rules always override learning" true rather than intended: the rules are a **filter that runs before the scorer**, so a violating candidate is structurally unreachable and its score is not a quantity that exists. Argues why a large negative weight cannot do the job — any finite penalty is a price a confident learned bonus can pay, the failure is silent, and the resulting property is untestable. Says plainly that **0.45/0.20/0.20/0.15 is a judgement, not a measurement**, that 0.40 of it sits on two terms nothing in this repository can evaluate, and what would change it. Records that ADR-015 §2.2 and this ADR expand the same four letters differently — throughput/battery/reliability against time/bytes/risk — and why the second reading is the one the measurements support. Inherits the semantic-inventory defect and locates it exactly: **2,177 B against 1,308 B across both hops**, with `chooseDelta` correct and the missing decision belonging upstream at the receiver. |
 | [ADR-016 — Verified Execution and the RVM Handoff](./ADR-016-rvqr-verified-execution.md) | Proposed | No vault write and no execution authority before verification — the same invariant at two layers, with neither trusting the other's word. **Binds to `rvm-witness`'s ADR-134 format rather than defining a second receipt**: 96-byte records, 128-bit keyed-BLAKE3 chain MACs, Merkle sealing, and the existing invariant "no witness, no mutation". |
 | [ADR-017 — Strict and Hybrid Transport Modes](./ADR-017-rvqr-transport-modes.md) | Proposed | Strict is light and sound only with radios disabled; hybrid lets optical and ultrasonic establish trust and a radio move the payload. **Mode is a mode, never a fallback** — no failure, including total failure to transfer, promotes strict to hybrid — and the mode in force is recorded in the receipt so an auditor can establish which medium carried a deployment. |
 | [ADR-018 — Device Physics and Calibration](./ADR-018-rvqr-device-physics.md) | Proposed | **The largest uncertainty in the programme.** Autofocus, display refresh, camera frame-rate reporting, microphone filtering and speaker response will dominate the laboratory algorithm choices. A ~3 s calibration phase, conservative fallback profiles, and RuVector memory that learns the best *verified* profile per device pair. Every throughput number in the set is an engineering baseline, not a phone result. |

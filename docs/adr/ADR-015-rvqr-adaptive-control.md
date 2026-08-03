@@ -84,6 +84,20 @@ compression level, chunk size, stream count and redundancy. Its objective:
 throughput, energy, battery and reliability. The weights are a starting point to
 be tuned against measurement, not derived constants.
 
+> **Amended — this expansion is superseded by
+> [ADR-036](./ADR-036-rvqr-transfer-planner.md) §2.4.** Three of these four
+> letters are read differently there: **T is time, not throughput; B is bytes on
+> the wire, not battery; R is risk, entering as 1 − normalised risk, not
+> reliability.** Same formula, same weights, different meanings — which makes the
+> sum irreproducible until one reading wins, so ADR-036's is authoritative and
+> this sentence is left in place only so the change is visible rather than
+> silent. The reasons are measurable: ranking on *throughput* prefers a fast full
+> transfer over a small delta, which the semantic-delta measurement shows is the
+> wrong order (40,285 bytes against 1,125,630 for the same container); *energy*
+> and *battery* are close to one physical quantity counted twice, putting 0.40 of
+> the weight on it; and *risk* is a term where larger is worse, so it cannot be
+> added with a positive weight unless it is inverted first.
+
 Apple's WiFi Aware API exposes throughput ceilings, capacity forecasts, signal
 strength and latency estimates as inputs
 ([WAPerformanceForecast](https://developer.apple.com/documentation/wifiaware/waperformanceforecast)),
