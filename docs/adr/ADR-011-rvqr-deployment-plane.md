@@ -37,7 +37,7 @@ rvQR's job is the whole sequence, and each link is a separate ADR:
 
 | Link | Decided in | Ships today? |
 |---|---|---|
-| Move bytes across a gap with no network | [ADR-001](./ADR-001-rvqr-optical-transport.md), [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) | yes (v1); v2 built, unwired |
+| Move bytes across a gap with no network | [ADR-001](./ADR-001-rvqr-optical-transport.md), [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) | yes — v1 default, v2 selectable (armoured, 1.30×) |
 | Move as few bytes as possible | [ADR-003](./ADR-003-rvqr-adaptive-compression.md), [ADR-013](./ADR-013-rvqr-byte-minimisation.md) | no |
 | Survive severe loss without a back channel | [ADR-014](./ADR-014-rvqr-fountain-selection.md) | codec yes, transport no |
 | Authenticate the payload and the peer | [ADR-012](./ADR-012-rvqr-post-quantum-manifest.md), [ADR-021](./ADR-021-rvqr-device-attestation.md), [ADR-023](./ADR-023-rvqr-presence-fusion.md) | signing yes, PQ no |

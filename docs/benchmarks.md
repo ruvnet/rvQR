@@ -58,13 +58,14 @@ of pointing a hundred cameras at one screen and needs no protocol at all. At
 N = 100 the residual 1.19× is almost entirely the QR envelope (792-byte symbol
 carrying 665 bytes = 1.19×), not loss.
 
-**5. A first trusted closure under 3 seconds is easy; a first *useful* one is
-not.** MODELLED: at v2 armoured, 5 fps, the largest first closure that fits
-3 seconds is **9,246 bytes** — ample for a manifest and a policy, which is
-512 bytes. But the next closure in the model is a minimal RVM runtime, and the
-real `rvf_wasm_bg.wasm` is 40,989 bytes: reaching it inside 3 seconds needs
-**21.7 fps**. The 3-second target is a statement about the manifest closure
-only.
+**5. ADR-012 and ADR-022 are individually reasonable and jointly infeasible
+optically.** MODELLED: ADR-022's gate is closures 1–3, each separately signed;
+ADR-012 selects ML-DSA-65 at 3,309 bytes per signature. Three signatures cost
+**9,927 bytes**, and the entire 3-second budget at the app's default 5 fps is 15
+frames — 9,975 bytes of QR capacity, of which three go to the closures' own
+manifests. **The signatures alone do not fit, before a byte of closure
+content.** With 64-byte Ed25519 the budget is a comfortable 7,788 bytes. Neither
+ADR reaches this conclusion because it is a product of the two.
 
 **6. The pipeline is inside its memory budget and outside its copy budget.**
 MEASURED on `standalone.html` (507,527 B) in a separate process under
@@ -839,7 +840,7 @@ so **the broadcast-only projection at K=1.6 million is conservative by about
 3%** — the real figure is nearer 1.70 GB than 1.75 GB. Reported the
 unfavourable way round rather than the favourable one.
 
-## 12. Progressive activation: time to the first trusted closure
+## 12. Progressive activation: time to a trusted agent
 
 `node bench/index.mjs --suite closures`
 
@@ -850,12 +851,21 @@ arithmetic over measured span sizes, measured artifact sizes and measured byte
 rates. Whether a partially transferred RVF can actually execute is a runtime
 question this harness cannot answer.
 
-The model does account for the things that make small closures relatively
-expensive: each closure pays its own signature and its own manifest frame, and
-closure boundaries do not align with frame boundaries so each rounds up to whole
-frames. A 64-byte Ed25519 signature is assumed. `core.js` declares
-`SIGNATURE_SIZE = 16`, which is a truncated tag rather than any standard
-signature size — the discrepancy is noted rather than silently resolved.
+The model accounts for the things that make small closures relatively expensive:
+each closure pays its own signature and its own manifest frame, and closure
+boundaries do not align with frame boundaries so each rounds up to whole frames.
+
+**The gate is closures 1–3, not closure 1.**
+[ADR-022](adr/ADR-022-rvqr-progressive-activation.md) §2.1 says "the agent
+starts once closures 1–3 verify", so that is what is measured here.
+Time-to-closure-1 is reported alongside because it is the easier number and it
+is easy to quote the wrong one.
+
+Two signature schemes are swept: 64-byte Ed25519, and the 3,309-byte ML-DSA-65
+that [ADR-012](adr/ADR-012-rvqr-post-quantum-manifest.md) selects. `core.js`
+declares `SIGNATURE_SIZE = 16`, which is a truncated tag rather than any
+standard signature size — the discrepancy is noted rather than silently
+resolved.
 
 ### The demo container, split on its own measured spans
 
@@ -871,40 +881,67 @@ signature size — the discrepancy is noted rather than silently resolved.
 |---|---|---|---|---|---|
 | manifest + policy | 512 | modelled | 2 | 0.40 s | 0.7 |
 | **minimal RVM runtime** | **40,989** | **measured** | 63 | **13.0 s** | **21.7** |
-| required code + hot state | 196,608 | modelled | 297 | 72.4 s | 120.7 |
+| **required code + hot state** | 196,608 | modelled | 297 | **72.4 s ← the gate** | **120.7** |
 | cold indexes + optional assets | 810,467 | modelled | 1,220 | 316.4 s | 527.3 |
 
-### The largest first closure that fits 3 seconds
+### Time to a trusted agent (closures 1–3) against the 3-second target
 
-| transport | P | frames in budget | max first closure |
-|---|---|---|---|
-| v1 JSON, 512 B @ 5 fps | 1 | 15 | 7,104 B |
-| **v2 armoured, 665 B @ 5 fps** | **1** | **15** | **9,246 B** |
-| v2 armoured, 665 B @ 5 fps | 0.75 (projection) | 11 | 6,586 B |
-| v2 armoured, 665 B @ 5 fps | 0.5 (projection) | 7 | 3,926 B |
-| v2 armoured, 665 B @ 10 fps | 1 | 30 | 19,221 B |
-| v2 armoured, 665 B @ 30 fps | 1 | 90 | 59,121 B |
+| profile | transport | closure 1 | **closures 1–3** | meets 3 s? | whole artifact |
+|---|---|---|---|---|---|
+| 1 MiB agent | v1 JSON, 512 B @ 5 fps | 0.60 s | **94.2 s** | no | 411.2 s |
+| 1 MiB agent | v2 armoured, 665 B @ 5 fps | 0.40 s | **72.4 s** | no | 316.4 s |
+| 1 MiB agent | v2 armoured, 665 B @ 10 fps | 0.20 s | **36.2 s** | no | 158.2 s |
+| 1 MiB agent | v2 armoured, 665 B @ 30 fps | 0.07 s | **12.1 s** | no | 52.7 s |
+| `standalone.html` | v2 armoured, 665 B @ 5 fps | 0.40 s | **50.4 s** | no | 173.4 s |
+| `standalone.html` | v2 armoured, 665 B @ 30 fps | 0.07 s | **8.4 s** | no | 28.9 s |
 
-**A first closure under 3 seconds is easy and the target is the wrong bar.** At
-the app's default 5 fps a first closure of up to 9,246 bytes lands inside three
-seconds, and even at a projected P = 0.5 the budget is 3,926 bytes — ten times
-what a manifest and a policy need. The 3-second target is satisfied by the
-manifest closure at every rate tested.
+**Time-to-closure-1 is trivially inside 3 seconds and time-to-trusted-agent is
+not close, at any rate this harness models.** The gap is 24× at the app's
+default settings and still 4× at 30 fps, which is three times the app's own
+ceiling. ADR-022 already concedes this — "on the optical channel at a measured
+2.44 KB/s, three seconds is 7.3 KB, so this target is a radio-tier feature" —
+and this measurement supports that concession precisely: the budget at v2
+armoured and 5 fps is 7,788 bytes for closures 1–3, against a modelled 238 KB
+of content.
 
-**What is not achievable is a first *useful* closure.** The second closure in
-the model is a minimal RVM runtime, and the real `rvf_wasm_bg.wasm` is 40,989
-bytes. Reaching it inside 3 seconds needs 21.7 fps at v2-armoured density —
-double the app's 10 fps ceiling, and §8 measures the robustness cliff that makes
-raising density instead a bad trade. Either the runtime closure shrinks below
-about 9 KB, or the frame rate roughly triples, or "trusted and useful in three
-seconds" is not reachable.
+### The largest closure content that fits 3 seconds
+
+| transport | signature | closures | P | signature cost | max content | feasible? |
+|---|---|---|---|---|---|---|
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 3 | 1 | 192 B | 5,952 B | yes |
+| **v2 armoured, 665 B @ 5 fps** | **Ed25519** | **1** | **1** | 64 B | **9,246 B** | yes |
+| **v2 armoured, 665 B @ 5 fps** | **Ed25519** | **3** | **1** | 192 B | **7,788 B** | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 3 | 0.5 (projection) | 192 B | 2,468 B | yes |
+| v2 armoured, 665 B @ 5 fps | **ML-DSA-65** | 1 | 1 | 3,309 B | 6,001 B | yes |
+| **v2 armoured, 665 B @ 5 fps** | **ML-DSA-65** | **3** | **1** | **9,927 B** | **0 B** | **NO** |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 | 3 | 1 | 9,927 B | 8,028 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 | 3 | 0.5 (projection) | 9,927 B | 0 B | **NO** |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 | 3 | 1 | 9,927 B | 47,928 B | yes |
+
+**ADR-012 and ADR-022 are individually reasonable and jointly infeasible on the
+optical channel.** Three separately signed closures at ML-DSA-65's 3,309 bytes
+each cost **9,927 bytes of signature alone**. The entire 3-second budget at the
+app's default 5 fps is 15 frames — 9,975 bytes of QR capacity, of which three go
+to the closures' own manifests, leaving 7,980 bytes. **The signatures do not
+fit, before a single byte of closure content.** At 10 fps and P = 1 they fit
+with 8,028 bytes to spare; at a projected P = 0.5 they do not fit again.
+
+Neither ADR reaches this conclusion, because it is a product of the two: ADR-012
+sizes one signature and ADR-022 decides how many there are. The fixes are
+arithmetic — one aggregate signature over the closure list instead of three
+detached ones, or a hybrid where closures 2 and 3 are covered by a hash
+committed in closure 1's single signature — and both are compatible with
+ADR-022's §2.2 requirement that the manifest commit to the closure list and
+order. What is not compatible is three full post-quantum signatures inside three
+seconds of optical channel.
 
 **The brief's premise that the whole artifact takes 20–40 seconds does not hold
 for a 1 MiB container.** At 665 bytes per frame and 5 fps a 1 MiB artifact takes
 316 seconds, and 158 seconds at 10 fps. Twenty to forty seconds at the app's
-default rate corresponds to an artifact of roughly 66–133 KB. The
-first-closure-under-3-seconds target and the whole-transfer-in-40-seconds target
-describe artifacts an order of magnitude apart.
+default rate corresponds to an artifact of roughly 66–133 KB. ADR-022's own
+framing attributes the 20–40 s figure to rvDrop rather than to the optical
+channel, which is consistent; the two targets simply describe different
+transports and should not be read as one operating point.
 
 ## 13. Delta transfer at scale
 
@@ -1050,8 +1087,10 @@ in the brief for this work. Reported rather than smoothed.
 | v2 binary carries 764 B/frame at version 19-L, 1.492× v1's default | 764 B confirmed, and 1.389× against v1's *measured maximum* of 550 B at that version. 1.49× is against the app's 512 B setting, which is not v1's maximum | Both ratios are defensible; they answer different questions. Against v1's best at the same symbol, v2 binary is 1.39× and v2 armoured 1.21×. |
 | v2 binary is the dense path | The shipped `qrdecode.js` returns 830 bytes for a 792-byte binary frame and `parseFrame` rejects it | The binary path is unreachable with any decoder in this repository. `proto2.js`'s docblock says so; this measures it. The armoured path is the real one. |
 | `standalone.html` is 503,216 B, compressing to 142,368 B with Brotli-6 | 507,527 B compressing to 143,695 B, ratio 3.532× | The ratio reproduces exactly; the file grew during this session. Byte counts against a moving build artifact are not reproducible quantities. |
-| The pipeline holds fewer than two full payload copies | v1 receiver peaks at 2.84×, v2 at 2.58× | Over budget in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for the current design. |
-| A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. The two targets in the brief describe artifacts an order of magnitude apart. |
+| ADR-025 §2.1 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.84×, v2 at 2.58× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
+| A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
+| ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps | **Jointly infeasible.** Neither ADR is wrong alone. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
+| ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule is unaffected — §2 measures every corpus artifact clearing it — but the frame-budget arithmetic behind ADR-003's choice of margin is 15% optimistic. |
 | `core.SIGNATURE_SIZE = 16` | 16 bytes is not a signature size for any standard scheme | Modelled with 64 B (Ed25519) instead, with the discrepancy stated. Whatever 16 means, it is a truncated tag. |
 | Decode cost at 512 B symbols is 3.86 ms (previous revision of this document) | 2.63 ms this run | Same code, same seed, warmer JIT. Millisecond figures on this machine vary by tens of percent between runs; byte and frame counts do not vary at all. |
 

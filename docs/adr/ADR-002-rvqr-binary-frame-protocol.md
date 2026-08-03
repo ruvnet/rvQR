@@ -5,7 +5,7 @@
 | Status | Accepted |
 | Date | 2026-08-03 |
 | Scope | The wire format of an rvQR frame: header, manifest body, and the fields a receiver needs before it touches a payload |
-| Implementation | `artifacts/proto2.js`, 26/26 tests in `artifacts/proto2.test.js`. **Not wired into `app.js` or `index.html`** — the app still sends and receives v1 |
+| Implementation | `artifacts/proto2.js`, 26/26 tests. **Wired into the app** as of `f2f07f4`: v2 is a selectable send format (v1 remains the default), the manifest carries the format, and the receive path accepts both. It is wired **through the ASCII armour**, so the realised gain is 1.30×, not 1.492× — see §2.3 |
 | Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-003: Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md), [ADR-031: Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-004: RVF Cognitive Container Format](./ADR-004-rvf-format.md) (mirrored) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
@@ -152,6 +152,13 @@ reach the parser**, which today means neither of the app's two decode paths. Any
 integration has to either recover the raw bytes from the decoder or take the
 armoured 1.30×.
 
+**And the integration took the armour.** `artifacts/app.js:1187` calls
+`toTransport()` on every v2 frame, for exactly the reason above. So the gain
+rvQR actually ships from this ADR is **1.30×**, and the 1.492× is a property of
+the format that no current decode path can collect. Recovering it means either a
+decoder that returns octets or a `BarcodeDetector` result that is not a string —
+neither of which is in rvQR's gift.
+
 ### 2.4 v1 and v2 refuse each other by name
 
 A v2 parser fed a v1 frame names it as v1; a v1 parser fed a v2 frame names it
@@ -193,11 +200,16 @@ than repaired.
 
 ### What it costs, honestly
 
-- **It is not wired in.** `app.js` and `index.html` contain no reference to
-  `proto2.js`. Every measured figure above is a property of the module, not of
-  a transfer anyone has performed.
-- **Neither decode path can carry the raw form today**, so the realistic
-  near-term gain is the armoured 1.30×, not 1.49×. §2.3.
+- **The realised gain is 1.30×, not 1.492×.** Neither decode path can carry raw
+  octets, so the integration armours every frame and gives back a third of what
+  the format bought. §2.3.
+- **v1 remains the default**, so the gain is opt-in and most transfers will not
+  see it until that changes.
+- **Two state machines, kept deliberately separate.** That makes cross-format
+  behaviour legible — a v1 parser names a v2 frame rather than failing
+  generically — and it means every future receiver change lands twice.
+- **No end-to-end measurement yet.** The figures above are still properties of
+  the module; nobody has measured a v2 transfer through a camera.
 - **The paste-a-frame receive path stops being human-readable.** v1 frames are
   JSON you can read; v2 frames are octets or 7-bit-packed ASCII. That is a real
   regression for anyone diagnosing a transfer by eye
@@ -223,7 +235,7 @@ than repaired.
 
 ## 4. Acceptance criteria
 
-Items 1–7 are met by `artifacts/proto2.test.js` at 26/26. Items 8–11 are not.
+Items 1–7 are met by `artifacts/proto2.test.js` at 26/26; item 9 is partly met. Items 8, 10 and 11 are not.
 
 1. ✅ **Measured, not asserted.** Bytes per frame for v1 and v2 at a fixed QR
    version are recomputed every run: 792 B capacity, v1 741 B at its default
@@ -246,9 +258,9 @@ Items 1–7 are met by `artifacts/proto2.test.js` at 26/26. Items 8–11 are not
 8. ⬜ **Golden byte vectors checked in as hex** for a manifest and a data frame
    of the demo module, failing on any byte change. Round-trip tests do not catch
    a layout change made consistently on both sides.
-9. ⬜ **Wired into the app**, with a decode path that can deliver either the raw
-   octets or the armoured form, and the resulting gain measured end to end
-   rather than at the module.
+9. ◧ **Wired into the app** — done as of `f2f07f4`, through the armour. What
+   remains is a decode path that can deliver the **raw** octets, and the gain
+   measured end to end through a camera rather than at the module.
 10. ⬜ **Codec ids reconciled with [ADR-004 §5.1](./ADR-004-rvf-format.md)**, or
     ADR-003 amended to match — one or the other, before anything depends on the
     numbering.

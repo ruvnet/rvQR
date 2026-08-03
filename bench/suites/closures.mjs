@@ -38,12 +38,33 @@ import { envelopeBytes } from './compress.mjs';
 export const FIRST_CLOSURE_TARGET_SECONDS = 3;
 
 /**
+ * ADR-022 §2.1 puts the gate at closures 1–3, not at closure 1: "the agent
+ * starts once closures 1–3 verify". Measuring time-to-closure-1 and calling it
+ * time-to-first-trusted-agent would answer an easier question than the one the
+ * design asks, so both are reported and the 1–3 figure is the headline.
+ */
+export const TRUSTED_AGENT_CLOSURE_COUNT = 3;
+
+/**
  * Ed25519, because that is what a detached signature over a closure costs if
  * the scheme is the obvious one. core.js declares SIGNATURE_SIZE = 16, which is
  * a truncated tag rather than any standard signature; the report notes the
  * discrepancy rather than silently picking one.
  */
 export const ED25519_SIGNATURE_BYTES = 64;
+
+/**
+ * ML-DSA-65, the post-quantum scheme ADR-012 selects. 3,309 bytes per
+ * signature, and ADR-022 signs every closure separately — so the signatures
+ * alone are a meaningful fraction of a small closure, which is exactly the
+ * interaction between the two ADRs that a per-closure byte budget has to face.
+ */
+export const MLDSA65_SIGNATURE_BYTES = 3309;
+
+export const SIGNATURE_SCHEMES = [
+  { name: 'Ed25519', bytes: ED25519_SIGNATURE_BYTES },
+  { name: 'ML-DSA-65 (ADR-012)', bytes: MLDSA65_SIGNATURE_BYTES }
+];
 
 /**
  * Closure profiles. Sizes marked `measured` come from real files in this
@@ -155,11 +176,17 @@ export function activationTimeline({
       fpsNeededForTarget: cumulativeFrames / FIRST_CLOSURE_TARGET_SECONDS
     };
   });
+  const gateIndex = Math.min(TRUSTED_AGENT_CLOSURE_COUNT, steps.length) - 1;
+  const trustedAgentSeconds = gateIndex >= 0 ? steps[gateIndex].cumulativeSeconds : NaN;
   return {
     steps,
     totalSeconds: cumulativeFrames / fps,
     firstClosureSeconds: steps.length ? steps[0].cumulativeSeconds : NaN,
-    meetsTarget: steps.length ? steps[0].cumulativeSeconds < FIRST_CLOSURE_TARGET_SECONDS : false
+    meetsFirstClosureTarget: steps.length ? steps[0].cumulativeSeconds < FIRST_CLOSURE_TARGET_SECONDS : false,
+    // ADR-022's actual gate.
+    trustedAgentClosures: gateIndex + 1,
+    trustedAgentSeconds,
+    meetsTarget: trustedAgentSeconds < FIRST_CLOSURE_TARGET_SECONDS
   };
 }
 
@@ -178,21 +205,37 @@ export function maxFirstClosureBytes({
   fps,
   signatureBytes = ED25519_SIGNATURE_BYTES,
   successProbability = 1,
-  target = FIRST_CLOSURE_TARGET_SECONDS
+  target = FIRST_CLOSURE_TARGET_SECONDS,
+  // How many separately signed closures have to arrive before the gate opens.
+  // ADR-022 says three; each one costs a manifest frame and a signature.
+  closures = TRUSTED_AGENT_CLOSURE_COUNT
 }) {
   const slotBudget = target * fps * successProbability;
   const frameBudget = Math.floor(slotBudget);
-  // One frame is the manifest, so the payload gets frameBudget − 1.
-  const dataFrames = frameBudget - 1;
-  if (dataFrames < 1) return { frameBudget, bytes: 0, feasible: false };
-  const bytes = dataFrames * chunk - signatureBytes;
-  return { frameBudget, dataFrames, bytes: Math.max(0, bytes), feasible: bytes > 0 };
+  // Each closure spends one frame on its own manifest.
+  const dataFrames = frameBudget - closures;
+  if (dataFrames < 1) {
+    return { frameBudget, closures, dataFrames: 0, bytes: 0, signatureCost: closures * signatureBytes, feasible: false };
+  }
+  const signatureCost = closures * signatureBytes;
+  const bytes = dataFrames * chunk - signatureCost;
+  return {
+    frameBudget,
+    closures,
+    dataFrames,
+    signatureCost,
+    bytes: Math.max(0, bytes),
+    // Infeasible when the signatures alone outgrow the frame budget: at that
+    // point no closure content fits at all, whatever it contains.
+    feasible: bytes > 0
+  };
 }
 
 export function runClosureSuite({
   profiles,
   transports,
   signatureBytes = ED25519_SIGNATURE_BYTES,
+  signatureSchemes = SIGNATURE_SCHEMES,
   successProbabilities = [1, 0.75, 0.5]
 } = {}) {
   const loaded = loadProto2();
@@ -220,24 +263,35 @@ export function runClosureSuite({
     }
   }
 
+  // The budget table is swept over BOTH signature schemes, because ADR-012's
+  // ML-DSA-65 at 3,309 bytes a closure and ADR-022's three separately signed
+  // closures interact: the signatures can exhaust the budget on their own, and
+  // that is a conclusion neither ADR reaches alone.
   const budgets = [];
   for (const t of transports) {
-    for (const sp of successProbabilities) {
-      budgets.push({
-        transport: t.label,
-        chunk: t.chunk,
-        fps: t.fps,
-        successProbability: sp,
-        projection: sp < 1,
-        ...maxFirstClosureBytes({
-          P,
-          chunk: t.chunk,
-          armour: t.armour,
-          fps: t.fps,
-          signatureBytes,
-          successProbability: sp
-        })
-      });
+    for (const scheme of signatureSchemes) {
+      for (const sp of successProbabilities) {
+        for (const closures of [1, TRUSTED_AGENT_CLOSURE_COUNT]) {
+          budgets.push({
+            transport: t.label,
+            chunk: t.chunk,
+            fps: t.fps,
+            scheme: scheme.name,
+            signatureBytes: scheme.bytes,
+            successProbability: sp,
+            projection: sp < 1,
+            ...maxFirstClosureBytes({
+              P,
+              chunk: t.chunk,
+              armour: t.armour,
+              fps: t.fps,
+              signatureBytes: scheme.bytes,
+              successProbability: sp,
+              closures
+            })
+          });
+        }
+      }
     }
   }
 
@@ -245,8 +299,10 @@ export function runClosureSuite({
     available: true,
     model: true,
     signatureBytes,
+    signatureSchemes,
     declaredSignatureSize: core.SIGNATURE_SIZE,
     target: FIRST_CLOSURE_TARGET_SECONDS,
+    gateClosures: TRUSTED_AGENT_CLOSURE_COUNT,
     successProbabilities,
     timelines,
     budgets

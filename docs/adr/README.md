@@ -20,14 +20,35 @@ These are rvQR's, written here rather than mirrored. **rvQR-local ADRs have
 their own numbering starting at 001**, because the mirrored files below keep
 their upstream numbers.
 
-The two numbering spaces now collide: **ADR-004, ADR-005 and ADR-009 each exist
-twice in this directory, meaning different things.** The rule that resolves it is
-the filename, not the number — **a local ADR's slug begins with `rvqr-`**
-(`ADR-035-rvqr-signature-admission.md` is rvQR's;
-`ADR-009-rvf-v1-wire-contract.md` is RuVector's wire contract). Every local file
-also says so in a note under its header. Cite these by filename rather than by
-number. The local space currently runs **001–028**; 029, 030, 032, 034, 057 and
-280 in this directory are mirrored-only and the local sequence must skip them.
+### The numbering rule
+
+**A number in this directory means exactly one document.** Getting there took a
+correction. Multi-symbol lanes, the decode worker pool and signature admission
+were originally written as ADR-004, ADR-005 and ADR-009, which collided with
+three mirrored files. They are now **031, 033 and 035**. Nothing was ever
+overwritten — the slugs differed — but the *citation* was ambiguous, and
+"ADR-009" meaning both RuVector's wire contract and rvQR's admission rule is a
+particularly bad collision, because ADR-009 is the record that exists to stop one
+identifier meaning two incompatible things.
+
+| | |
+|---|---|
+| **Claimed by mirrors** | 004, 005, 009, 029, 030, 032, 034, 057, 280 |
+| **rvQR-local, in use** | 001, 002, 003, 006, 007, 008, 010–028, 031, 033, 035 |
+| **Next free** | **036** |
+
+**A new rvQR-local ADR takes the next number not claimed by any mirror in this
+directory** — which is not the same as the next number after the last local one.
+Check the first row before choosing. Mirrors added later may claim further
+numbers, so this table is consulted rather than assumed, and re-mirroring is the
+moment to re-check it.
+
+Cite by **filename**, not by number: a local ADR's slug begins with `rvqr-`
+(`ADR-035-rvqr-signature-admission.md`), a mirrored one names its upstream
+subject (`ADR-009-rvf-v1-wire-contract.md`). The `RVM-` prefix on
+`RVM-ADR-149-rvf-integration.md` exists for the same reason — a third numbering
+space — and is the precedent for prefixing if this directory ever takes enough
+mirrors to make number-avoidance impractical.
 
 **Statuses are load-bearing, and most of this is not built.** Of 28 local ADRs,
 five are Accepted and one is Deferred; the rest are a deployment-plane programme
@@ -36,17 +57,19 @@ what exists in its own `Implementation` row, and
 [ADR-011](./ADR-011-rvqr-deployment-plane.md) §2.1 carries the summary: **of the
 eight links in the chain, two ship.**
 
-The set divides into three blocks: **001–010** the optical transport and its
-acceptance bar; **011–018** the deployment plane, its cryptography and its
-control; **019–028** bulk transport, execution, fleet distribution and delivery
-structure.
+The set divides into three blocks: **the optical transport and its acceptance
+bar** (001–003, 006–008, 010, 031, 033, 035); **the deployment plane** (011–018);
+and **bulk transport, execution and delivery** (019–028).
 
-### Optical transport and its acceptance bar (001–010)
+### Optical transport and its acceptance bar
+
+Ordered by topic, not by number — see the numbering rule above for why 031, 033
+and 035 sit here rather than at the end.
 
 | ADR | Status | What it decides |
 |-----|--------|-----------------|
 | [ADR-001 — rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md) | Accepted | The decisions this project has actually made and shipped: fixed indexed chunks before erasure coding, integrity without authenticity as a stated position, the hostile-input ceilings and why the renderer is capped independently of them, the stall-based transfer switching rule, native scanning with a vendored decoder fallback, the iframe camera constraint, the keyframe gate, and the line between parsing an untrusted container with WebAssembly and executing it. Includes an honest cost list. |
-| [ADR-002 — Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md) | Accepted | Replaces JSON-plus-base64 framing with a 28-byte binary header, taking a version 19 symbol from 512 payload bytes to 764 — a measured **1.492×** at the same robust operating point, or 1.30× through the ASCII armour the bundled decoder forces. Carries codec id and dictionary id in every frame, original and compressed sizes as separate fields, and **both** a per-frame transport hash and the artifact's content hash. Records the correctness defect this closes: RVQS carries one `SEED_COMPRESSED` bit whose doc comment says Brotli while the builder invokes SCF-1. Implemented in `artifacts/proto2.js` (26/26 tests) and **not yet wired into the app**. |
+| [ADR-002 — Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md) | Accepted | Replaces JSON-plus-base64 framing with a 28-byte binary header, taking a version 19 symbol from 512 payload bytes to 764 — a measured **1.492×** at the same robust operating point, or 1.30× through the ASCII armour the bundled decoder forces. Carries codec id and dictionary id in every frame, original and compressed sizes as separate fields, and **both** a per-frame transport hash and the artifact's content hash. Records the correctness defect this closes: RVQS carries one `SEED_COMPRESSED` bit whose doc comment says Brotli while the builder invokes SCF-1. **Wired into the app** as of `f2f07f4` — but through the ASCII armour, so the realised gain is 1.30×, and v1 remains the default. |
 | [ADR-003 — Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md) | Proposed | Zstandard (RFC 8878) by default and Brotli (RFC 7932) for WASM, HTML and metadata, reusing RuVector's codec ids and Rust implementation rather than inventing an rvQR vocabulary. Compress only when the whole transport envelope shrinks by ≥ 8%. Measured on this repository's artifacts: 2.464× on the demo WASM module, 1.320× on an RVF container of float vectors, 3.535× on the standalone page. **Records an open conflict**: `proto2.js` ships a different codec table from the one this ADR adopts, and Zstd has no id in it. |
 | [ADR-031 — Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md) | Proposed | A 2×2 grid of version-13 symbols, projected at 23.0 KB/s raw and ~56.7 KB/s compressed. The single biggest lever and the highest execution risk. Derives a hard consequence from the existing blur measurement: four version-13 lanes **do not fit a 720p capture** and require 1080p, with a version-10 fallback for cameras that cannot supply it. |
 | [ADR-033 — Bounded Decode Worker Pool](./ADR-033-rvqr-decode-worker-pool.md) | Proposed | Workers add no optical capacity, and today they measure *slower* — SHA ~15%, the keyframe signature ~59% — because buffers are copied across the boundary. Transfer a cropped `ImageBitmap` instead of cloning `ImageData`, and add 2–4 workers only after multi-lane tiling gives them something to do. |

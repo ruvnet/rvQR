@@ -837,9 +837,17 @@ function printClosureSuite(res) {
       'because it is the one a real detached signature costs.'
   );
   say('');
+  say(
+    `**The gate is closures 1–${res.gateClosures}, not closure 1.** ADR-022 §2.1 says the agent starts once ` +
+      'closures 1–3 verify, so that is the figure reported as meeting or missing the target; ' +
+      'time-to-closure-1 is shown alongside because it is the easier number and it is easy to quote ' +
+      'the wrong one.'
+  );
+  say('');
   for (const t of res.timelines) {
     say(
-      `**${t.profile}** at ${t.transport} — first closure ${fmt(t.firstClosureSeconds, 2)} s ` +
+      `**${t.profile}** at ${t.transport} — closure 1 at ${fmt(t.firstClosureSeconds, 2)} s, ` +
+        `closures 1–${t.trustedAgentClosures} at ${fmt(t.trustedAgentSeconds, 2)} s ` +
         `(${t.meetsTarget ? 'meets' : 'MISSES'} the ${res.target} s target), whole artifact ${fmt(t.totalSeconds, 1)} s`
     );
     say('');
@@ -858,19 +866,28 @@ function printClosureSuite(res) {
     );
     say('');
   }
-  say(`**The largest first closure that fits the ${res.target}-second target at each rate:**`);
+  say(`**The largest closure content that fits the ${res.target}-second target, by signature scheme:**`);
   say('');
   say(
     markdownTable(
-      ['transport', 'P', 'frames in budget', 'max first closure', 'feasible?'],
+      ['transport', 'signature', 'closures', 'P', 'frames in budget', 'signature cost', 'max closure content', 'feasible?'],
       res.budgets.map((b) => [
         b.transport,
+        b.scheme,
+        String(b.closures),
         b.projection ? `${b.successProbability} (projection)` : String(b.successProbability),
         String(b.frameBudget),
+        `${b.signatureCost} B`,
         `${b.bytes} B`,
-        b.feasible ? 'yes' : 'no'
+        b.feasible ? 'yes' : '**no**'
       ])
     )
+  );
+  say('');
+  say(
+    'Signature cost is `closures × signature bytes`, because ADR-022 signs each closure separately. ' +
+      'Where "feasible?" is no, the signatures alone exhaust the frame budget and no closure content ' +
+      'fits at all, whatever it contains.'
   );
   say('');
 }

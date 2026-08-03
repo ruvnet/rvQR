@@ -38,6 +38,19 @@ canonicaliser threw on every send, and a bare `.catch(() => null)` turned that
 throw into a silent `unsigned`. Every transfer the app had ever sent with
 signing switched on went out unsigned, and nothing anywhere said so.
 
+The distinction matters and should not be softened in the retelling: this is not
+a signing feature that could be bypassed. **It is a signing feature that had
+never once worked.** No manifest rvQR ever produced carried a signature.
+
+**And the two defects concealed each other**, which is the part worth preserving.
+Because signing always failed, every manifest was `unsigned`; because the pin was
+advisory, `unsigned` was never refused. Had either been correct on its own, the
+other would have surfaced immediately and loudly — a working pin would have
+rejected every transfer the app sent, and working signatures would have made the
+pin's silence visible. Two independent faults, each of which made the other
+invisible, is a failure mode to expect again wherever a control and the thing it
+controls are both new.
+
 The common shape is what makes this an architectural decision rather than a
 bug report: **a security control that reports rather than enforces is worse
 than no control**, because it manufactures the confidence it does not supply. A

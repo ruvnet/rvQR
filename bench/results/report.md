@@ -7,10 +7,10 @@
 | platform | Darwin 25.1.0 arm64 |
 | cpu | Apple M4 Pro x12 |
 | memory | 48.0 GB |
-| commit | 0da516f (dirty) |
+| commit | f2f07f4 (dirty) |
 | seed | 20260802 |
 | trials/cell | 500 |
-| run at | 2026-08-03T16:44:39.801Z |
+| run at | 2026-08-03T16:58:06.136Z |
 
 **Modules under test:**
 
@@ -57,11 +57,11 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 82 | 0.31 | 0.44 | 0.51 | 0.59 | 0.60 | 0.64 | 0.67 |
-| fountain (shipped) | 81 | 2.80 | 2.79 | 2.81 | 2.79 | 2.76 | 2.70 | 2.69 |
-| fountain (rlf-sys) | 81 | 0.30 | 0.43 | 0.53 | 0.63 | 0.73 | 0.84 | 0.91 |
-| fountain (rlf) | 81 | 1.32 | 1.34 | 1.34 | 1.34 | 1.33 | 1.33 | 1.34 |
-| fountain (lt) | 81 | 0.73 | 0.75 | 0.73 | 0.74 | 0.75 | 0.75 | 0.75 |
+| rvQR v1 (indexed chunks) | 82 | 0.31 | 0.44 | 0.51 | 0.58 | 0.63 | 0.71 | 0.75 |
+| fountain (shipped) | 81 | 3.01 | 3.25 | 3.19 | 3.13 | 2.98 | 2.92 | 3.15 |
+| fountain (rlf-sys) | 81 | 0.35 | 0.49 | 0.61 | 0.73 | 0.81 | 0.91 | 1.00 |
+| fountain (rlf) | 81 | 1.47 | 1.45 | 1.51 | 1.49 | 1.43 | 1.48 | 1.55 |
+| fountain (lt) | 81 | 0.89 | 0.88 | 0.85 | 0.82 | 0.82 | 0.84 | 0.84 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -143,8 +143,8 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 82 | 0.29 | 0.39 | 0.46 | 0.52 | 0.58 | 0.61 | 0.69 |
-| fountain (shipped) | 81 | 2.78 | 2.90 | 2.78 | 2.76 | 2.99 | 2.80 | 2.71 |
+| rvQR v1 (indexed chunks) | 82 | 0.32 | 0.42 | 0.49 | 0.55 | 0.64 | 0.68 | 0.79 |
+| fountain (shipped) | 81 | 3.10 | 3.12 | 3.17 | 3.03 | 3.10 | 3.31 | 3.02 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -226,8 +226,8 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 6 | 0.02 | 0.02 | 0.02 | 0.02 | 0.02 | 0.03 | 0.03 |
-| fountain (shipped) | 5 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | 0.08 | 0.09 |
+| rvQR v1 (indexed chunks) | 6 | 0.02 | 0.02 | 0.03 | 0.03 | 0.03 | 0.03 | 0.03 |
+| fountain (shipped) | 5 | 0.09 | 0.08 | 0.09 | 0.09 | 0.09 | 0.09 | 0.10 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -322,16 +322,16 @@ Cells are mean / p95 slots. The p95 column is the one that matters: it is the ta
 | K | decodes | at exactly K | by K+1 | by K+2 | mean overhead | worst | decode p50 |
 |---|---|---|---|---|---|---|---|
 | 4 | 200 | 94.50% | 100.00% | 100.00% | 0.0550 | 1 | 0.04 ms |
-| 8 | 200 | 98.00% | 100.00% | 100.00% | 0.0200 | 1 | 0.09 ms |
-| 16 | 200 | 97.00% | 100.00% | 100.00% | 0.0300 | 1 | 0.21 ms |
-| 32 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 0.61 ms |
-| 64 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 1.73 ms |
-| 81 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 2.38 ms |
-| 128 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 4.94 ms |
-| 200 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 10.90 ms |
-| 320 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 24.14 ms |
-| 500 | 200 | 99.50% | 100.00% | 100.00% | 0.0050 | 1 | 53.80 ms |
-| 800 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 124.79 ms |
+| 8 | 200 | 98.00% | 100.00% | 100.00% | 0.0200 | 1 | 0.10 ms |
+| 16 | 200 | 97.00% | 100.00% | 100.00% | 0.0300 | 1 | 0.24 ms |
+| 32 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 0.67 ms |
+| 64 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 1.91 ms |
+| 81 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 2.60 ms |
+| 128 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 5.33 ms |
+| 200 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 12.61 ms |
+| 320 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 27.69 ms |
+| 500 | 200 | 99.50% | 100.00% | 100.00% | 0.0050 | 1 | 58.64 ms |
+| 800 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 130.72 ms |
 
 **Aggregate over all 2200 decodes:** 98.45% at exactly K, 100.00% by K+1, 100.00% by K+2. Mean overhead 0.0155 symbols, worst case +1.
 
@@ -339,11 +339,11 @@ Cells are mean / p95 slots. The p95 column is the one that matters: it is the ta
 
 | symbol size | K | encoder setup | decode (systematic) | decode (repair only) |
 |---|---|---|---|---|
-| 1024 B | 41 | 0.68 ms | 1.98 ms | 1.73 ms |
-| 512 B | 81 | 0.73 ms | 2.63 ms | 2.45 ms |
-| 256 B | 161 | 2.36 ms | 4.72 ms | 4.32 ms |
-| 128 B | 321 | 5.72 ms | 11.22 ms | 11.81 ms |
-| 64 B | 641 | 21.78 ms | 33.85 ms | 30.80 ms |
+| 1024 B | 41 | 0.78 ms | 1.96 ms | 1.84 ms |
+| 512 B | 81 | 0.77 ms | 2.39 ms | 2.30 ms |
+| 256 B | 161 | 2.37 ms | 4.45 ms | 4.16 ms |
+| 128 B | 321 | 5.59 ms | 11.23 ms | 11.78 ms |
+| 64 B | 641 | 22.74 ms | 33.47 ms | 30.82 ms |
 
 The systematic column is the clean-channel case, where the receiver got the source symbols verbatim. The repair-only column is the worst case a lossy channel can produce: every source symbol missed, every one reconstructed.
 
@@ -408,43 +408,43 @@ JS decoder found at artifacts/vendor/qrdecode.js; decode timings below are from 
 
 | chunk | ECC | frame bytes | QR ver | modules | encode p50 | decodeMatrix p50 | decodeImage 640x480 p50 | decodeImage 1280x720 p50 |
 |---|---|---|---|---|---|---|---|---|
-| 256 B | L | 400 | 13 | 69² | 2.18 ms | 0.33 ms | 4.0 ms (248.6 fps) | 11.0 ms (90.9 fps) |
-| 256 B | M | 400 | 15 | 77² | 2.66 ms | 0.33 ms | 3.7 ms (266.8 fps) | 10.9 ms (91.9 fps) |
-| 512 B | L | 740 | 19 | 93² | 4.11 ms | 0.21 ms | 3.8 ms (264.5 fps) | 10.9 ms (91.8 fps) |
-| 512 B | M | 740 | 22 | 105² | 5.11 ms | 0.23 ms | 4.9 ms (204.9 fps) | 11.2 ms (89.2 fps) |
-| 768 B | L | 1081 | 23 | 109² | 5.51 ms | 0.27 ms | 4.2 ms (237.7 fps) | 10.7 ms (93.0 fps) |
-| 768 B | M | 1081 | 27 | 125² | 7.41 ms | 0.35 ms | 5.4 ms (184.8 fps) | 12.5 ms (79.8 fps) |
-| 1024 B | L | 1423 | 27 | 125² | 7.58 ms | 0.35 ms | 5.4 ms (186.7 fps) | 11.9 ms (84.3 fps) |
-| 1024 B | M | 1423 | 31 | 141² | 9.36 ms | 0.45 ms | 4.5 ms (221.6 fps) | 10.4 ms (95.8 fps) |
+| 256 B | L | 400 | 13 | 69² | 2.16 ms | 0.32 ms | 3.9 ms (255.9 fps) | 10.9 ms (91.6 fps) |
+| 256 B | M | 400 | 15 | 77² | 2.61 ms | 0.34 ms | 3.7 ms (266.8 fps) | 10.8 ms (92.6 fps) |
+| 512 B | L | 740 | 19 | 93² | 4.04 ms | 0.20 ms | 3.8 ms (264.9 fps) | 10.7 ms (93.6 fps) |
+| 512 B | M | 740 | 22 | 105² | 5.09 ms | 0.23 ms | 4.9 ms (202.7 fps) | 11.4 ms (88.0 fps) |
+| 768 B | L | 1081 | 23 | 109² | 5.57 ms | 0.26 ms | 4.1 ms (244.5 fps) | 10.8 ms (92.7 fps) |
+| 768 B | M | 1081 | 27 | 125² | 7.43 ms | 0.35 ms | 5.2 ms (191.3 fps) | 12.5 ms (80.3 fps) |
+| 1024 B | L | 1423 | 27 | 125² | 7.41 ms | 0.35 ms | 5.3 ms (188.2 fps) | 12.2 ms (82.1 fps) |
+| 1024 B | M | 1423 | 31 | 141² | 9.45 ms | 0.45 ms | 4.6 ms (219.0 fps) | 10.4 ms (95.8 fps) |
 
 **Encode cost by QR version, payload sized to fill the version (ECC M):**
 
 | version | capacity | modules | encode p50 | bytes/s |
 |---|---|---|---|---|
-| 5 | 84 B | 37² | 0.56 ms | 147 KB/s |
-| 10 | 213 B | 57² | 1.42 ms | 146 KB/s |
-| 15 | 412 B | 77² | 2.71 ms | 149 KB/s |
-| 20 | 666 B | 97² | 4.37 ms | 149 KB/s |
-| 25 | 997 B | 117² | 6.58 ms | 148 KB/s |
-| 30 | 1370 B | 137² | 8.98 ms | 149 KB/s |
-| 35 | 1809 B | 157² | 11.63 ms | 152 KB/s |
-| 40 | 2331 B | 177² | 14.94 ms | 152 KB/s |
+| 5 | 84 B | 37² | 0.57 ms | 144 KB/s |
+| 10 | 213 B | 57² | 1.39 ms | 150 KB/s |
+| 15 | 412 B | 77² | 2.66 ms | 151 KB/s |
+| 20 | 666 B | 97² | 4.33 ms | 150 KB/s |
+| 25 | 997 B | 117² | 6.46 ms | 151 KB/s |
+| 30 | 1370 B | 137² | 8.89 ms | 150 KB/s |
+| 35 | 1809 B | 157² | 11.84 ms | 149 KB/s |
+| 40 | 2331 B | 177² | 15.09 ms | 151 KB/s |
 
 **Decode cost and robustness by QR version** (ECC L, 1280x720 synthetic capture):
 
 | version | capacity | modules | decode p50 | max fps | min px/module sharp | blur r=1 | blur r=2 | frame share needed (r=1) |
 |---|---|---|---|---|---|---|---|---|
 | 5 | 106 B | 37² | 9.7 ms | 103 | 1 | 4 | 5 | 25% |
-| 10 | 271 B | 57² | 11.0 ms | 91 | 1 | 5 | 6 | 45% |
-| 13 | 425 B | 69² | 11.7 ms | 85 | 1 | 6 | fail | 64% |
-| 16 | 586 B | 81² | 11.4 ms | 88 | 1 | 8 | fail | 99% |
-| 19 | 792 B | 93² | 10.9 ms | 92 | 1 | 6 | fail | 84% |
-| 22 | 1003 B | 105² | 10.6 ms | 94 | 1 | fail | fail | — |
-| 25 | 1273 B | 117² | 11.6 ms | 86 | 1 | fail | fail | — |
+| 10 | 271 B | 57² | 11.4 ms | 88 | 1 | 5 | 6 | 45% |
+| 13 | 425 B | 69² | 12.1 ms | 83 | 1 | 6 | fail | 64% |
+| 16 | 586 B | 81² | 11.5 ms | 87 | 1 | 8 | fail | 99% |
+| 19 | 792 B | 93² | 10.8 ms | 93 | 1 | 6 | fail | 84% |
+| 22 | 1003 B | 105² | 11.0 ms | 91 | 1 | fail | fail | — |
+| 25 | 1273 B | 117² | 11.7 ms | 86 | 1 | fail | fail | — |
 | 27 | 1465 B | 125² | 11.8 ms | 85 | 1 | fail | fail | — |
-| 31 | 1840 B | 141² | 11.3 ms | 88 | 1 | fail | fail | — |
-| 35 | 2303 B | 157² | 12.7 ms | 79 | 1 | fail | fail | — |
-| 40 | 2953 B | 177² | 13.6 ms | 74 | 1 | fail | fail | — |
+| 31 | 1840 B | 141² | 10.9 ms | 92 | 1 | fail | fail | — |
+| 35 | 2303 B | 157² | 12.8 ms | 78 | 1 | fail | fail | — |
+| 40 | 2953 B | 177² | 13.4 ms | 75 | 1 | fail | fail | — |
 
 Min px/module is the smallest number of capture pixels per QR module at which the bundled JS decoder still read the symbol. "Frame share needed" converts that into how much of the capture's short side the symbol must occupy — the practical question when someone is holding a phone over another screen. Synthetic, square-on, noiseless frames with a box blur: these are lower bounds on difficulty, not predictions of real camera behaviour.
 
@@ -529,31 +529,31 @@ Zstd available. Envelope arithmetic checked against the real builder: exact. Env
 
 | codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
 |---|---|---|---|---|---|---|---|---|---|
-| zstd-1 | 1800 B | 1.280× | 0.02 ms | 0.01 ms | 5 | 2291 | 21.0% | pass | yes |
-| zstd-3 | 1811 B | 1.272× | 0.02 ms | 0.01 ms | 5 | 2304 | 20.6% | pass | yes |
-| zstd-6 | 1787 B | 1.289× | 0.03 ms | 0.01 ms | 5 | 2276 | 21.5% | pass | yes |
-| zstd-9 | 1786 B | 1.290× | 0.03 ms | 0.01 ms | 5 | 2275 | 21.6% | pass | yes |
-| zstd-12 | 1760 B | 1.309× | 0.10 ms | 0.01 ms | 5 | 2245 | 22.6% | pass | yes |
-| zstd-19 | 1756 B | 1.312× | 0.10 ms | 0.01 ms | 5 | 2241 | 22.7% | pass | yes |
+| zstd-1 | 1800 B | 1.280× | 0.03 ms | 0.01 ms | 5 | 2291 | 21.0% | pass | yes |
+| zstd-3 | 1811 B | 1.272× | 0.03 ms | 0.01 ms | 5 | 2304 | 20.6% | pass | yes |
+| zstd-6 | 1787 B | 1.289× | 0.02 ms | 0.01 ms | 5 | 2276 | 21.5% | pass | yes |
+| zstd-9 | 1786 B | 1.290× | 0.04 ms | 0.01 ms | 5 | 2275 | 21.6% | pass | yes |
+| zstd-12 | 1760 B | 1.309× | 0.07 ms | 0.01 ms | 5 | 2245 | 22.6% | pass | yes |
+| zstd-19 | 1756 B | 1.312× | 0.11 ms | 0.01 ms | 5 | 2241 | 22.7% | pass | yes |
 | brotli-4 | 1772 B | 1.300× | 0.05 ms | 0.01 ms | 5 | 2259 | 22.1% | pass | yes |
-| brotli-6 | 1745 B | 1.320× | 0.05 ms | 0.01 ms | 5 | 2228 | 23.2% | pass | yes |
-| brotli-9 | 1737 B | 1.326× | 0.06 ms | 0.01 ms | 5 | 2219 | 23.5% | pass | yes |
-| brotli-11 | 1746 B | 1.320× | 2.33 ms | 0.02 ms | 5 | 2229 | 23.1% | pass | yes |
+| brotli-6 | 1745 B | 1.320× | 0.04 ms | 0.01 ms | 5 | 2228 | 23.2% | pass | yes |
+| brotli-9 | 1737 B | 1.326× | 0.08 ms | 0.02 ms | 5 | 2219 | 23.5% | pass | yes |
+| brotli-11 | 1746 B | 1.320× | 2.37 ms | 0.02 ms | 5 | 2229 | 23.1% | pass | yes |
 
 **artifacts/demo/rvf_wasm_bg.wasm** — 40989 B, 82 frames and 49610 wire bytes uncompressed
 
 | codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
 |---|---|---|---|---|---|---|---|---|---|
 | zstd-1 | 19167 B | 2.139× | 0.07 ms | 0.04 ms | 39 | 23257 | 53.1% | pass | yes |
-| zstd-3 | 18185 B | 2.254× | 0.11 ms | 0.06 ms | 37 | 22069 | 55.5% | pass | yes |
-| zstd-6 | 17193 B | 2.384× | 0.39 ms | 0.05 ms | 35 | 20870 | 57.9% | pass | yes |
-| zstd-9 | 17075 B | 2.401× | 0.56 ms | 0.05 ms | 35 | 20735 | 58.2% | pass | yes |
-| zstd-12 | 17076 B | 2.400× | 0.89 ms | 0.06 ms | 35 | 20736 | 58.2% | pass | yes |
-| zstd-19 | 16252 B | 2.522× | 4.61 ms | 0.06 ms | 33 | 19729 | 60.2% | pass | yes |
-| brotli-4 | 17639 B | 2.324× | 0.35 ms | 0.10 ms | 36 | 21412 | 56.8% | pass | yes |
-| brotli-6 | 16636 B | 2.464× | 0.66 ms | 0.09 ms | 34 | 20200 | 59.3% | pass | yes |
-| brotli-9 | 16599 B | 2.469× | 0.94 ms | 0.10 ms | 34 | 20158 | 59.4% | pass | yes |
-| brotli-11 | 14815 B | 2.767× | 36.96 ms | 0.14 ms | 30 | 17988 | 63.7% | pass | yes |
+| zstd-3 | 18185 B | 2.254× | 0.10 ms | 0.05 ms | 37 | 22069 | 55.5% | pass | yes |
+| zstd-6 | 17193 B | 2.384× | 0.34 ms | 0.05 ms | 35 | 20870 | 57.9% | pass | yes |
+| zstd-9 | 17075 B | 2.401× | 0.55 ms | 0.05 ms | 35 | 20735 | 58.2% | pass | yes |
+| zstd-12 | 17076 B | 2.400× | 1.01 ms | 0.06 ms | 35 | 20736 | 58.2% | pass | yes |
+| zstd-19 | 16252 B | 2.522× | 4.58 ms | 0.06 ms | 33 | 19729 | 60.2% | pass | yes |
+| brotli-4 | 17639 B | 2.324× | 0.37 ms | 0.09 ms | 36 | 21412 | 56.8% | pass | yes |
+| brotli-6 | 16636 B | 2.464× | 0.63 ms | 0.11 ms | 34 | 20200 | 59.3% | pass | yes |
+| brotli-9 | 16599 B | 2.469× | 0.88 ms | 0.09 ms | 34 | 20158 | 59.4% | pass | yes |
+| brotli-11 | 14815 B | 2.767× | 37.81 ms | 0.13 ms | 30 | 17988 | 63.7% | pass | yes |
 
 **artifacts/core.js** — 51683 B, 102 frames and 62478 wire bytes uncompressed
 
@@ -561,59 +561,59 @@ Zstd available. Envelope arithmetic checked against the real builder: exact. Env
 |---|---|---|---|---|---|---|---|---|---|
 | zstd-1 | 18561 B | 2.784× | 0.09 ms | 0.05 ms | 38 | 22522 | 64.0% | pass | yes |
 | zstd-3 | 17517 B | 2.950× | 0.14 ms | 0.06 ms | 36 | 21263 | 66.0% | pass | yes |
-| zstd-6 | 16549 B | 3.123× | 0.43 ms | 0.06 ms | 34 | 20091 | 67.8% | pass | yes |
-| zstd-9 | 16296 B | 3.172× | 0.67 ms | 0.06 ms | 33 | 19769 | 68.4% | pass | yes |
-| zstd-12 | 16165 B | 3.197× | 1.45 ms | 0.06 ms | 33 | 19619 | 68.6% | pass | yes |
-| zstd-19 | 15659 B | 3.301× | 7.35 ms | 0.06 ms | 32 | 19008 | 69.6% | pass | yes |
-| brotli-4 | 16926 B | 3.053× | 0.38 ms | 0.10 ms | 35 | 20555 | 67.1% | pass | yes |
-| brotli-6 | 15851 B | 3.261× | 0.66 ms | 0.10 ms | 32 | 19228 | 69.2% | pass | yes |
-| brotli-9 | 15739 B | 3.284× | 1.04 ms | 0.11 ms | 32 | 19100 | 69.4% | pass | yes |
-| brotli-11 | 14047 B | 3.679× | 40.01 ms | 0.11 ms | 29 | 17067 | 72.7% | pass | yes |
+| zstd-6 | 16549 B | 3.123× | 0.46 ms | 0.08 ms | 34 | 20091 | 67.8% | pass | yes |
+| zstd-9 | 16296 B | 3.172× | 0.59 ms | 0.05 ms | 33 | 19769 | 68.4% | pass | yes |
+| zstd-12 | 16165 B | 3.197× | 1.57 ms | 0.06 ms | 33 | 19619 | 68.6% | pass | yes |
+| zstd-19 | 15659 B | 3.301× | 7.73 ms | 0.07 ms | 32 | 19008 | 69.6% | pass | yes |
+| brotli-4 | 16926 B | 3.053× | 0.45 ms | 0.10 ms | 35 | 20555 | 67.1% | pass | yes |
+| brotli-6 | 15851 B | 3.261× | 0.67 ms | 0.10 ms | 32 | 19228 | 69.2% | pass | yes |
+| brotli-9 | 15739 B | 3.284× | 1.03 ms | 0.11 ms | 32 | 19100 | 69.4% | pass | yes |
+| brotli-11 | 14047 B | 3.679× | 40.02 ms | 0.10 ms | 29 | 17067 | 72.7% | pass | yes |
 
-**artifacts/app.js** — 111853 B, 220 frames and 135120 wire bytes uncompressed
-
-| codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
-|---|---|---|---|---|---|---|---|---|---|
-| zstd-1 | 36104 B | 3.098× | 0.18 ms | 0.10 ms | 72 | 43687 | 67.7% | pass | yes |
-| zstd-3 | 33620 B | 3.327× | 0.29 ms | 0.11 ms | 67 | 40684 | 69.9% | pass | yes |
-| zstd-6 | 31500 B | 3.551× | 0.93 ms | 0.11 ms | 63 | 38130 | 71.8% | pass | yes |
-| zstd-9 | 30746 B | 3.638× | 1.39 ms | 0.10 ms | 62 | 37235 | 72.4% | pass | yes |
-| zstd-12 | 30342 B | 3.686× | 4.55 ms | 0.10 ms | 61 | 36741 | 72.8% | pass | yes |
-| zstd-19 | 29182 B | 3.833× | 20.47 ms | 0.12 ms | 58 | 35316 | 73.9% | pass | yes |
-| brotli-4 | 32679 B | 3.423× | 0.75 ms | 0.20 ms | 65 | 39543 | 70.7% | pass | yes |
-| brotli-6 | 30118 B | 3.714× | 1.48 ms | 0.17 ms | 60 | 36452 | 73.0% | pass | yes |
-| brotli-9 | 29725 B | 3.763× | 2.19 ms | 0.18 ms | 60 | 36003 | 73.4% | pass | yes |
-| brotli-11 | 26993 B | 4.144× | 88.02 ms | 0.22 ms | 54 | 32683 | 75.8% | pass | yes |
-
-**standalone.html** — 507527 B, 993 frames and 612728 wire bytes uncompressed
+**artifacts/app.js** — 112319 B, 221 frames and 135686 wire bytes uncompressed
 
 | codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
 |---|---|---|---|---|---|---|---|---|---|
-| zstd-1 | 177999 B | 2.851× | 0.87 ms | 0.58 ms | 349 | 214964 | 64.9% | pass | yes |
-| zstd-3 | 159904 B | 3.174× | 1.33 ms | 0.45 ms | 314 | 193134 | 68.5% | pass | yes |
-| zstd-6 | 149172 B | 3.402× | 3.67 ms | 0.36 ms | 293 | 180179 | 70.6% | pass | yes |
-| zstd-9 | 147079 B | 3.451× | 5.23 ms | 0.35 ms | 289 | 177656 | 71.0% | pass | yes |
-| zstd-12 | 146145 B | 3.473× | 7.33 ms | 0.37 ms | 287 | 176523 | 71.2% | pass | yes |
-| zstd-19 | 136166 B | 3.727× | 70.99 ms | 0.52 ms | 267 | 164461 | 73.2% | pass | yes |
-| brotli-4 | 155720 B | 3.259× | 3.84 ms | 0.95 ms | 306 | 188090 | 69.3% | pass | yes |
-| brotli-6 | 143695 B | 3.532× | 7.94 ms | 0.84 ms | 282 | 173558 | 71.7% | pass | yes |
-| brotli-9 | 141144 B | 3.596× | 13.96 ms | 0.91 ms | 277 | 170479 | 72.2% | pass | yes |
-| brotli-11 | 128489 B | 3.950× | 527.46 ms | 1.05 ms | 252 | 155194 | 74.7% | pass | yes |
+| zstd-1 | 36292 B | 3.095× | 0.18 ms | 0.10 ms | 72 | 43902 | 67.6% | pass | yes |
+| zstd-3 | 33779 B | 3.325× | 0.27 ms | 0.10 ms | 67 | 40866 | 69.9% | pass | yes |
+| zstd-6 | 31679 B | 3.546× | 0.90 ms | 0.11 ms | 63 | 38334 | 71.7% | pass | yes |
+| zstd-9 | 30920 B | 3.633× | 1.38 ms | 0.11 ms | 62 | 37434 | 72.4% | pass | yes |
+| zstd-12 | 30514 B | 3.681× | 4.76 ms | 0.10 ms | 61 | 36937 | 72.8% | pass | yes |
+| zstd-19 | 29343 B | 3.828× | 20.32 ms | 0.11 ms | 59 | 35533 | 73.8% | pass | yes |
+| brotli-4 | 32849 B | 3.419× | 0.75 ms | 0.21 ms | 66 | 39770 | 70.7% | pass | yes |
+| brotli-6 | 30286 B | 3.709× | 1.49 ms | 0.19 ms | 61 | 36677 | 73.0% | pass | yes |
+| brotli-9 | 29895 B | 3.757× | 2.25 ms | 0.17 ms | 60 | 36197 | 73.3% | pass | yes |
+| brotli-11 | 27141 B | 4.138× | 93.52 ms | 0.20 ms | 55 | 32885 | 75.8% | pass | yes |
+
+**standalone.html** — 572166 B, 1119 frames and 690741 wire bytes uncompressed
+
+| codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
+|---|---|---|---|---|---|---|---|---|---|
+| zstd-1 | 198194 B | 2.887× | 1.08 ms | 0.44 ms | 389 | 239359 | 65.3% | pass | yes |
+| zstd-3 | 177130 B | 3.230× | 1.67 ms | 0.47 ms | 347 | 213905 | 69.0% | pass | yes |
+| zstd-6 | 164767 B | 3.473× | 4.59 ms | 0.42 ms | 323 | 198988 | 71.2% | pass | yes |
+| zstd-9 | 162080 B | 3.530× | 6.82 ms | 0.41 ms | 318 | 195753 | 71.7% | pass | yes |
+| zstd-12 | 160845 B | 3.557× | 9.19 ms | 0.44 ms | 316 | 194275 | 71.9% | pass | yes |
+| zstd-19 | 149625 B | 3.824× | 90.85 ms | 0.49 ms | 294 | 180730 | 73.8% | pass | yes |
+| brotli-4 | 173098 B | 3.305× | 4.40 ms | 1.09 ms | 340 | 209067 | 69.7% | pass | yes |
+| brotli-6 | 158868 B | 3.602× | 9.34 ms | 0.92 ms | 312 | 191885 | 72.2% | pass | yes |
+| brotli-9 | 155474 B | 3.680× | 16.99 ms | 0.88 ms | 305 | 187776 | 72.8% | pass | yes |
+| brotli-11 | 141571 B | 4.042× | 602.93 ms | 1.06 ms | 278 | 170999 | 75.2% | pass | yes |
 
 **synthetic float32 vectors** — 16384 B (synthetic), 33 frames and 19891 wire bytes uncompressed
 
 | codec | compressed | ratio | encode | decode | frames | wire bytes | envelope gain | gate | exact? |
 |---|---|---|---|---|---|---|---|---|---|
-| zstd-1 | 14948 B | 1.096× | 0.03 ms | 0.02 ms | 31 | 18184 | 8.6% | pass | yes |
+| zstd-1 | 14948 B | 1.096× | 0.02 ms | 0.02 ms | 31 | 18184 | 8.6% | pass | yes |
 | zstd-3 | 14948 B | 1.096× | 0.02 ms | 0.02 ms | 31 | 18184 | 8.6% | pass | yes |
 | zstd-6 | 14948 B | 1.096× | 0.03 ms | 0.02 ms | 31 | 18184 | 8.6% | pass | yes |
 | zstd-9 | 14948 B | 1.096× | 0.04 ms | 0.02 ms | 31 | 18184 | 8.6% | pass | yes |
 | zstd-12 | 14975 B | 1.094× | 0.27 ms | 0.02 ms | 31 | 18215 | 8.4% | pass | yes |
-| zstd-19 | 14970 B | 1.094× | 0.46 ms | 0.02 ms | 31 | 18209 | 8.5% | pass | yes |
-| brotli-4 | 14927 B | 1.098× | 0.09 ms | 0.06 ms | 31 | 18160 | 8.7% | pass | yes |
-| brotli-6 | 14929 B | 1.097× | 0.09 ms | 0.05 ms | 31 | 18162 | 8.7% | pass | yes |
+| zstd-19 | 14970 B | 1.094× | 0.42 ms | 0.02 ms | 31 | 18209 | 8.5% | pass | yes |
+| brotli-4 | 14927 B | 1.098× | 0.10 ms | 0.05 ms | 31 | 18160 | 8.7% | pass | yes |
+| brotli-6 | 14929 B | 1.097× | 0.14 ms | 0.05 ms | 31 | 18162 | 8.7% | pass | yes |
 | brotli-9 | 14930 B | 1.097× | 0.11 ms | 0.05 ms | 31 | 18163 | 8.7% | pass | yes |
-| brotli-11 | 14858 B | 1.103× | 25.18 ms | 0.10 ms | 31 | 18081 | 9.1% | pass | yes |
+| brotli-11 | 14858 B | 1.103× | 25.10 ms | 0.10 ms | 31 | 18081 | 9.1% | pass | yes |
 
 **Break-even by artifact size** (brotli-6, prefixes compressed for real at every size):
 
@@ -684,30 +684,30 @@ A prefix of a file is not a smaller file of the same kind — the first 512 byte
 | artifacts/demo/rvf_wasm_bg.wasm | brotli-11 | v2-binary | 19 | 10 | 764 B | 7.73 KB/s | 2.767 | 0.8906 | 19.06 KB/s | 17.15 KB/s | 14.29 KB/s | 9.53 KB/s | 4.76 KB/s |
 | artifacts/demo/rvf_wasm_bg.wasm | brotli-11 | v2-binary | 27 | 5 | 1437 B | 7.15 KB/s | 2.767 | 0.8426 | 16.68 KB/s | 15.01 KB/s | 12.51 KB/s | 8.34 KB/s | 4.17 KB/s |
 | artifacts/demo/rvf_wasm_bg.wasm | brotli-11 | v2-binary | 27 | 10 | 1437 B | 14.31 KB/s | 2.767 | 0.8426 | 33.35 KB/s | 30.02 KB/s | 25.01 KB/s | 16.68 KB/s | 8.34 KB/s |
-| standalone.html | none | v1-json | 19 | 5 | 552 B | 3.87 KB/s | 1.000 | 0.6958 | 2.69 KB/s | 2.42 KB/s | 2.02 KB/s | 1.35 KB/s | 0.67 KB/s |
-| standalone.html | none | v1-json | 19 | 10 | 552 B | 7.73 KB/s | 1.000 | 0.6958 | 5.38 KB/s | 4.84 KB/s | 4.04 KB/s | 2.69 KB/s | 1.35 KB/s |
-| standalone.html | none | v1-json | 27 | 5 | 1024 B | 7.15 KB/s | 1.000 | 0.6971 | 4.99 KB/s | 4.49 KB/s | 3.74 KB/s | 2.49 KB/s | 1.25 KB/s |
-| standalone.html | none | v1-json | 27 | 10 | 1024 B | 14.31 KB/s | 1.000 | 0.6971 | 9.97 KB/s | 8.98 KB/s | 7.48 KB/s | 4.99 KB/s | 2.49 KB/s |
-| standalone.html | none | v2-armoured | 19 | 5 | 665 B | 3.87 KB/s | 1.000 | 0.8375 | 3.24 KB/s | 2.91 KB/s | 2.43 KB/s | 1.62 KB/s | 0.81 KB/s |
-| standalone.html | none | v2-armoured | 19 | 10 | 665 B | 7.73 KB/s | 1.000 | 0.8375 | 6.48 KB/s | 5.83 KB/s | 4.86 KB/s | 3.24 KB/s | 1.62 KB/s |
-| standalone.html | none | v2-armoured | 27 | 5 | 1253 B | 7.15 KB/s | 1.000 | 0.8510 | 6.09 KB/s | 5.48 KB/s | 4.57 KB/s | 3.04 KB/s | 1.52 KB/s |
-| standalone.html | none | v2-armoured | 27 | 10 | 1253 B | 14.31 KB/s | 1.000 | 0.8510 | 12.18 KB/s | 10.96 KB/s | 9.13 KB/s | 6.09 KB/s | 3.04 KB/s |
-| standalone.html | none | v2-binary | 19 | 5 | 764 B | 3.87 KB/s | 1.000 | 0.9620 | 3.72 KB/s | 3.35 KB/s | 2.79 KB/s | 1.86 KB/s | 0.93 KB/s |
-| standalone.html | none | v2-binary | 19 | 10 | 764 B | 7.73 KB/s | 1.000 | 0.9620 | 7.44 KB/s | 6.70 KB/s | 5.58 KB/s | 3.72 KB/s | 1.86 KB/s |
-| standalone.html | none | v2-binary | 27 | 5 | 1437 B | 7.15 KB/s | 1.000 | 0.9757 | 6.98 KB/s | 6.28 KB/s | 5.23 KB/s | 3.49 KB/s | 1.74 KB/s |
-| standalone.html | none | v2-binary | 27 | 10 | 1437 B | 14.31 KB/s | 1.000 | 0.9757 | 13.96 KB/s | 12.56 KB/s | 10.47 KB/s | 6.98 KB/s | 3.49 KB/s |
-| standalone.html | brotli-11 | v1-json | 19 | 5 | 552 B | 3.87 KB/s | 3.950 | 0.6933 | 10.59 KB/s | 9.53 KB/s | 7.94 KB/s | 5.30 KB/s | 2.65 KB/s |
-| standalone.html | brotli-11 | v1-json | 19 | 10 | 552 B | 7.73 KB/s | 3.950 | 0.6933 | 21.18 KB/s | 19.06 KB/s | 15.89 KB/s | 10.59 KB/s | 5.30 KB/s |
-| standalone.html | brotli-11 | v1-json | 27 | 5 | 1024 B | 7.15 KB/s | 3.950 | 0.6906 | 19.51 KB/s | 17.56 KB/s | 14.63 KB/s | 9.76 KB/s | 4.88 KB/s |
-| standalone.html | brotli-11 | v1-json | 27 | 10 | 1024 B | 14.31 KB/s | 3.950 | 0.6906 | 39.03 KB/s | 35.12 KB/s | 29.27 KB/s | 19.51 KB/s | 9.76 KB/s |
-| standalone.html | brotli-11 | v2-armoured | 19 | 5 | 665 B | 3.87 KB/s | 3.950 | 0.8318 | 12.71 KB/s | 11.44 KB/s | 9.53 KB/s | 6.35 KB/s | 3.18 KB/s |
-| standalone.html | brotli-11 | v2-armoured | 19 | 10 | 665 B | 7.73 KB/s | 3.950 | 0.8318 | 25.41 KB/s | 22.87 KB/s | 19.06 KB/s | 12.71 KB/s | 6.35 KB/s |
-| standalone.html | brotli-11 | v2-armoured | 27 | 5 | 1253 B | 7.15 KB/s | 3.950 | 0.8432 | 23.82 KB/s | 21.44 KB/s | 17.87 KB/s | 11.91 KB/s | 5.96 KB/s |
-| standalone.html | brotli-11 | v2-armoured | 27 | 10 | 1253 B | 14.31 KB/s | 3.950 | 0.8432 | 47.65 KB/s | 42.88 KB/s | 35.74 KB/s | 23.82 KB/s | 11.91 KB/s |
-| standalone.html | brotli-11 | v2-binary | 19 | 5 | 764 B | 3.87 KB/s | 3.950 | 0.9541 | 14.57 KB/s | 13.12 KB/s | 10.93 KB/s | 7.29 KB/s | 3.64 KB/s |
-| standalone.html | brotli-11 | v2-binary | 19 | 10 | 764 B | 7.73 KB/s | 3.950 | 0.9541 | 29.15 KB/s | 26.23 KB/s | 21.86 KB/s | 14.57 KB/s | 7.29 KB/s |
-| standalone.html | brotli-11 | v2-binary | 27 | 5 | 1437 B | 7.15 KB/s | 3.950 | 0.9636 | 27.23 KB/s | 24.50 KB/s | 20.42 KB/s | 13.61 KB/s | 6.81 KB/s |
-| standalone.html | brotli-11 | v2-binary | 27 | 10 | 1437 B | 14.31 KB/s | 3.950 | 0.9636 | 54.45 KB/s | 49.01 KB/s | 40.84 KB/s | 27.23 KB/s | 13.61 KB/s |
+| standalone.html | none | v1-json | 19 | 5 | 552 B | 3.87 KB/s | 1.000 | 0.6960 | 2.69 KB/s | 2.42 KB/s | 2.02 KB/s | 1.35 KB/s | 0.67 KB/s |
+| standalone.html | none | v1-json | 19 | 10 | 552 B | 7.73 KB/s | 1.000 | 0.6960 | 5.38 KB/s | 4.84 KB/s | 4.04 KB/s | 2.69 KB/s | 1.35 KB/s |
+| standalone.html | none | v1-json | 27 | 5 | 1024 B | 7.15 KB/s | 1.000 | 0.6974 | 4.99 KB/s | 4.49 KB/s | 3.74 KB/s | 2.49 KB/s | 1.25 KB/s |
+| standalone.html | none | v1-json | 27 | 10 | 1024 B | 14.31 KB/s | 1.000 | 0.6974 | 9.98 KB/s | 8.98 KB/s | 7.48 KB/s | 4.99 KB/s | 2.49 KB/s |
+| standalone.html | none | v2-armoured | 19 | 5 | 665 B | 3.87 KB/s | 1.000 | 0.8379 | 3.24 KB/s | 2.92 KB/s | 2.43 KB/s | 1.62 KB/s | 0.81 KB/s |
+| standalone.html | none | v2-armoured | 19 | 10 | 665 B | 7.73 KB/s | 1.000 | 0.8379 | 6.48 KB/s | 5.83 KB/s | 4.86 KB/s | 3.24 KB/s | 1.62 KB/s |
+| standalone.html | none | v2-armoured | 27 | 5 | 1253 B | 7.15 KB/s | 1.000 | 0.8526 | 6.10 KB/s | 5.49 KB/s | 4.57 KB/s | 3.05 KB/s | 1.52 KB/s |
+| standalone.html | none | v2-armoured | 27 | 10 | 1253 B | 14.31 KB/s | 1.000 | 0.8526 | 12.20 KB/s | 10.98 KB/s | 9.15 KB/s | 6.10 KB/s | 3.05 KB/s |
+| standalone.html | none | v2-binary | 19 | 5 | 764 B | 3.87 KB/s | 1.000 | 0.9631 | 3.72 KB/s | 3.35 KB/s | 2.79 KB/s | 1.86 KB/s | 0.93 KB/s |
+| standalone.html | none | v2-binary | 19 | 10 | 764 B | 7.73 KB/s | 1.000 | 0.9631 | 7.45 KB/s | 6.70 KB/s | 5.59 KB/s | 3.72 KB/s | 1.86 KB/s |
+| standalone.html | none | v2-binary | 27 | 5 | 1437 B | 7.15 KB/s | 1.000 | 0.9762 | 6.98 KB/s | 6.28 KB/s | 5.24 KB/s | 3.49 KB/s | 1.75 KB/s |
+| standalone.html | none | v2-binary | 27 | 10 | 1437 B | 14.31 KB/s | 1.000 | 0.9762 | 13.97 KB/s | 12.57 KB/s | 10.47 KB/s | 6.98 KB/s | 3.49 KB/s |
+| standalone.html | brotli-11 | v1-json | 19 | 5 | 552 B | 3.87 KB/s | 4.042 | 0.6928 | 10.83 KB/s | 9.75 KB/s | 8.12 KB/s | 5.41 KB/s | 2.71 KB/s |
+| standalone.html | brotli-11 | v1-json | 19 | 10 | 552 B | 7.73 KB/s | 4.042 | 0.6928 | 21.66 KB/s | 19.49 KB/s | 16.24 KB/s | 10.83 KB/s | 5.41 KB/s |
+| standalone.html | brotli-11 | v1-json | 27 | 5 | 1024 B | 7.15 KB/s | 4.042 | 0.6903 | 19.96 KB/s | 17.96 KB/s | 14.97 KB/s | 9.98 KB/s | 4.99 KB/s |
+| standalone.html | brotli-11 | v1-json | 27 | 10 | 1024 B | 14.31 KB/s | 4.042 | 0.6903 | 39.91 KB/s | 35.92 KB/s | 29.93 KB/s | 19.96 KB/s | 9.98 KB/s |
+| standalone.html | brotli-11 | v2-armoured | 19 | 5 | 665 B | 3.87 KB/s | 4.042 | 0.8351 | 13.05 KB/s | 11.75 KB/s | 9.79 KB/s | 6.53 KB/s | 3.26 KB/s |
+| standalone.html | brotli-11 | v2-armoured | 19 | 10 | 665 B | 7.73 KB/s | 4.042 | 0.8351 | 26.11 KB/s | 23.49 KB/s | 19.58 KB/s | 13.05 KB/s | 6.53 KB/s |
+| standalone.html | brotli-11 | v2-armoured | 27 | 5 | 1253 B | 7.15 KB/s | 4.042 | 0.8475 | 24.50 KB/s | 22.05 KB/s | 18.38 KB/s | 12.25 KB/s | 6.13 KB/s |
+| standalone.html | brotli-11 | v2-armoured | 27 | 10 | 1253 B | 14.31 KB/s | 4.042 | 0.8475 | 49.00 KB/s | 44.10 KB/s | 36.75 KB/s | 24.50 KB/s | 12.25 KB/s |
+| standalone.html | brotli-11 | v2-binary | 19 | 5 | 764 B | 3.87 KB/s | 4.042 | 0.9557 | 14.94 KB/s | 13.44 KB/s | 11.20 KB/s | 7.47 KB/s | 3.73 KB/s |
+| standalone.html | brotli-11 | v2-binary | 19 | 10 | 764 B | 7.73 KB/s | 4.042 | 0.9557 | 29.87 KB/s | 26.89 KB/s | 22.41 KB/s | 14.94 KB/s | 7.47 KB/s |
+| standalone.html | brotli-11 | v2-binary | 27 | 5 | 1437 B | 7.15 KB/s | 4.042 | 0.9662 | 27.93 KB/s | 25.14 KB/s | 20.95 KB/s | 13.97 KB/s | 6.98 KB/s |
+| standalone.html | brotli-11 | v2-binary | 27 | 10 | 1437 B | 14.31 KB/s | 4.042 | 0.9662 | 55.86 KB/s | 50.28 KB/s | 41.90 KB/s | 27.93 KB/s | 13.97 KB/s |
 
 **Where G is wrong.** G is linear in P, which is exact for a rateless code and wrong for v1's indexed cycling. Measured slots against the 1/P scaling G assumes:
 
@@ -794,7 +794,9 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 
 **This is a model.** Nothing in this repository signs a closure or activates one; what follows is arithmetic over measured span sizes, measured artifact sizes and measured byte rates. Each closure pays its own 64 B signature (Ed25519) and its own manifest frame, and rounds up to whole frames. `core.js` declares `SIGNATURE_SIZE = 16`, which is a truncated tag rather than any standard signature size; the larger figure is used here because it is the one a real detached signature costs.
 
-**ruvnet-demo.rvf, split on its own spans** at v1 JSON, 512 B @ 5 fps — first closure 0.40 s (meets the 3 s target), whole artifact 1.8 s
+**The gate is closures 1–3, not closure 1.** ADR-022 §2.1 says the agent starts once closures 1–3 verify, so that is the figure reported as meeting or missing the target; time-to-closure-1 is shown alongside because it is the easier number and it is easy to quote the wrong one.
+
+**ruvnet-demo.rvf, split on its own spans** at v1 JSON, 512 B @ 5 fps — closure 1 at 0.40 s, closures 1–3 at 1.80 s (meets the 3 s target), whole artifact 1.8 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -802,7 +804,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | witness | 132 | measured | 2 | 0.80 s | 1.3 |
 | vector payload | 1798 | measured | 5 | 1.80 s | 3.0 |
 
-**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 5 fps — first closure 0.40 s (meets the 3 s target), whole artifact 1.6 s
+**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 5 fps — closure 1 at 0.40 s, closures 1–3 at 1.60 s (meets the 3 s target), whole artifact 1.6 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -810,7 +812,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | witness | 132 | measured | 2 | 0.80 s | 1.3 |
 | vector payload | 1798 | measured | 4 | 1.60 s | 2.7 |
 
-**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 10 fps — first closure 0.20 s (meets the 3 s target), whole artifact 0.8 s
+**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 10 fps — closure 1 at 0.20 s, closures 1–3 at 0.80 s (meets the 3 s target), whole artifact 0.8 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -818,7 +820,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | witness | 132 | measured | 2 | 0.40 s | 1.3 |
 | vector payload | 1798 | measured | 4 | 0.80 s | 2.7 |
 
-**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 30 fps — first closure 0.07 s (meets the 3 s target), whole artifact 0.3 s
+**ruvnet-demo.rvf, split on its own spans** at v2 armoured, 665 B @ 30 fps — closure 1 at 0.07 s, closures 1–3 at 0.27 s (meets the 3 s target), whole artifact 0.3 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -826,7 +828,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | witness | 132 | measured | 2 | 0.13 s | 1.3 |
 | vector payload | 1798 | measured | 4 | 0.27 s | 2.7 |
 
-**1 MiB agent container (modelled split, real runtime size)** at v1 JSON, 512 B @ 5 fps — first closure 0.60 s (meets the 3 s target), whole artifact 411.2 s
+**1 MiB agent container (modelled split, real runtime size)** at v1 JSON, 512 B @ 5 fps — closure 1 at 0.60 s, closures 1–3 at 94.20 s (MISSES the 3 s target), whole artifact 411.2 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -835,7 +837,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | required code + hot state | 196608 | modelled | 386 | 94.20 s | 157.0 |
 | cold indexes + optional assets | 810467 | modelled | 1585 | 411.20 s | 685.3 |
 
-**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 5 fps — first closure 0.40 s (meets the 3 s target), whole artifact 316.4 s
+**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 5 fps — closure 1 at 0.40 s, closures 1–3 at 72.40 s (MISSES the 3 s target), whole artifact 316.4 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -844,7 +846,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | required code + hot state | 196608 | modelled | 297 | 72.40 s | 120.7 |
 | cold indexes + optional assets | 810467 | modelled | 1220 | 316.40 s | 527.3 |
 
-**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 10 fps — first closure 0.20 s (meets the 3 s target), whole artifact 158.2 s
+**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 10 fps — closure 1 at 0.20 s, closures 1–3 at 36.20 s (MISSES the 3 s target), whole artifact 158.2 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -853,7 +855,7 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | required code + hot state | 196608 | modelled | 297 | 36.20 s | 120.7 |
 | cold indexes + optional assets | 810467 | modelled | 1220 | 158.20 s | 527.3 |
 
-**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 30 fps — first closure 0.07 s (meets the 3 s target), whole artifact 52.7 s
+**1 MiB agent container (modelled split, real runtime size)** at v2 armoured, 665 B @ 30 fps — closure 1 at 0.07 s, closures 1–3 at 12.07 s (MISSES the 3 s target), whole artifact 52.7 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
@@ -862,79 +864,117 @@ Multiples are of the artifact size, counted in bytes actually painted, so the QR
 | required code + hot state | 196608 | modelled | 297 | 12.07 s | 120.7 |
 | cold indexes + optional assets | 810467 | modelled | 1220 | 52.73 s | 527.3 |
 
-**standalone.html (modelled 4-way split, real total)** at v1 JSON, 512 B @ 5 fps — first closure 0.60 s (meets the 3 s target), whole artifact 199.8 s
+**standalone.html (modelled 4-way split, real total)** at v1 JSON, 512 B @ 5 fps — closure 1 at 0.60 s, closures 1–3 at 65.40 s (MISSES the 3 s target), whole artifact 225.0 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
 | manifest + policy | 512 | modelled | 3 | 0.60 s | 1.0 |
 | minimal RVM runtime | 32768 | modelled | 66 | 13.80 s | 23.0 |
 | required code + hot state | 131072 | modelled | 258 | 65.40 s | 109.0 |
-| cold indexes + optional assets | 343175 | modelled | 672 | 199.80 s | 333.0 |
+| cold indexes + optional assets | 407814 | modelled | 798 | 225.00 s | 375.0 |
 
-**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 5 fps — first closure 0.40 s (meets the 3 s target), whole artifact 154.0 s
+**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 5 fps — closure 1 at 0.40 s, closures 1–3 at 50.40 s (MISSES the 3 s target), whole artifact 173.4 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
 | manifest + policy | 512 | modelled | 2 | 0.40 s | 0.7 |
 | minimal RVM runtime | 32768 | modelled | 51 | 10.60 s | 17.7 |
 | required code + hot state | 131072 | modelled | 199 | 50.40 s | 84.0 |
-| cold indexes + optional assets | 343175 | modelled | 518 | 154.00 s | 256.7 |
+| cold indexes + optional assets | 407814 | modelled | 615 | 173.40 s | 289.0 |
 
-**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 10 fps — first closure 0.20 s (meets the 3 s target), whole artifact 77.0 s
+**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 10 fps — closure 1 at 0.20 s, closures 1–3 at 25.20 s (MISSES the 3 s target), whole artifact 86.7 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
 | manifest + policy | 512 | modelled | 2 | 0.20 s | 0.7 |
 | minimal RVM runtime | 32768 | modelled | 51 | 5.30 s | 17.7 |
 | required code + hot state | 131072 | modelled | 199 | 25.20 s | 84.0 |
-| cold indexes + optional assets | 343175 | modelled | 518 | 77.00 s | 256.7 |
+| cold indexes + optional assets | 407814 | modelled | 615 | 86.70 s | 289.0 |
 
-**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 30 fps — first closure 0.07 s (meets the 3 s target), whole artifact 25.7 s
+**standalone.html (modelled 4-way split, real total)** at v2 armoured, 665 B @ 30 fps — closure 1 at 0.07 s, closures 1–3 at 8.40 s (MISSES the 3 s target), whole artifact 28.9 s
 
 | closure | bytes | source | frames | cumulative | fps needed for 3 s |
 |---|---|---|---|---|---|
 | manifest + policy | 512 | modelled | 2 | 0.07 s | 0.7 |
 | minimal RVM runtime | 32768 | modelled | 51 | 1.77 s | 17.7 |
 | required code + hot state | 131072 | modelled | 199 | 8.40 s | 84.0 |
-| cold indexes + optional assets | 343175 | modelled | 518 | 25.67 s | 256.7 |
+| cold indexes + optional assets | 407814 | modelled | 615 | 28.90 s | 289.0 |
 
-**The largest first closure that fits the 3-second target at each rate:**
+**The largest closure content that fits the 3-second target, by signature scheme:**
 
-| transport | P | frames in budget | max first closure | feasible? |
-|---|---|---|---|---|
-| v1 JSON, 512 B @ 5 fps | 1 | 15 | 7104 B | yes |
-| v1 JSON, 512 B @ 5 fps | 0.75 (projection) | 11 | 5056 B | yes |
-| v1 JSON, 512 B @ 5 fps | 0.5 (projection) | 7 | 3008 B | yes |
-| v2 armoured, 665 B @ 5 fps | 1 | 15 | 9246 B | yes |
-| v2 armoured, 665 B @ 5 fps | 0.75 (projection) | 11 | 6586 B | yes |
-| v2 armoured, 665 B @ 5 fps | 0.5 (projection) | 7 | 3926 B | yes |
-| v2 armoured, 665 B @ 10 fps | 1 | 30 | 19221 B | yes |
-| v2 armoured, 665 B @ 10 fps | 0.75 (projection) | 22 | 13901 B | yes |
-| v2 armoured, 665 B @ 10 fps | 0.5 (projection) | 15 | 9246 B | yes |
-| v2 armoured, 665 B @ 30 fps | 1 | 90 | 59121 B | yes |
-| v2 armoured, 665 B @ 30 fps | 0.75 (projection) | 67 | 43826 B | yes |
-| v2 armoured, 665 B @ 30 fps | 0.5 (projection) | 45 | 29196 B | yes |
+| transport | signature | closures | P | frames in budget | signature cost | max closure content | feasible? |
+|---|---|---|---|---|---|---|---|
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 1 | 1 | 15 | 64 B | 7104 B | yes |
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 3 | 1 | 15 | 192 B | 5952 B | yes |
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 1 | 0.75 (projection) | 11 | 64 B | 5056 B | yes |
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 3 | 0.75 (projection) | 11 | 192 B | 3904 B | yes |
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 1 | 0.5 (projection) | 7 | 64 B | 3008 B | yes |
+| v1 JSON, 512 B @ 5 fps | Ed25519 | 3 | 0.5 (projection) | 7 | 192 B | 1856 B | yes |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 1 | 15 | 3309 B | 3859 B | yes |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 1 | 15 | 9927 B | 0 B | **no** |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 0.75 (projection) | 11 | 3309 B | 1811 B | yes |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 0.75 (projection) | 11 | 9927 B | 0 B | **no** |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 0.5 (projection) | 7 | 3309 B | 0 B | **no** |
+| v1 JSON, 512 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 0.5 (projection) | 7 | 9927 B | 0 B | **no** |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 1 | 1 | 15 | 64 B | 9246 B | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 3 | 1 | 15 | 192 B | 7788 B | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 1 | 0.75 (projection) | 11 | 64 B | 6586 B | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 3 | 0.75 (projection) | 11 | 192 B | 5128 B | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 1 | 0.5 (projection) | 7 | 64 B | 3926 B | yes |
+| v2 armoured, 665 B @ 5 fps | Ed25519 | 3 | 0.5 (projection) | 7 | 192 B | 2468 B | yes |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 1 | 15 | 3309 B | 6001 B | yes |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 1 | 15 | 9927 B | 0 B | **no** |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 0.75 (projection) | 11 | 3309 B | 3341 B | yes |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 0.75 (projection) | 11 | 9927 B | 0 B | **no** |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 1 | 0.5 (projection) | 7 | 3309 B | 681 B | yes |
+| v2 armoured, 665 B @ 5 fps | ML-DSA-65 (ADR-012) | 3 | 0.5 (projection) | 7 | 9927 B | 0 B | **no** |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 1 | 1 | 30 | 64 B | 19221 B | yes |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 3 | 1 | 30 | 192 B | 17763 B | yes |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 1 | 0.75 (projection) | 22 | 64 B | 13901 B | yes |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 3 | 0.75 (projection) | 22 | 192 B | 12443 B | yes |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 1 | 0.5 (projection) | 15 | 64 B | 9246 B | yes |
+| v2 armoured, 665 B @ 10 fps | Ed25519 | 3 | 0.5 (projection) | 15 | 192 B | 7788 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 1 | 1 | 30 | 3309 B | 15976 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 3 | 1 | 30 | 9927 B | 8028 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 1 | 0.75 (projection) | 22 | 3309 B | 10656 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 3 | 0.75 (projection) | 22 | 9927 B | 2708 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 1 | 0.5 (projection) | 15 | 3309 B | 6001 B | yes |
+| v2 armoured, 665 B @ 10 fps | ML-DSA-65 (ADR-012) | 3 | 0.5 (projection) | 15 | 9927 B | 0 B | **no** |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 1 | 1 | 90 | 64 B | 59121 B | yes |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 3 | 1 | 90 | 192 B | 57663 B | yes |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 1 | 0.75 (projection) | 67 | 64 B | 43826 B | yes |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 3 | 0.75 (projection) | 67 | 192 B | 42368 B | yes |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 1 | 0.5 (projection) | 45 | 64 B | 29196 B | yes |
+| v2 armoured, 665 B @ 30 fps | Ed25519 | 3 | 0.5 (projection) | 45 | 192 B | 27738 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 1 | 1 | 90 | 3309 B | 55876 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 3 | 1 | 90 | 9927 B | 47928 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 1 | 0.75 (projection) | 67 | 3309 B | 40581 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 3 | 0.75 (projection) | 67 | 9927 B | 32633 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 1 | 0.5 (projection) | 45 | 3309 B | 25951 B | yes |
+| v2 armoured, 665 B @ 30 fps | ML-DSA-65 (ADR-012) | 3 | 0.5 (projection) | 45 | 9927 B | 18003 B | yes |
+
+Signature cost is `closures × signature bytes`, because ADR-022 signs each closure separately. Where "feasible?" is no, the signatures alone exhaust the frame budget and no closure content fits at all, whatever it contains.
 
 ---
 
 ### Working memory and payload copies
 
-Largest artifact in the repository: `standalone.html`, 507527 B. Measured in a separate process under `--expose-gc`, so the figures are the pipeline's and not the rest of the harness's. "Live" is heapUsed + external after a forced collection, divided by the artifact size — external is where typed-array payloads actually are, and a copy count taken from heapUsed alone under-reports them by about half.
+Largest artifact in the repository: `standalone.html`, 572166 B. Measured in a separate process under `--expose-gc`, so the figures are the pipeline's and not the rest of the harness's. "Live" is heapUsed + external after a forced collection, divided by the artifact size — external is where typed-array payloads actually are, and a copy count taken from heapUsed alone under-reports them by about half.
 
 | stage | heap Δ | external Δ | total Δ | live copies | peak RSS | ms |
 |---|---|---|---|---|---|---|
-| v1 sender: buildFrames | 1.73× | 0.08× | 1.81× | 1.81× | 54.3 MiB | 13.6 |
-| v1 receiver: ingest (frames drained) | -0.99× | 1.00× | 0.01× | 1.82× | 55.4 MiB | 7.2 |
-| v1 receiver: finalize (assemble + SHA-256) | 0.02× | 1.00× | 1.01× | 2.84× | 56.8 MiB | 5.6 |
-| v2 sender: buildFrames | 0.37× | 1.04× | 1.42× | 1.42× | 58.0 MiB | 11.0 |
-| v2 sender: armour, one frame retained | 0.03× | 0.00× | 0.03× | 1.45× | 58.0 MiB | 3.6 |
-| v2 harness: armour every frame, all retained | 37.60× | 0.00× | 37.60× | 39.06× | 84.2 MiB | 21.9 |
-| v2 receiver: ingest (frames drained) | -37.49× | 0.00× | -37.49× | 1.57× | 86.2 MiB | 14.8 |
-| v2 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | 1.01× | 2.58× | 86.4 MiB | 2.0 |
+| v1 sender: buildFrames | 1.70× | 0.07× | 1.78× | 1.78× | 54.6 MiB | 14.5 |
+| v1 receiver: ingest (frames drained) | -1.01× | 1.00× | -0.01× | 1.77× | 55.9 MiB | 7.9 |
+| v1 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | 1.01× | 2.78× | 56.5 MiB | 5.3 |
+| v2 sender: buildFrames | 0.36× | 1.04× | 1.41× | 1.41× | 58.4 MiB | 11.6 |
+| v2 sender: armour, one frame retained | 0.04× | 0.00× | 0.04× | 1.45× | 58.7 MiB | 3.8 |
+| v2 harness: armour every frame, all retained | 37.60× | 0.00× | 37.60× | 39.05× | 83.3 MiB | 18.7 |
+| v2 receiver: ingest (frames drained) | -37.50× | 0.00× | -37.50× | 1.55× | 87.4 MiB | 15.9 |
+| v2 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | 1.01× | 2.56× | 87.9 MiB | 2.1 |
 
-**Peak RSS 86.4 MiB, of which 38.4 MiB is this pipeline above an empty Node process — inside the 128 MiB budget.**
+**Peak RSS 87.9 MiB, of which 39.9 MiB is this pipeline above an empty Node process — inside the 128 MiB budget.**
 
-**Payload copies, receiver side: v1 peaks at 2.84×, v2 at 2.58×** against a budget of fewer than two. Sender side, v1 holds 1.81× as base64url text and v2 1.45× with one armoured frame retained. Both transfers verified byte-exact (v1 yes, v2 yes).
+**Payload copies, receiver side: v1 peaks at 2.78×, v2 at 2.56×** against a budget of fewer than two. Sender side, v1 holds 1.78× as base64url text and v2 1.45× with one armoured frame retained. Both transfers verified byte-exact (v1 yes, v2 yes).
 
 **Allocation sites, read out of the source rather than inferred from the numbers:**
 
