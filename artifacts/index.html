@@ -350,6 +350,21 @@
   .badge.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
   .badge.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
   .badge.received { color: var(--muted); border-style: dashed; }
+  /*
+    ADR-022 §2.3's two activation outcomes, and they are deliberately not two
+    shades of the same thing.
+
+    `whole` is the ordinary success colour. `incomplete` is the danger colour
+    AND a dashed border AND, on the row itself below, a dashed outline — an
+    artifact running on closures 1-3 is a TERMINAL state, not a nearly-finished
+    one, so nothing here is a progress bar and nothing here reads as "almost".
+    There is no third style between them for the same reason: a partial
+    activation whose cold state is still in flight wears the incomplete
+    treatment too, because it is not a verified whole artifact either and only
+    becomes one by verifying everything.
+  */
+  .badge.whole { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+  .badge.incomplete { color: var(--danger); border-color: var(--danger); border-style: dashed; }
   .badges { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; flex: 0 0 auto; }
 
   /* --- Vault --------------------------------------------------------------- */
@@ -373,6 +388,12 @@
   }
   .artifact + .artifact { margin-top: .5rem; }
   .artifact .name { font-weight: 600; font-size: .95rem; }
+  /* The row's own outline, so the list is legible as a list of two kinds of
+     thing before any badge is read. */
+  .artifact.incomplete {
+    border-style: dashed;
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+  }
   .glyph {
     flex: 0 0 auto; width: 40px; height: 40px; border-radius: var(--radius);
     display: grid; place-items: center;
@@ -1252,6 +1273,62 @@
         <div id="imageResult" style="margin-top:.7rem"></div>
       </div>
 
+      <!--
+        Starting before everything has arrived, and the state that leaves behind.
+
+        ADR-022 splits an artifact into four independently signed closures and
+        starts the agent once 1-3 verify. This is where the page does that, on
+        the receive side, because the receiver is the party that verifies.
+
+        A PLAIN CARD AND NEVER A <details>, for the same reason the compression
+        and attestation cards are plain: the outcomes that matter here are a
+        REFUSAL and an INCOMPLETE ARTIFACT, and either one folded behind a
+        summary nobody opens is indistinguishable from a module that never ran.
+
+        THE OPTICAL VERDICT IS FIRST, above every control. ADR-022 §4.6 asks for
+        the optical case reported honestly "including 'not achievable at this
+        artifact size' where that is the answer", and closure.js's own
+        arithmetic says worse than that: at the measured 2,440 B/s a three
+        second budget is 7,320 bytes and three hybrid-signed closures cost
+        10,119 bytes of signature before a single content byte, so it is not
+        achievable at ANY size. app.js keeps the controls disabled unless that
+        verdict actually rendered — offering a three-second start above a
+        sentence that says there is not one would be the panel selling the
+        target the arithmetic just refused.
+
+        NO RADIO TIER AND NO ML-DSA ARE OFFERED ANYWHERE. There is no such
+        control below, and the unimplemented list at the bottom names both as
+        absent in the module's own words. ADR-022 §4.5's p95 figure is on the
+        radio tier, this repository has no radio transport, and a picker
+        offering one would be the UI claiming a channel the code disclaims.
+      -->
+      <div class="card" id="activateCard">
+        <h2 class="flush">Progressive activation</h2>
+        <p class="small muted">An artifact split into four separately signed closures starts once the first three verify. The fourth — the cold state — keeps transferring, and if it never verifies the artifact is <em>incomplete</em>: still running, never a verified whole.</p>
+
+        <div id="activateOptical" style="margin-top:.7rem"></div>
+
+        <label class="field" for="activatePick">Artifact to split into closures</label>
+        <select id="activatePick"></select>
+        <p class="small muted" id="activateSplitNote" style="margin:.4rem 0 .8rem"></p>
+
+        <label class="row" style="gap:.5rem;margin-bottom:.4rem">
+          <input type="checkbox" id="activateDamage">
+          <span class="small">Damage the next closure before offering it</span>
+        </label>
+        <p class="small muted" id="activateDamageNote" style="margin:0 0 .8rem"></p>
+
+        <div class="row">
+          <button class="btn-sm" id="activateOfferBtn">Offer the next closure</button>
+          <button class="btn-sm" id="activateSealBtn">Seal incomplete</button>
+          <button class="btn-sm" id="activateStoreBtn">Store what verified</button>
+          <button class="btn-sm" id="activateResetBtn">Start over</button>
+        </div>
+
+        <div id="activateResult" style="margin-top:.9rem"></div>
+        <div id="activateUnimplemented" style="margin-top:.9rem"></div>
+      </div>
+
       <details class="card tight" id="rxPasteCard" open>
         <summary>Paste a frame by hand</summary>
         <div class="details-body">
@@ -1588,6 +1665,28 @@
   script list is derived from this document.
 -->
 <script src="./attest.js" defer></script>
+<!--
+  closure.js is pure functions over plain data — no DOM, no storage, no network
+  and no clock — so it reads nothing above it. It sits after core.js with the
+  other optional modules because that is where the page keeps everything app.js
+  reaches through a getter, and it is deferred because nothing on the first
+  paint splits an artifact into closures.
+
+  It does need crypto.js above it AT RUN TIME rather than at load time: the
+  activation panel signs its demonstration closures with Ed25519 and verifies
+  them with the same, and deferred scripts run in document order, so crypto.js
+  being earlier in this list is what makes that a guarantee. Without it every
+  closure is refused as `unverified` — a check that cannot run says it could not
+  run — and the panel says so rather than admitting anything.
+
+  Without closure.js the activation panel says the module did not load AND
+  OFFERS NO ACTIVATION AT ALL, rather than showing controls that would drive
+  nothing: ADR-022 §2.1's whole claim is that the gate is applied more times,
+  and a gate simulated by the page would be the one thing this increment must
+  not ship. Loading it here is also what puts it in the standalone build, whose
+  script list is derived from this document.
+-->
+<script src="./closure.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

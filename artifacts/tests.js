@@ -41,6 +41,12 @@
       // here — the app supplies none, so the attested rendering is reachable
       // from a test and from nowhere else, and a test says exactly that.
       try { mods.attest = require('./attest.js'); } catch (e) { /* optional */ }
+      // The activation panel is asserted against the REAL gate. Nothing below
+      // hand-builds a session, a verdict or a receipt: every one comes out of
+      // closure.js over closures built the way closure.test.js builds them, so
+      // a panel that agreed with a fixture but not with the module would fail
+      // here rather than ship.
+      try { mods.closure = require('./closure.js'); } catch (e) { /* optional */ }
       // The compression panel is asserted against REAL codec output, not a
       // stub: compress.js takes its codecs by injection precisely so a caller
       // can hand it the platform's own, and node:zlib is this runner's. A
@@ -3645,6 +3651,510 @@
         assert(m.challengeNote.indexOf('no paired session') > 0,
           'the panel invented a binding: ' + m.challengeNote);
         return m.badge;
+      });
+    }
+
+    // --- Progressive activation ------------------------------------------------
+    //
+    // closure.test.js already asserts that each closure is independently
+    // verified, that an out-of-order or foreign closure is refused before it is
+    // parsed, that nothing unverified is reachable from a running agent, and
+    // that a sealed artifact never becomes complete. These assert what it
+    // cannot: that ADR-022 §4.4's "the incomplete state is explicit in the
+    // vault, the UI and the receipt" is true of the vault and the UI, that a
+    // refusal after sealing arrives on screen as a refusal ON THE SEAL rather
+    // than as an accusation against bytes nobody looked at, and that ADR-022
+    // §4.6's optical answer is on the page rather than in a report.
+    //
+    // Every string checked below is a string the panel renders verbatim — the
+    // badge and headline go into the notice, `receiptLine` and `sealReason` are
+    // paragraphs, each closure row and each optical figure becomes a <dt>/<dd>
+    // pair, the refusal block becomes a title, one or two <dt>/<dd> pairs and a
+    // note, and `vault`/`vaultNote` are the vault list's badge and meta line.
+    //
+    // THE SESSIONS ARE REAL. Nothing hand-builds a receipt: each comes from
+    // activationReceipt() over a session built by offering closures to the real
+    // gate, in the shape closure.test.js builds them — equal-length bodies so a
+    // substituted closure cannot be refused on its size and skip the digest, an
+    // ordered manifest committing every later closure, and one signature per
+    // closure over artifactId, index, role and digest together.
+
+    var CL = mods.closure ||
+      (typeof window !== 'undefined' ? window.RVQRClosure : null) || null;
+    var actView = (mods.view && mods.view.activation) ||
+      (typeof window !== 'undefined' ? window.RVQRActivationView : null) || null;
+
+    if (mods.indexHtml) {
+      test('activation: the page loads closure.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./closure.js"');
+        assert(tag >= 0, 'index.html does not reference closure.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a tag of any other shape ships a page with no activation
+        // panel — which is how a module with 46 green tests reaches nobody.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(/<script[^>]*src="\.\/closure\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+        assert(line.indexOf('defer') >= 0, 'closure.js should be deferred with the optional modules');
+
+        var afterCore = html.indexOf('src="./core.js"');
+        assert(afterCore >= 0 && afterCore < tag, 'closure.js is not loaded after core.js');
+        var appTag = html.indexOf('src="./app.js"');
+        assert(appTag >= 0 && tag < appTag, 'closure.js is not loaded before app.js');
+        // The panel signs its demonstration closures with Ed25519 and verifies
+        // them with the same, so crypto.js has to have run first. Deferred
+        // scripts run in document order, which is what makes this a guarantee.
+        var cryptoTag = html.indexOf('src="./crypto.js"');
+        assert(cryptoTag >= 0 && cryptoTag < tag, 'closure.js is not loaded after crypto.js');
+        return 'loaded, deferred, after core.js and crypto.js and before app.js';
+      });
+
+      test('activation: the optical verdict sits above every control that offers an activation', function () {
+        var html = mods.indexHtml;
+        ['activateCard', 'activateOptical', 'activatePick', 'activateDamage',
+          'activateOfferBtn', 'activateSealBtn', 'activateStoreBtn', 'activateResetBtn',
+          'activateResult', 'activateUnimplemented'].forEach(function (id) {
+          assert(html.indexOf('id="' + id + '"') >= 0, 'index.html has no #' + id);
+        });
+        var receiveTab = html.indexOf('id="tab-receive"');
+        var guideTab = html.indexOf('id="tab-guide"');
+        var card = html.indexOf('id="activateCard"');
+        assert(receiveTab >= 0 && card > receiveTab && card < guideTab,
+          'the activation card is not inside the receive tab');
+
+        // ADR-022 §4.6 before ADR-022 §2.4. In the document that means above; in
+        // the model it means canActivate, tested below. Both, because either
+        // alone is escapable.
+        var optical = html.indexOf('id="activateOptical"');
+        ['activatePick', 'activateDamage', 'activateOfferBtn', 'activateSealBtn',
+          'activateStoreBtn'].forEach(function (id) {
+          assert(optical < html.indexOf('id="' + id + '"'),
+            '#' + id + ' comes before the optical verdict, so the target is offered before it is refused');
+        });
+        assert(optical < html.indexOf('id="activateResult"'), 'the verdict follows the results');
+
+        // A plain card and NOT a <details>. The outcomes that matter here are a
+        // refusal and an incomplete artifact, and either one folded behind a
+        // summary nobody opens is a state nobody sees.
+        var open = html.lastIndexOf('<', card);
+        assertEqual(html.slice(open, card).indexOf('<div'), 0,
+          'the activation card is not a plain div: ' + html.slice(open, card));
+        return 'a plain card in the receive tab, under the optical verdict';
+      });
+
+      test('activation: no radio tier and no post-quantum signature is offered as a choice on the page', function () {
+        // ADR-022 §4.5's target is a radio-tier one and there is no radio
+        // transport in this repository; ADR-012's hybrid scheme needs an
+        // ML-DSA-65 that does not exist here either. A control offering either
+        // would be the UI claiming a channel or a signature the module
+        // disclaims in describeUnimplemented() one file away.
+        var html = mods.indexHtml;
+        var options = html.match(/<option[^>]*>[^<]*<\/option>/g) || [];
+        ['radio tier', 'radio-tier', 'ml-dsa', 'mldsa', 'dilithium', 'hybrid signature',
+          'quic'].forEach(function (name) {
+          options.forEach(function (opt) {
+            assert(opt.toLowerCase().indexOf(name) < 0,
+              'a tier or signature this build does not have is offered as a choice: ' + opt);
+          });
+        });
+        return options.length + ' options on the page, none of them a radio tier or a hybrid signature';
+      });
+    }
+
+    if (CL && actView) {
+      var ACT_ARTIFACT = 'artifact-alpha';
+      var ACT_SIGNER = 'fleet-signers-v3';
+      var ACT_BODY_BYTES = 64;
+
+      function actEncode(text) {
+        if (typeof TextEncoder === 'function') return new TextEncoder().encode(text);
+        var out = new Uint8Array(text.length);
+        for (var i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+        return out;
+      }
+
+      // Real SHA-256, so the digest step is the one core.js performs and not a
+      // stand-in that agrees with itself.
+      function actDigest(bytes) { return core.sha256Hex(bytes); }
+
+      // A deterministic stand-in for the injected signature verifier. NOT
+      // cryptography: closure.test.js already composes the real Ed25519 with
+      // this same pipeline, and what is under test here is the panel.
+      function actSign(signerId, message) {
+        return core.sha256Hex(actEncode(signerId + '\n' + message));
+      }
+
+      /**
+       * Every closure body is the SAME LENGTH, for closure.test.js's reason: the
+       * pipeline checks the declared size before it digests anything, so bodies
+       * of different lengths would let a substituted closure be refused on its
+       * size and never reach the digest.
+       */
+      function actBody(artifactId, role) {
+        var s = 'rvqr:' + artifactId + ':' + role + ':payload';
+        while (s.length < ACT_BODY_BYTES) s += '.';
+        return actEncode(s.slice(0, ACT_BODY_BYTES));
+      }
+
+      /** A four-closure artifact: the root pins closure 1; closure 1 commits the rest. */
+      function actBuild() {
+        var id = ACT_ARTIFACT;
+        var bodies = {
+          runtime: actBody(id, 'runtime'),
+          code: actBody(id, 'code'),
+          cold: actBody(id, 'cold')
+        };
+        var entries = [
+          { role: CL.ROLE_RUNTIME, digest: actDigest(bodies.runtime), originalSize: bodies.runtime.length },
+          { role: CL.ROLE_CODE, digest: actDigest(bodies.code), originalSize: bodies.code.length },
+          { role: CL.ROLE_COLD, digest: actDigest(bodies.cold), originalSize: bodies.cold.length }
+        ];
+        var manifest = { artifactId: id, signerId: ACT_SIGNER, closures: entries };
+        var mBytes = actEncode(JSON.stringify(manifest));
+
+        function offerFor(index, role, bytes) {
+          var digest = actDigest(bytes);
+          return {
+            artifactId: id,
+            index: index,
+            role: role,
+            payload: bytes,
+            compressed: false,
+            originalSize: bytes.length,
+            signature: actSign(ACT_SIGNER, CL.closureSigningString({
+              artifactId: id, index: index, role: role, digest: digest
+            }))
+          };
+        }
+
+        return {
+          root: {
+            artifactId: id,
+            signerId: ACT_SIGNER,
+            digest: actDigest(mBytes),
+            originalSize: mBytes.length
+          },
+          offers: [
+            offerFor(1, CL.ROLE_MANIFEST, mBytes),
+            offerFor(2, CL.ROLE_RUNTIME, bodies.runtime),
+            offerFor(3, CL.ROLE_CODE, bodies.code),
+            offerFor(4, CL.ROLE_COLD, bodies.cold)
+          ]
+        };
+      }
+
+      function actPolicy() {
+        return {
+          requireSignature: true,
+          trustedSigners: [ACT_SIGNER],
+          allowRoles: [CL.ROLE_MANIFEST, CL.ROLE_RUNTIME, CL.ROLE_CODE, CL.ROLE_COLD]
+        };
+      }
+
+      function actChecks() {
+        return {
+          digest: actDigest,
+          verifySignature: function (desc) {
+            return desc.signature === actSign(desc.signerId, desc.message);
+          }
+        };
+      }
+
+      /** Offers closures in order, exactly as the page's Offer button does. */
+      function actActivate(art, count) {
+        var session = CL.beginActivation(art.root, actPolicy());
+        for (var i = 0; i < count; i++) {
+          session = CL.offerClosure(session, art.offers[i], actChecks()).session;
+        }
+        return session;
+      }
+
+      /** One flipped bit, the page's own damage control. */
+      function actDamage(offer) {
+        var payload = offer.payload.slice();
+        payload[0] = payload[0] ^ 0xff;
+        return {
+          artifactId: offer.artifactId, index: offer.index, role: offer.role,
+          payload: payload, compressed: false, originalSize: offer.originalSize,
+          signature: offer.signature
+        };
+      }
+
+      /** The whole panel, in the order app.js builds it. */
+      function actPanel(session, last) {
+        return actView.model({
+          receipt: CL.activationReceipt(session),
+          positions: CL.positions(session),
+          optical: CL.opticalBudget(),
+          unimplemented: CL.describeUnimplemented(),
+          limits: CL.describeLimits(),
+          last: last || null
+        }, { moduleLoaded: true });
+      }
+
+      test('activation: a sealed-incomplete artifact never renders as complete, in the vault or in the sheet', function () {
+        // ADR-022 §4.4. The receipt half is closure.js's and closure.test.js
+        // asserts it; this is the vault half and the UI half, which are the two
+        // the criterion names that nothing was checking.
+        var art = actBuild();
+        var sealed = CL.sealIncomplete(actActivate(art, 3));
+        var whole = actActivate(art, 4);
+        assertEqual(CL.completion(sealed), 'incomplete', 'the fixture is not sealed incomplete');
+        assertEqual(CL.completion(whole), 'complete', 'the fixture did not complete');
+
+        var incomplete = actPanel(sealed);
+        var complete = actPanel(whole);
+        assertEqual(incomplete.complete, false, 'a sealed artifact rendered as complete');
+        assertEqual(complete.complete, true, 'a whole artifact did not render as complete');
+
+        // Distinct by class, by badge and by sentence — three signals, so the
+        // sheet does not rest on colour alone.
+        [['tone', 'tone'], ['badge', 'badge'], ['headline', 'headline']].forEach(function (f) {
+          assert(incomplete[f[0]] !== complete[f[0]],
+            'sealed and whole share a ' + f[1] + ': ' + JSON.stringify(incomplete[f[0]]));
+        });
+        assertEqual(complete.tone, 'good', 'the complete tone');
+        assertEqual(incomplete.tone, 'bad', 'the sealed tone');
+        assertEqual(incomplete.badge, 'Incomplete — sealed', 'the sealed badge');
+        assert(incomplete.headline.indexOf('can never become a verified whole artifact') > 0,
+          'the sheet does not say it can never become whole: ' + incomplete.headline);
+        // closure.js's own summary line, verbatim, which is what an auditor reads.
+        assertEqual(incomplete.receiptLine, CL.activationReceipt(sealed).summary,
+          'the receipt line was re-worded');
+
+        // The VAULT LIST, which is the other place ADR-022 §4.4 names. Three
+        // signals again: a different badge class, a different word, and a meta
+        // line that says so with no colour at all.
+        var vIncomplete = actView.vaultBadge(CL.activationReceipt(sealed));
+        var vComplete = actView.vaultBadge(CL.activationReceipt(whole));
+        assertEqual(vIncomplete.complete, false, 'the vault badge called a sealed artifact complete');
+        assertEqual(vComplete.complete, true, 'the vault badge did not call a whole artifact complete');
+        assertEqual(vIncomplete.cls, 'incomplete', 'the vault badge class');
+        assertEqual(vComplete.cls, 'whole', 'the vault badge class');
+        assertEqual(vIncomplete.label, 'incomplete — sealed', 'the vault badge label');
+        assertEqual(vComplete.label, 'verified whole', 'the vault badge label');
+        assert(actView.vaultNote(CL.activationReceipt(sealed)).indexOf('incomplete, sealed at 3 of 4') === 0,
+          'the vault meta line: ' + actView.vaultNote(CL.activationReceipt(sealed)));
+
+        // NOT A PROGRESS BAR. Sealing is the decision that there will be no
+        // more, so nothing the panel publishes may be read as a fraction of a
+        // journey still under way.
+        ['percent', 'progress', 'fraction', 'ratio', 'bar', 'pct'].forEach(function (k) {
+          assertEqual(incomplete[k], undefined, 'the panel published ' + k);
+        });
+        return vIncomplete.label + ' / ' + vComplete.label;
+      });
+
+      test('activation: the vault list and the detail sheet cannot disagree about an outcome', function () {
+        // Two renderings of one receipt. They are allowed to differ in wording
+        // and never in whether the artifact is whole, so both are derived from
+        // the receipt's own `complete` and this asserts they still agree.
+        var art = actBuild();
+        [
+          { session: actActivate(art, 2), name: 'transferring' },
+          { session: actActivate(art, 3), name: 'partial' },
+          { session: CL.sealIncomplete(actActivate(art, 3)), name: 'sealed' },
+          { session: actActivate(art, 4), name: 'complete' }
+        ].forEach(function (row) {
+          var m = actPanel(row.session);
+          var receipt = CL.activationReceipt(row.session);
+          assertEqual(m.complete, receipt.complete, row.name + ': the sheet disagrees with the receipt');
+          assertEqual(m.vault.complete, receipt.complete, row.name + ': the list disagrees with the receipt');
+          assertEqual(m.complete, m.vault.complete, row.name + ': the list and the sheet disagree');
+          // And `complete` is never taken from whether an agent is running: a
+          // partial activation runs and is not whole, which is the whole point.
+          if (row.name === 'partial') {
+            assertEqual(receipt.running, true, 'the partial fixture is not running');
+            assertEqual(m.complete, false, 'a running artifact rendered as whole');
+            assertEqual(m.vault.cls, 'incomplete', 'a running artifact got the whole badge');
+            assert(m.headline.indexOf('not a verified whole artifact') > 0,
+              'the partial headline: ' + m.headline);
+          }
+        });
+        return '4 states, list and sheet agreed on every one';
+      });
+
+      test('activation: a closure refused after sealing is refused on the seal, not on its merits', function () {
+        // ADR-022 §2.3. offerClosure refuses on the SITUATION before it verifies
+        // anything, so a perfectly valid closure 4 comes back with a decision
+        // and NO VERDICT — it was never decompressed, digested or put to a
+        // verifier. A panel that printed a red state name beside it would be
+        // accusing bytes nobody looked at.
+        var art = actBuild();
+        var sealed = CL.sealIncomplete(actActivate(art, 3));
+        var r = CL.offerClosure(sealed, art.offers[3], actChecks());
+        assertEqual(r.decision.admit, false, 'a sealed artifact admitted a closure');
+        assertEqual(r.verdict, null, 'the fixture verified something after sealing');
+
+        var m = actPanel(r.session, { verdict: r.verdict, decision: r.decision });
+        assertEqual(m.refusal.onSeal, true, 'the refusal is not attributed to the seal');
+        assertEqual(m.refusal.examined, false, 'the panel claims the closure was examined');
+        assertEqual(m.refusal.state, null, 'a verification state appeared from nowhere');
+        assertEqual(m.refusal.stateLabel, null, 'a verification state reached the screen');
+        assertEqual(m.refusal.title, 'Refused on the seal, not on its merits', 'the heading');
+        assertEqual(m.refusal.decisionLabel, 'This artifact was sealed incomplete', 'the decision heading');
+        // The gate's own sentence, verbatim.
+        assertEqual(m.refusal.decisionText, r.decision.reason, 'the reason was re-worded');
+        assert(m.refusal.note.indexOf('This says nothing about the bytes') > 0,
+          'the panel does not say the closure was not judged: ' + m.refusal.note);
+        assert(m.refusal.note.indexOf('not digested') > 0,
+          'the panel does not say what was skipped: ' + m.refusal.note);
+
+        // THE COUNTEREXAMPLE, so the wording is a distinction and not a habit:
+        // the same closure damaged, offered to an artifact that was NOT sealed,
+        // is refused on its merits and reads completely differently.
+        var partial = actActivate(art, 3);
+        var bad = CL.offerClosure(partial, actDamage(art.offers[3]), actChecks());
+        var onMerits = actPanel(bad.session, { verdict: bad.verdict, decision: bad.decision });
+        assertEqual(onMerits.refusal.onSeal, false, 'a damaged closure was blamed on a seal');
+        assertEqual(onMerits.refusal.examined, true, 'a damaged closure was not examined');
+        assertEqual(onMerits.refusal.state, 'digest-mismatch', 'the verification state');
+        assertEqual(onMerits.refusal.title, 'Refused on its merits', 'the heading');
+        assertEqual(onMerits.refusal.stateText, bad.verdict.reason, 'the verdict reason was re-worded');
+        assert(onMerits.refusal.title !== m.refusal.title, 'the two refusals share a heading');
+        assert(onMerits.refusal.note !== m.refusal.note, 'the two refusals share a note');
+        return m.refusal.title + ' / ' + onMerits.refusal.title;
+      });
+
+      test('activation: the optical answer is on screen, with the arithmetic that refuses the target', function () {
+        // ADR-022 §4.6 asks for the optical case reported honestly "including
+        // 'not achievable at this artifact size' where that is the answer".
+        // closure.js's arithmetic says worse: the signatures alone outgrow the
+        // budget, so it is not achievable at ANY size, and that has to be the
+        // sentence on the page rather than a line in a report.
+        var m = actPanel(actActivate(actBuild(), 3));
+        assertEqual(m.optical.achievable, false, 'the panel claims the target is reachable');
+        assert(m.optical.headline.indexOf('NOT ACHIEVABLE AT ANY ARTIFACT SIZE') > 0,
+          'the headline does not say so plainly: ' + m.optical.headline);
+
+        // The three figures the criterion turns on, each on screen as its own
+        // row so the conclusion survives a reader who skims the derivation.
+        var shown = m.optical.figures.map(function (f) { return f.label + ' ' + f.text; }).join(' | ');
+        ['2440', '7320', '10119', '3373'].forEach(function (n) {
+          assert(shown.indexOf(n) >= 0, n + ' is not on screen: ' + shown);
+        });
+        // And the module's own derivation, verbatim, including that it is a
+        // projection rather than a measurement.
+        assertEqual(m.optical.text, CL.opticalBudget().note, 'the derivation was re-worded');
+        assertEqual(m.optical.projection, true, 'the projection is not labelled as one');
+
+        // The rule, not merely the ordering: a panel that lost the verdict
+        // loses the feature. Otherwise "the optical answer is above the
+        // controls" is a promise about markup rather than a constraint.
+        assertEqual(m.canActivate, true, 'the verdict is present and yet nothing can be activated');
+        var stripped = actView.model({ receipt: CL.activationReceipt(actActivate(actBuild(), 3)) }, {});
+        assertEqual(stripped.optical, null, 'an optical verdict appeared from nowhere');
+        assertEqual(stripped.canActivate, false,
+          'an activation is offered with no optical verdict on screen');
+        return m.optical.headline.slice(0, 60);
+      });
+
+      test('activation: no radio tier and no hybrid signature is ever reported as available', function () {
+        // ADR-022 §4.5's p95 is a radio-tier figure and there is no radio tier;
+        // it must be measured with hybrid signatures and there is no ML-DSA-65.
+        // Both are absent, both say so in the module's own words, and neither
+        // is ever offered.
+        var m = actPanel(actActivate(actBuild(), 3));
+        assertEqual(m.unimplemented.length, CL.describeUnimplemented().length,
+          'not everything absent reached the screen');
+        m.unimplemented.forEach(function (row) {
+          assertEqual(row.available, false, row.id + ' is shown as available');
+          // The status travels with the NAME, so a list read down its headings
+          // alone still says so.
+          assert(row.label.indexOf(' — ' + row.status) > 0,
+            row.id + '’s heading does not carry its status: ' + row.label);
+        });
+        var byId = {};
+        m.unimplemented.forEach(function (row) { byId[row.id] = row; });
+        assert(byId['radio-tier'], 'the radio tier is not named as absent at all');
+        assertEqual(byId['radio-tier'].status, 'absent', 'the radio tier status');
+        assert(byId['radio-tier'].text.indexOf('There is no radio tier') >= 0,
+          'the radio row is not the module’s own: ' + byId['radio-tier'].text);
+        assert(byId['hybrid-signatures'], 'hybrid signing is not named as absent at all');
+        assertEqual(byId['hybrid-signatures'].status, 'absent', 'the hybrid signing status');
+        assert(byId['hybrid-signatures'].text.indexOf('there is no ML-DSA-65') > 0,
+          'the hybrid row is not the module’s own: ' + byId['hybrid-signatures'].text);
+        // And the split itself, which is what makes the page's own quarters
+        // honest rather than a claim about this artifact.
+        assert(byId['closure-splitting'], 'the missing splitting tool is not named');
+        return m.unimplemented.length + ' absent, none available';
+      });
+
+      test('activation: an outstanding closure and a sealed-away one do not read alike', function () {
+        // A list, never a bar. On a partial activation the cold closure is late;
+        // on a sealed one it is not coming, and rendering both as an unfilled
+        // segment would say the opposite of the second.
+        var art = actBuild();
+        var partial = actPanel(actActivate(art, 3));
+        var sealed = actPanel(CL.sealIncomplete(actActivate(art, 3)));
+
+        var pCold = partial.closures[3];
+        var sCold = sealed.closures[3];
+        assertEqual(pCold.label, 'Closure 4 — cold indexes and optional assets', 'the closure heading');
+        assertEqual(pCold.activation, false, 'the cold closure is in the activation set');
+        assertEqual(pCold.status, 'outstanding', 'the outstanding status');
+        assertEqual(sCold.status, 'never', 'the sealed-away status');
+        assert(sCold.statusLabel.indexOf('not coming') > 0,
+          'a sealed-away closure still reads as pending: ' + sCold.statusLabel);
+        assert(pCold.statusLabel !== sCold.statusLabel, 'outstanding and sealed away read alike');
+
+        // The three that did verify say so, with their sizes, and are marked as
+        // the activation set — ADR-022 §2.1's "the agent starts once 1-3 verify".
+        [0, 1, 2].forEach(function (i) {
+          assertEqual(sealed.closures[i].verified, true, 'closure ' + (i + 1) + ' did not verify');
+          assertEqual(sealed.closures[i].activation, true, 'closure ' + (i + 1) + ' is not in the activation set');
+        });
+        assertEqual(sealed.closures[1].statusLabel, 'verified, 64 bytes', 'the verified status');
+        return pCold.statusLabel + ' / ' + sCold.statusLabel;
+      });
+
+      test('activation: a refused closure inside the activation set renders as nothing running', function () {
+        // ADR-022 §2.1: closure 1 failing stops everything, and a refused
+        // closure 2 means the agent never starts. Neither may reach the screen
+        // as a partial success.
+        var art = actBuild();
+        var session = CL.beginActivation(art.root, actPolicy());
+        session = CL.offerClosure(session, art.offers[0], actChecks()).session;
+        var r = CL.offerClosure(session, actDamage(art.offers[1]), actChecks());
+        assertEqual(CL.completion(r.session), 'blocked', 'the fixture did not block');
+
+        var m = actPanel(r.session, { verdict: r.verdict, decision: r.decision });
+        assertEqual(m.complete, false, 'a blocked activation rendered as complete');
+        assertEqual(m.tone, 'bad', 'the blocked tone');
+        assertEqual(m.badge, 'Blocked', 'the blocked badge');
+        assert(m.headline.indexOf('nothing downstream of it runs') > 0,
+          'the blocked headline: ' + m.headline);
+        // The module's own reason, which names the closure and why it was
+        // fatal — ONCE. closure.js's blocked summary already ends with that
+        // sentence, so the panel renders it there and does not repeat it: a
+        // reason printed twice reads as two problems.
+        assert(m.receiptLine.indexOf('Closure 2 (minimal RVM runtime) was refused') > 0,
+          'the receipt line does not name the closure: ' + m.receiptLine);
+        assertEqual(m.blockedReason, null, 'the blocked reason reaches the screen twice');
+        assertEqual(m.vault.complete, false, 'the vault badge called a blocked activation complete');
+        assertEqual(m.refusal.examined, true, 'the damaged closure was not examined');
+        assertEqual(m.refusal.onSeal, false, 'a damaged closure was blamed on a seal');
+        return m.badge + ' — ' + m.refusal.stateLabel;
+      });
+
+      test('activation: an artifact that never went through an activation gains no badge at all', function () {
+        // Absent and incomplete are different facts. A vault where every
+        // ordinary import wore a badge would make the badge worthless, and one
+        // where an unactivated record wore the incomplete badge would be a lie
+        // about artifacts that were verified whole on arrival.
+        assertEqual(actView.vaultBadge(null), null, 'a badge appeared from nowhere');
+        assertEqual(actView.vaultBadge({}), null, 'an empty receipt produced a badge');
+        assertEqual(actView.vaultBadge('incomplete'), null, 'a string produced a badge');
+        assertEqual(actView.vaultNote(null), null, 'a meta line appeared from nowhere');
+
+        // And a panel with no receipt says nothing has been activated rather
+        // than reporting a state it does not have. `blocked` in particular
+        // would tell an operator their activation failed before they began one.
+        var empty = actView.completionBlock(null);
+        assertEqual(empty.complete, false, 'an empty panel claimed completeness');
+        assertEqual(empty.state, null, 'a state appeared from nowhere');
+        assertEqual(empty.badge, 'No activation', 'the empty badge');
+        return empty.badge;
       });
     }
 

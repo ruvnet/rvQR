@@ -1446,6 +1446,482 @@
   };
 });
 
+/*!
+ * The progressive activation view model — ADR-022, at the screen.
+ *
+ * closure.js decides five things and this file renders them: which of the five
+ * completion states an activation is in, why a closure was refused, what the
+ * three-second optical target actually costs, which closures verified and which
+ * never will, and what ADR-022 asks for that this build does not have.
+ *
+ * INCOMPLETE IS NOT A KIND OF COMPLETE — ADR-022 §2.3 and §4.4
+ * ------------------------------------------------------------
+ *
+ * "The incomplete state is explicit in the vault, the UI and the receipt, and an
+ * artifact stuck at closures 1-3 never presents as complete." The receipt half
+ * is closure.js's: `completion`, `complete` and `verifiedWholeArtifact` are
+ * three separate named fields precisely so no reader can collapse them. This
+ * file is the other two halves, and it obeys the same rule three ways:
+ *
+ *   - `complete` here is copied from the receipt's own `complete`, never
+ *     derived from whether an agent is running. Running is not whole.
+ *   - a sealed-incomplete artifact wears the DANGER tone, a dashed badge and a
+ *     dashed row outline. It is a terminal state, so nothing renders it as a
+ *     fraction, a bar or a percentage — there is no "nearly", because sealing
+ *     is the decision that there will be no more.
+ *   - the closure list names every position and says of an unverified one on a
+ *     sealed artifact that it will not arrive, rather than showing it pending.
+ *
+ * A REFUSAL AFTER SEALING IS A REFUSAL ON THE SEAL — ADR-022 §2.3
+ * ---------------------------------------------------------------
+ *
+ * offerClosure refuses on the SITUATION before it verifies anything, so a
+ * perfectly valid closure 4 offered to a sealed artifact comes back with a
+ * decision and NO VERDICT AT ALL: it was never digested, its signature was
+ * never checked and its role was never compared. `refusalBlock` reads that
+ * absence and says so, because a panel that reported "closure 4 refused"
+ * beside a red state name would accuse the bytes of something nobody looked
+ * at. `examined` is the field that keeps the two apart, and `onSeal` names
+ * which situation refused.
+ *
+ * THE OPTICAL ANSWER IS ON SCREEN, NOT IN A REPORT — ADR-022 §4.6
+ * ---------------------------------------------------------------
+ *
+ * opticalBudget() is arithmetic over the protocol benchmark's measured
+ * 2,440 B/s: a three-second budget is 7,320 bytes and three hybrid-signed
+ * closures cost 10,119 bytes of signature before one content byte, so the
+ * answer is not "not achievable at this artifact size" but "not achievable at
+ * ANY artifact size". `canActivate` is false without that block, so a panel
+ * that lost the verdict loses the feature with it — the same rule the
+ * attestation model applies to its privacy disclosure, and for the same reason:
+ * ordering the markup is a promise, refusing without it is a rule.
+ *
+ * NO REASON IS RE-WORDED. Every `verdict.reason`, every `decision.reason`, the
+ * receipt's `summary`, the optical `note` and each unimplemented item's `note`
+ * are rendered verbatim. This model writes labels, ordering and tone.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports.activation = api;
+  } else {
+    root.RVQRActivationView = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /**
+   * The four closures, in words. Duplicated from closure.js rather than read
+   * from it because this model is pure and takes no dependency: a page whose
+   * closure.js failed to load still has to render the receipt already sitting
+   * in the vault, and a label table that arrived with the module would leave
+   * that record nameless.
+   */
+  var ROLE_LABELS = {
+    'manifest': 'manifest and policy',
+    'runtime': 'minimal RVM runtime',
+    'code': 'required code and hot state',
+    'cold': 'cold indexes and optional assets'
+  };
+
+  /**
+   * What each verdict state is called. A LABEL and not a reason — the module's
+   * own sentence is rendered under every one of these.
+   *
+   * A state this table does not know renders as the state string itself rather
+   * than as a blank heading, which is the UI half of closure.js's rule that an
+   * unrecognised state is refused rather than falling through.
+   */
+  var STATE_LABELS = {
+    'verified': 'Verified',
+    'malformed': 'Malformed — the offer could not be read at all',
+    'foreign': 'Foreign — a valid closure of a different artifact',
+    'out-of-order': 'Out of order — not the closure this receiver expects next',
+    'size-refused': 'Size refused — the declared size is not the committed one',
+    'inflation-refused': 'Inflation refused — decompression did not produce the declared bytes',
+    'digest-mismatch': 'Digest mismatch — these are not the bytes the manifest described',
+    'unsigned': 'Unsigned — nobody stands behind this closure',
+    'forged': 'Forged — the signature did not verify under the committed signer',
+    'unverified': 'Unverified — a check could not run, and a check that cannot run never passes'
+  };
+
+  /**
+   * What each decision code is called.
+   *
+   * The four situation codes at the top are here for the same reason attest.js's
+   * `policy-undeclared` is in its table: each is a refusal BY DESIGN rather than
+   * an error, each refuses before the offer is looked at, and a generic "closure
+   * refused" would erase the difference between an artifact that was sealed, an
+   * activation that was abandoned, a receiver with no anchor and a policy nobody
+   * declared.
+   */
+  var CODE_LABELS = {
+    'pending': 'No verdict yet',
+    'policy-undeclared': 'This receiver has not declared a closure policy',
+    'root-undeclared': 'No root is pinned for this activation',
+    'blocked': 'This activation was already abandoned',
+    'sealed-incomplete': 'This artifact was sealed incomplete',
+    'unknown-state': 'A verification state this build does not know',
+    'malformed': 'The offer could not be read',
+    'foreign': 'The closure belongs to another artifact',
+    'out-of-order': 'The closure is not the one expected next',
+    'size-refused': 'The declared size is not the committed one',
+    'inflation-refused': 'Decompression did not produce the declared bytes',
+    'digest-mismatch': 'The content is not what the manifest described',
+    'unsigned': 'The closure carries no signature',
+    'forged': 'The signature did not verify',
+    'unverified': 'A required check could not run',
+    'untrusted-signer': 'The signature verified under a signer this receiver does not trust',
+    'role-refused': 'This receiver does not admit closures of that role',
+    'admitted': 'Admitted'
+  };
+
+  /** The codes that refuse on the artifact's situation, before any verification. */
+  var SITUATION_CODES = ['policy-undeclared', 'root-undeclared', 'blocked', 'sealed-incomplete'];
+
+  function labelFor(table, key, fallback) {
+    if (typeof key !== 'string') return fallback;
+    return table[key] || (fallback === undefined ? key : fallback);
+  }
+
+  function roleLabel(role) {
+    if (typeof role !== 'string') return 'a position the manifest has not named yet';
+    return ROLE_LABELS[role] || role;
+  }
+
+  /**
+   * The five completion states of closure.js, as five different renderings.
+   *
+   * `complete` is READ from the receipt and never computed here. Two of the five
+   * wear the danger tone, and `partial` is one of them: an artifact whose cold
+   * state is still in flight is not a verified whole either, and colouring it
+   * amber-and-nearly-there would be the one thing ADR-022 §2.3 forbids. The
+   * difference between `partial` and `incomplete` is in the words — outstanding
+   * versus sealed — not in whether it looks like a success.
+   */
+  var COMPLETION = {
+    'complete': {
+      tone: 'good',
+      badge: 'Verified whole',
+      headline: 'Complete: every closure this artifact declares has verified, cold state included.'
+    },
+    'incomplete': {
+      tone: 'bad',
+      badge: 'Incomplete — sealed',
+      headline: 'Incomplete, and sealed: this artifact runs on its activation closures and can ' +
+        'never become a verified whole artifact.'
+    },
+    'partial': {
+      tone: 'bad',
+      badge: 'Incomplete — cold state outstanding',
+      headline: 'Running on its activation closures, with the cold state still outstanding. ' +
+        'This is not a verified whole artifact.'
+    },
+    'transferring': {
+      tone: '',
+      badge: 'Not started',
+      headline: 'The activation set has not verified, so no agent is running and nothing is reachable.'
+    },
+    'blocked': {
+      tone: 'bad',
+      badge: 'Blocked',
+      // Deliberately does not name the cause. Blocked covers a refused
+      // activation-set closure AND an activation with no pinned root, and the
+      // receipt's own `blockedReason` — rendered under this — says which.
+      headline: 'Blocked: the agent never starts and nothing downstream of it runs.'
+    }
+  };
+
+  /**
+   * The headline block. Fed the receipt and nothing else, so the same block is
+   * built from a live session and from a receipt read back out of the vault
+   * months later.
+   */
+  function completionBlock(receipt) {
+    if (!receipt || typeof receipt.completion !== 'string') {
+      return {
+        state: null,
+        tone: '',
+        badge: 'No activation',
+        complete: false,
+        headline: 'Nothing has been activated here.',
+        summary: 'No closure has been offered, so there is no activation to report.'
+      };
+    }
+    var shape = COMPLETION[receipt.completion] || {
+      tone: 'bad',
+      badge: 'Unknown state',
+      headline: 'This build does not know the completion state ' +
+        JSON.stringify(receipt.completion) + ', so it is reported as unknown rather than as complete.'
+    };
+    return {
+      state: receipt.completion,
+      tone: shape.tone,
+      badge: shape.badge,
+      // Copied, never derived. `running` is a different question and answering
+      // this one with it is the exact mistake ADR-022 §2.3 names.
+      complete: receipt.complete === true,
+      headline: shape.headline,
+      // closure.js's own sentence, verbatim.
+      summary: typeof receipt.summary === 'string' ? receipt.summary : ''
+    };
+  }
+
+  /**
+   * Every closure position and where it stands — a LIST, never a bar.
+   *
+   * A progress bar reads "nearly done", and on a sealed artifact that is the
+   * opposite of the truth: the missing closure is not late, it is not coming.
+   * So an unverified position on a sealed artifact says so in words rather than
+   * sitting in an unfilled segment.
+   */
+  function closureRows(positions, receipt) {
+    var sealed = !!(receipt && receipt.sealed);
+    return (Array.isArray(positions) ? positions : []).map(function (p) {
+      var verified = p.status === 'verified';
+      return {
+        index: p.index,
+        role: p.role,
+        activation: p.activation === true,
+        verified: verified,
+        label: 'Closure ' + p.index + ' — ' + roleLabel(p.role),
+        status: verified ? 'verified' : (sealed ? 'never' : 'outstanding'),
+        statusLabel: verified
+          ? (p.byteLength === null || p.byteLength === undefined
+            ? 'verified'
+            : 'verified, ' + p.byteLength + ' bytes')
+          : (sealed
+            ? 'never verified, and sealed away — this closure is not coming'
+            : 'outstanding — not offered, or offered and refused')
+      };
+    });
+  }
+
+  /**
+   * Why the last offer was refused, and WHAT WAS ACTUALLY LOOKED AT.
+   *
+   * closure.js refuses on the situation before it verifies anything, so a
+   * refusal after sealing carries a decision and no verdict. `examined` is that
+   * distinction, and it is the difference between "this closure is bad" and
+   * "this artifact does not take closures any more".
+   */
+  function refusalBlock(last) {
+    var decision = last && last.decision ? last.decision : null;
+    if (!decision || typeof decision.admit !== 'boolean' || decision.admit) return null;
+    var verdict = last.verdict || null;
+    var examined = !!(verdict && typeof verdict.state === 'string');
+    var onSeal = decision.code === 'sealed-incomplete';
+    var onSituation = SITUATION_CODES.indexOf(decision.code) >= 0;
+
+    var block = {
+      examined: examined,
+      onSeal: onSeal,
+      onSituation: onSituation,
+      code: decision.code,
+      // The gate's own sentence, unedited.
+      decisionLabel: labelFor(CODE_LABELS, decision.code, decision.code),
+      decisionText: decision.reason,
+      state: examined ? verdict.state : null,
+      stateLabel: examined ? labelFor(STATE_LABELS, verdict.state, verdict.state) : null,
+      stateText: examined ? verdict.reason : null,
+      title: '',
+      note: ''
+    };
+
+    if (onSeal) {
+      block.title = 'Refused on the seal, not on its merits';
+      block.note = 'Nothing was checked about this closure. It was not decompressed, not digested, ' +
+        'its signature was not verified and its role was never compared against the manifest — the ' +
+        'artifact was refused before the offer was looked at. This says nothing about the bytes, ' +
+        'which may be perfectly valid; a sealed artifact does not acquire the cold state, however ' +
+        'valid the offer.';
+      return block;
+    }
+    if (onSituation) {
+      block.title = 'Refused before the closure was looked at';
+      block.note = 'This activation refuses every offer in its current state, so the offer was not ' +
+        'decompressed, digested or put to a signature verifier. The refusal is of the activation, ' +
+        'not a judgement on these bytes.';
+      return block;
+    }
+    block.title = 'Refused on its merits';
+    block.note = examined
+      ? 'This closure was put through the pipeline and failed a step of it. The verification state ' +
+        'above names which step, and the gate’s own sentence names what that meant for the ' +
+        'activation.'
+      : 'The gate refused without a verification state, which this build reports as itself rather ' +
+        'than resolving into a reason it does not have.';
+    return block;
+  }
+
+  /**
+   * ADR-022 §4.6's answer, with the arithmetic on screen rather than in a
+   * report. The module's own `note` carries the derivation; these rows carry the
+   * figures separately so the conclusion survives a reader who skims.
+   */
+  function opticalBlock(budget) {
+    if (!budget || typeof budget.achievable !== 'boolean') return null;
+    var seconds = budget.seconds;
+    return {
+      achievable: budget.achievable,
+      projection: budget.projection === true,
+      hybrid: budget.hybrid === true,
+      headline: budget.achievable
+        ? 'A ' + seconds + '-second optical start leaves ' + budget.contentBytes +
+          ' B for content once the signatures are paid for.'
+        : 'A ' + seconds + '-second optical start is NOT ACHIEVABLE AT ANY ARTIFACT SIZE — the ' +
+          'signatures alone outgrow the whole budget, so no split, however small, reaches it.',
+      figures: [
+        {
+          label: 'Measured optical rate',
+          text: budget.rateBytesPerSecond + ' B/s' +
+            (budget.rateMeasured
+              ? ', the rate the protocol benchmark reports'
+              : ', supplied by the caller rather than measured here')
+        },
+        {
+          label: 'A ' + seconds + '-second budget',
+          text: budget.budgetBytes + ' B in total, for everything'
+        },
+        {
+          label: 'Signature floor',
+          text: budget.closures + ' closures × ' + budget.signatureBytesEach + ' B = ' +
+            budget.signatureFloorBytes + ' B of signature before a single content byte'
+        },
+        {
+          label: 'Left for content',
+          text: budget.contentBytes + ' B'
+        }
+      ],
+      // closure.js's own derivation, verbatim, including that it is a projection.
+      text: budget.note
+    };
+  }
+
+  /**
+   * What ADR-022 asks for that this build does not have, each with its status
+   * attached to its name — the rule attest.js's roots follow, for the same
+   * reason: a list read down its headings alone must still say so.
+   *
+   * `available` is derived from the status and is false for every status this
+   * module emits. Nothing here is ever offered as a choice.
+   */
+  function unimplementedRows(items) {
+    return (Array.isArray(items) ? items : []).map(function (r) {
+      var status = typeof r.status === 'string' ? r.status : 'unknown';
+      return {
+        id: r.id,
+        label: r.label + ' — ' + status,
+        status: status,
+        available: false,
+        text: r.note
+      };
+    });
+  }
+
+  /**
+   * The vault list's rendering of an activation, and the one place the list and
+   * the sheet are allowed to disagree about wording but never about outcome.
+   *
+   * Returns null for a record that was never activated, so an ordinary import
+   * gains no badge at all: absent and incomplete are different facts.
+   */
+  function vaultBadge(receipt) {
+    if (!receipt || typeof receipt.completion !== 'string') return null;
+    var complete = receipt.complete === true;
+    if (complete) {
+      return {
+        complete: true,
+        cls: 'whole',
+        label: 'verified whole',
+        title: typeof receipt.summary === 'string' ? receipt.summary : 'Every closure verified.'
+      };
+    }
+    return {
+      complete: false,
+      cls: 'incomplete',
+      label: receipt.sealed === true ? 'incomplete — sealed' : 'incomplete',
+      title: typeof receipt.summary === 'string' ? receipt.summary : 'Not a verified whole artifact.'
+    };
+  }
+
+  /**
+   * The same fact as a word on the row's own meta line, so the vault still
+   * distinguishes the two with no colour, no border and no badge — for a reader
+   * who cannot see any of them.
+   */
+  function vaultNote(receipt) {
+    if (!receipt || typeof receipt.completion !== 'string') return null;
+    var of = receipt.closuresVerified + ' of ' +
+      (receipt.closuresDeclared === null || receipt.closuresDeclared === undefined
+        ? 'an unknown number of' : receipt.closuresDeclared) + ' closures';
+    if (receipt.complete === true) return 'verified whole, ' + of;
+    if (receipt.sealed === true) return 'incomplete, sealed at ' + of;
+    return 'incomplete, ' + of;
+  }
+
+  function blockedReasonFor(receipt) {
+    if (!receipt || typeof receipt.blockedReason !== 'string' || !receipt.blockedReason) return null;
+    var summary = typeof receipt.summary === 'string' ? receipt.summary : '';
+    return summary.indexOf(receipt.blockedReason) >= 0 ? null : receipt.blockedReason;
+  }
+
+  /**
+   * @param parts { receipt, positions, optical, unimplemented, limits, last }
+   *              — exactly what closure.js returned, unedited
+   * @param opts  { moduleLoaded } — false when closure.js never arrived, which
+   *              turns the panel off rather than letting the page drive a gate
+   *              it does not have
+   */
+  function model(parts, opts) {
+    parts = parts || {};
+    opts = opts || {};
+    var optical = opticalBlock(parts.optical);
+    var completion = completionBlock(parts.receipt);
+    return {
+      moduleLoaded: opts.moduleLoaded !== false,
+      state: completion.state,
+      tone: completion.tone,
+      badge: completion.badge,
+      headline: completion.headline,
+      complete: completion.complete,
+      // The receipt's own sentence, which is the line an auditor reads.
+      receiptLine: completion.summary,
+      sealReason: parts.receipt && parts.receipt.sealReason ? parts.receipt.sealReason : null,
+      // Only when it is not already inside the summary. closure.js's blocked
+      // summary ends with this very sentence, and a panel that rendered both
+      // would print the reason twice — which reads as two problems.
+      blockedReason: blockedReasonFor(parts.receipt),
+      closures: closureRows(parts.positions, parts.receipt),
+      refusal: refusalBlock(parts.last),
+      optical: optical,
+      // ADR-022 §4.6 before ADR-022 §2.4: the target is not offered above a
+      // sentence saying it does not exist.
+      canActivate: optical !== null && opts.moduleLoaded !== false,
+      unimplemented: unimplementedRows(parts.unimplemented),
+      limits: Array.isArray(parts.limits) ? parts.limits : [],
+      vault: vaultBadge(parts.receipt),
+      vaultNote: vaultNote(parts.receipt)
+    };
+  }
+
+  return {
+    ROLE_LABELS: ROLE_LABELS,
+    STATE_LABELS: STATE_LABELS,
+    CODE_LABELS: CODE_LABELS,
+    COMPLETION: COMPLETION,
+    completionBlock: completionBlock,
+    closureRows: closureRows,
+    refusalBlock: refusalBlock,
+    opticalBlock: opticalBlock,
+    unimplementedRows: unimplementedRows,
+    vaultBadge: vaultBadge,
+    vaultNote: vaultNote,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
 
@@ -1477,6 +1953,7 @@
   function plannerLib() { return window.RVQRPlanner || null; }
   function compressLib() { return window.RVQRCompress || null; }
   function attestLib() { return window.RVQRAttest || null; }
+  function closureLib() { return window.RVQRClosure || null; }
 
   // The view model above, which this file also defines. Read through a getter
   // for the same reason as the rest: a missing panel is better than a broken
@@ -1486,6 +1963,7 @@
   function transferPlanView() { return window.RVQRTransferPlanView || null; }
   function compressionView() { return window.RVQRCompressionView || null; }
   function attestationView() { return window.RVQRAttestationView || null; }
+  function activationView() { return window.RVQRActivationView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -1628,7 +2106,14 @@
 
   // Single door into the vault, so the name clamp cannot be forgotten at a
   // call site. Names from a received manifest are unauthenticated input.
-  function storeArtifact(name, bytes, origin) {
+  //
+  // `activation` is ADR-022 §4.4's vault half: an artifact that came in through
+  // progressive activation carries its receipt into storage, so the record
+  // itself knows whether it is a verified whole artifact. It is stored as a
+  // plain copy rather than the frozen receipt, because IndexedDB's structured
+  // clone is what has to survive here and a record that failed to write would
+  // be an artifact whose incompleteness silently did not persist.
+  function storeArtifact(name, bytes, origin, activation) {
     var safeName = core.sanitizeName(name);
     return hashBytes(bytes).then(function (sha256) {
       var type = core.detectArtifactType(bytes);
@@ -1644,6 +2129,7 @@
         addedAt: Date.now(),
         data: bytes.buffer.byteLength === bytes.length ? bytes.buffer : bytes.slice().buffer
       };
+      if (activation) record.activation = JSON.parse(JSON.stringify(activation));
       return vaultPut(record);
     });
   }
@@ -1726,6 +2212,7 @@
       list.textContent = '';
       $('vaultCount').textContent = rows.length ? '(' + rows.length + ')' : '';
       refreshSendPicker();
+      refreshActivatePicker();
 
       scheduleExpiryTimer();
 
@@ -1737,16 +2224,32 @@
         return rows;
       }
 
+      var av = activationView();
+
       rows.forEach(function (row) {
         var btn = el('button', 'card artifact');
+        // ADR-022 §4.4's vault half. Three signals and not one: the row's own
+        // outline goes dashed, the badge goes dashed and red, and the meta line
+        // says the word — so an artifact stuck at closures 1-3 is told apart
+        // from a verified whole one by shape, by colour AND by text, rather
+        // than by any single one of them.
+        var act = (av && row.activation) ? av.vaultBadge(row.activation) : null;
+        var actNote = (av && row.activation) ? av.vaultNote(row.activation) : null;
+        if (act && !act.complete) btn.classList.add('incomplete');
         var g = el('div', 'glyph ' + row.kind, glyphFor(row.kind));
         var mid = el('div', 'grow');
         var nameLine = el('div', 'name truncate', row.name);
         var meta = el('div', 'small muted truncate');
-        meta.textContent = core.formatBytes(row.size) + ' · ' + row.sha256.slice(0, 12) + '…';
+        meta.textContent = core.formatBytes(row.size) + ' · ' + row.sha256.slice(0, 12) + '…' +
+          (actNote ? ' · ' + actNote : '');
         mid.appendChild(nameLine);
         mid.appendChild(meta);
         var badges = el('div', 'badges');
+        if (act) {
+          var actBadge = el('span', 'badge ' + act.cls, act.label);
+          actBadge.title = act.title;
+          badges.appendChild(actBadge);
+        }
         if (row.origin === 'received') {
           badges.appendChild(el('span', 'badge received', 'received'));
         }
@@ -1839,6 +2342,12 @@
       kv('First bytes', core.hexPreview(bytes, 32), 'mono');
       body.appendChild(dl);
 
+      // ADR-022 §4.4's UI half, and ABOVE every other panel in the sheet — a
+      // reader must meet "this is not a verified whole artifact" before they
+      // meet its contents, its provenance or the button that sends it on.
+      var actBox = buildActivationDetail(row);
+      if (actBox) body.appendChild(actBox);
+
       if (row.kind === 'rvf') {
         var rvfBox = el('div', 'card tight');
         rvfBox.style.marginTop = '1rem';
@@ -1906,6 +2415,79 @@
 
       showSheet();
     });
+  }
+
+  /**
+   * What an activated artifact's record says about itself, in the detail sheet.
+   *
+   * Returns null for a record that never went through an activation, because a
+   * plain import is not an incomplete activation — absent and incomplete are
+   * different facts and a sheet that annotated every artifact would make the
+   * distinction worthless.
+   *
+   * There is NO PROGRESS BAR here and no percentage. `closures` is a list of
+   * named positions, and on a sealed artifact the unverified ones say they are
+   * not coming: sealing is the decision that there will be no more, so anything
+   * that read as "nearly done" would be reporting the opposite of the state.
+   */
+  function buildActivationDetail(row) {
+    if (!row.activation) return null;
+    var view = activationView();
+    var box = el('div', 'card tight');
+    box.style.marginTop = '1rem';
+    box.appendChild(el('h3', '', 'Progressive activation'));
+
+    if (!view) {
+      // The receipt is in the record and the reader is not shown it. Saying so
+      // is the only honest option: reporting nothing here would let an
+      // incomplete artifact present as an ordinary one.
+      box.appendChild(el('p', 'small muted',
+        'This artifact carries an activation receipt and the panel that reads it did not load, ' +
+        'so its completion state cannot be rendered. It is not being reported as complete.'));
+      return box;
+    }
+
+    var m = view.model({ receipt: row.activation, positions: [] }, {});
+
+    var n = el('div', m.tone ? 'notice ' + m.tone : 'notice');
+    n.appendChild(el('strong', '', m.badge + ' — '));
+    n.appendChild(document.createTextNode(m.headline));
+    box.appendChild(n);
+
+    // closure.js's own summary line, which is what an auditor reads. It names
+    // "verified whole artifact" or refuses to, in the module's words.
+    if (m.receiptLine) box.appendChild(el('p', 'small', m.receiptLine));
+
+    var dl = el('dl', 'kv');
+    dl.appendChild(el('dt', '', 'Verified whole artifact'));
+    dl.appendChild(el('dd', '', m.complete ? 'Yes — every declared closure verified.'
+      : 'No. This artifact runs on its activation closures and is not a verified whole.'));
+    dl.appendChild(el('dt', '', 'Closures verified'));
+    dl.appendChild(el('dd', 'muted',
+      row.activation.closuresVerified + ' of ' +
+      (row.activation.closuresDeclared === null || row.activation.closuresDeclared === undefined
+        ? 'an unknown number' : row.activation.closuresDeclared)));
+    if (Array.isArray(row.activation.activated) && row.activation.activated.length) {
+      dl.appendChild(el('dt', '', 'Activated'));
+      dl.appendChild(el('dd', 'muted', row.activation.activated.map(function (r) {
+        return view.ROLE_LABELS[r] || r;
+      }).join(', ')));
+    }
+    if (Array.isArray(row.activation.outstanding) && row.activation.outstanding.length) {
+      dl.appendChild(el('dt', '', row.activation.sealed ? 'Sealed away, never verified' : 'Outstanding'));
+      dl.appendChild(el('dd', 'muted', row.activation.outstanding.map(function (r) {
+        return view.ROLE_LABELS[r] || r || 'a position the manifest never named';
+      }).join(', ')));
+    }
+    box.appendChild(dl);
+
+    if (m.sealReason) {
+      box.appendChild(el('p', 'small muted', 'Sealed because: ' + m.sealReason));
+    }
+    if (m.blockedReason) {
+      box.appendChild(el('p', 'small muted', m.blockedReason));
+    }
+    return box;
   }
 
   // ---------------------------------------------------------------------------
@@ -3960,6 +4542,489 @@
     if (m.custodyNote) rootsBox.appendChild(el('p', 'small muted', m.custodyNote));
   }
 
+  // --- Progressive activation ------------------------------------------------
+  //
+  // ADR-022: an artifact split into four independently signed closures, and an
+  // agent that starts once 1-3 verify while 4 is still crossing the channel.
+  //
+  // THE GATE IS REAL AND IT IS CLOSURE.JS'S. Nothing here decides whether a
+  // closure verifies. The digest is core.js's SHA-256, the signature is
+  // crypto.js's Ed25519, both are handed to closure.js by injection, and every
+  // admission is its answer. With crypto.js absent there is no verifier, every
+  // closure lands on `unverified` and the gate refuses — which is the correct
+  // outcome and the panel says so, because a check that cannot run must never
+  // degrade into a pass.
+  //
+  // ED25519 IS HALF OF ADR-012'S SCHEME, and the unimplemented list at the
+  // bottom of the panel says exactly that in closure.js's own words. There is no
+  // ML-DSA-65 in this repository, so every hybrid figure on this page — the
+  // optical budget included — is arithmetic over ADR-022's own 3,309 bytes per
+  // signature and is labelled a projection where it is shown.
+  //
+  // THE SPLIT IS THIS PAGE'S OWN AND IT SAYS SO. ADR-022 §3 is explicit that
+  // deciding what is required code and hot state versus cold is
+  // artifact-specific and that the tooling does not exist; describeUnimplemented()
+  // repeats it from inside the running system. So the split below is a fixed
+  // quarter/quarter/half of the artifact's bytes, chosen by nothing, and the
+  // note under the picker states that rather than letting an operator read a
+  // reasoned split into it.
+  //
+  // NO RADIO TIER IS OFFERED. ADR-022 §4.5's target is a radio-tier one, this
+  // repository has no radio transport, and there is no control here that
+  // suggests otherwise.
+
+  var activation = {
+    // The closure.js session. Immutable — every offer returns a new one.
+    session: null,
+    // The four closures this page built out of one vault artifact.
+    art: null,
+    // The most recent { verdict, decision }, so a refusal stays on screen
+    // instead of being replaced by the state it produced.
+    last: null,
+    // How many closures have been ADMITTED, which is where the next offer comes
+    // from. A refusal does not advance it: a refused closure was not accepted,
+    // so the next offer is the same position again.
+    offered: 0,
+    storedId: null,
+    // Why no closures could be built out of the chosen artifact, when that is
+    // the answer. Reported at the picker, where it can be acted on.
+    buildError: null
+  };
+
+  /** Minimal UTF-8 encode, so this call site needs nothing it does not have. */
+  function utf8(text) {
+    if (typeof TextEncoder === 'function') return new TextEncoder().encode(text);
+    var out = new Uint8Array(text.length);
+    for (var i = 0; i < text.length; i++) out[i] = text.charCodeAt(i) & 0xff;
+    return out;
+  }
+
+  /** A run of lowercase hex to bytes, for the 64-byte Ed25519 signatures. */
+  function hexRun(hex) {
+    if (typeof hex !== 'string' || (hex.length & 1) || !/^[0-9a-f]*$/.test(hex)) return null;
+    var out = new Uint8Array(hex.length / 2);
+    for (var i = 0; i < out.length; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
+  }
+
+  /**
+   * The injected checks, ADR-016 §2.2 steps 2-4.
+   *
+   * No `inflate`: nothing here compresses a closure, and supplying a
+   * decompressor that would never be called would put a capability on the
+   * record that does not exist. A compressed closure arriving from anywhere
+   * else is refused as unverified, which is the honest answer.
+   *
+   * `verifySignature` checks the signer NAMED BY THE VERIFIED CHAIN and refuses
+   * anything else outright. The offer never names a signer — closure.js does not
+   * read one from it — so this cannot be talked into checking against a key the
+   * bytes chose.
+   */
+  function activationChecks() {
+    return {
+      digest: function (bytes) { return core.sha256Hex(bytes); },
+      verifySignature: function (desc) {
+        var C = cryptoLib();
+        if (!C || !activation.art || !activation.art.publicKey) return false;
+        if (desc.signerId !== activation.art.signerId) return false;
+        var sig = hexRun(desc.signature);
+        if (!sig || sig.length !== 64) return false;
+        return C.verifySync(activation.art.publicKey, utf8(desc.message), sig);
+      }
+    };
+  }
+
+  /**
+   * Four closures out of one vault artifact, in the shape closure.test.js
+   * builds them: an ordered manifest committing every later closure's digest,
+   * role and size, a root pinning closure 1, and one signature per closure over
+   * artifactId, index, role and digest together.
+   *
+   * Returns { error } rather than throwing, and rather than half-building
+   * something: an artifact too small to split into three non-empty spans is a
+   * fact to report, not an exception on the path that verifies things.
+   */
+  function buildActivationArtifact(row, bytes) {
+    var K = closureLib();
+    var C = cryptoLib();
+    if (!K) return { error: 'The activation module did not load.' };
+    if (bytes.length < 3) {
+      return {
+        error: 'This artifact is ' + bytes.length + ' bytes, which cannot be split into three ' +
+          'non-empty closures. Nothing was built, because a closure of no bytes is not a smaller ' +
+          'closure — it is a position with nothing in it.'
+      };
+    }
+
+    var seed = new Uint8Array(32);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(seed);
+    else for (var s = 0; s < seed.length; s++) seed[s] = Math.floor(Math.random() * 256);
+    var pub = C ? C.publicKeyFromSeed(seed) : null;
+
+    var artifactId = 'rvqr:' + row.sha256.slice(0, 32);
+    var signerId = pub ? 'rvqr-page:' + core.toHex(pub).slice(0, 32) : 'rvqr-page:unsigned';
+
+    // The page's own arbitrary split. See the section note: nothing in this
+    // repository decides which bytes are hot.
+    var cut1 = Math.max(1, Math.floor(bytes.length / 4));
+    var cut2 = Math.max(cut1 + 1, cut1 + Math.floor(bytes.length / 4));
+    if (cut2 >= bytes.length) cut2 = bytes.length - 1;
+    var runtime = bytes.subarray(0, cut1);
+    var code = bytes.subarray(cut1, cut2);
+    var cold = bytes.subarray(cut2);
+
+    var entries = [
+      { role: K.ROLE_RUNTIME, digest: core.sha256Hex(runtime), originalSize: runtime.length },
+      { role: K.ROLE_CODE, digest: core.sha256Hex(code), originalSize: code.length },
+      { role: K.ROLE_COLD, digest: core.sha256Hex(cold), originalSize: cold.length }
+    ];
+    var manifest = { artifactId: artifactId, signerId: signerId, closures: entries };
+    var manifestBytes = utf8(JSON.stringify(manifest));
+
+    function offerFor(index, role, payload) {
+      var digest = core.sha256Hex(payload);
+      var message = K.closureSigningString({
+        artifactId: artifactId, index: index, role: role, digest: digest
+      });
+      return {
+        artifactId: artifactId,
+        index: index,
+        role: role,
+        payload: payload,
+        compressed: false,
+        originalSize: payload.length,
+        // No signature at all when there is no signer, rather than a placeholder:
+        // closure.js refuses an unsigned closure as one nobody stands behind,
+        // which is exactly what a page with no crypto.js has.
+        signature: C ? core.toHex(C.signSync(seed, utf8(message))) : null
+      };
+    }
+
+    return {
+      sourceName: row.name,
+      sourceId: row.id,
+      artifactId: artifactId,
+      signerId: signerId,
+      publicKey: pub,
+      root: {
+        artifactId: artifactId,
+        signerId: signerId,
+        digest: core.sha256Hex(manifestBytes),
+        originalSize: manifestBytes.length
+      },
+      policy: {
+        requireSignature: true,
+        trustedSigners: [signerId],
+        allowRoles: [K.ROLE_MANIFEST, K.ROLE_RUNTIME, K.ROLE_CODE, K.ROLE_COLD]
+      },
+      offers: [
+        offerFor(1, K.ROLE_MANIFEST, manifestBytes),
+        offerFor(2, K.ROLE_RUNTIME, runtime),
+        offerFor(3, K.ROLE_CODE, code),
+        offerFor(4, K.ROLE_COLD, cold)
+      ]
+    };
+  }
+
+  /** One flipped bit, so a refusal ON THE MERITS is reachable from the page. */
+  function damagedOffer(offer) {
+    var payload = offer.payload.slice();
+    payload[0] = payload[0] ^ 0xff;
+    return {
+      artifactId: offer.artifactId,
+      index: offer.index,
+      role: offer.role,
+      payload: payload,
+      compressed: offer.compressed,
+      originalSize: offer.originalSize,
+      signature: offer.signature
+    };
+  }
+
+  function refreshActivatePicker() {
+    var pick = $('activatePick');
+    if (!pick) return;
+    var current = pick.value;
+    pick.textContent = '';
+    if (!cachedVault.length) {
+      var none = el('option', '', 'No artifacts in the vault yet');
+      none.value = '';
+      pick.appendChild(none);
+      return;
+    }
+    var placeholder = el('option', '', 'Choose an artifact…');
+    placeholder.value = '';
+    pick.appendChild(placeholder);
+    cachedVault.forEach(function (row) {
+      // A record that is already an activation result is offered too: splitting
+      // it again is a legitimate thing to try, and hiding it would be the panel
+      // deciding what may be activated on the operator's behalf.
+      var o = el('option', '', row.name + ' · ' + core.formatBytes(row.size));
+      o.value = row.id;
+      pick.appendChild(o);
+    });
+    if (current) pick.value = current;
+  }
+
+  /** Starts a fresh activation of whatever the picker names. */
+  function activationBegin() {
+    var K = closureLib();
+    activation.session = null;
+    activation.art = null;
+    activation.last = null;
+    activation.offered = 0;
+    activation.storedId = null;
+    var id = $('activatePick').value;
+    if (!K || !id) { renderActivation(); return; }
+    vaultGet(id).then(function (row) {
+      if (!row) { renderActivation(); return; }
+      var built = buildActivationArtifact(row, recordBytes(row));
+      if (built.error) {
+        activation.art = null;
+        activation.buildError = built.error;
+        renderActivation();
+        return;
+      }
+      activation.buildError = null;
+      activation.art = built;
+      activation.session = K.beginActivation(built.root, built.policy);
+      renderActivation();
+    });
+  }
+
+  function activationOfferNext() {
+    var K = closureLib();
+    if (!K || !activation.session || !activation.art) return;
+    var offer = activation.art.offers[activation.offered];
+    if (!offer) {
+      toast('Every closure this manifest declares has already been admitted');
+      return;
+    }
+    if ($('activateDamage').checked) offer = damagedOffer(offer);
+    var r = K.offerClosure(activation.session, offer, activationChecks());
+    activation.session = r.session;
+    activation.last = { verdict: r.verdict, decision: r.decision };
+    // Only an admission advances the position. A refused closure was not
+    // accepted, so the next offer is the same position again — which is what
+    // makes the seal refusal reachable by offering closure 4 a second time.
+    if (r.decision && r.decision.admit) activation.offered++;
+    renderActivation();
+  }
+
+  /**
+   * ADR-022 §2.3's decision, taken rather than discovered.
+   *
+   * Only meaningful on a partial activation, and the button is disabled
+   * otherwise rather than calling into a no-op: sealing a complete artifact
+   * would be marking a verified whole incomplete, and closure.js quietly
+   * returning the same session would leave the operator thinking they had.
+   */
+  function activationSeal() {
+    var K = closureLib();
+    if (!K || !activation.session) return;
+    activation.session = K.sealIncomplete(activation.session);
+    // The seal is not a refusal of anything, so the last refusal is cleared:
+    // leaving it up would attach the previous closure's reason to this state.
+    activation.last = null;
+    renderActivation();
+  }
+
+  /**
+   * Writes what the agent can actually reach into the vault, with the receipt.
+   *
+   * The bytes stored are the ones agentView() exposes and no others — the
+   * manifest closure is metadata rather than artifact content, and the cold
+   * closure is reachable only when the whole artifact verified. So a sealed
+   * artifact stores strictly less than it started with, which is the point:
+   * the vault holds what verified, and the receipt beside it says whether that
+   * was everything.
+   */
+  function activationStore() {
+    var K = closureLib();
+    if (!K || !activation.session || !activation.art) return;
+    var view = K.agentView(activation.session);
+    if (!view.running) {
+      toast('Nothing is running, so there is nothing the agent can reach');
+      return;
+    }
+    var parts = [];
+    [K.ROLE_RUNTIME, K.ROLE_CODE].forEach(function (role) {
+      if (view.closures[role]) parts.push(view.closures[role]);
+    });
+    view.cold.forEach(function (c) { parts.push(c); });
+    var total = parts.reduce(function (n, p) { return n + p.length; }, 0);
+    var joined = new Uint8Array(total);
+    var at = 0;
+    parts.forEach(function (p) { joined.set(p, at); at += p.length; });
+
+    var receipt = K.activationReceipt(activation.session);
+    storeArtifact(activation.art.sourceName + ' · activated', joined, 'activated', receipt)
+      .then(function (record) {
+        activation.storedId = record.id;
+        toast(receipt.complete
+          ? 'Stored as a verified whole artifact'
+          : 'Stored as INCOMPLETE — ' + core.formatBytes(joined.length) + ' of what verified');
+        renderVault();
+        renderActivation();
+      }, function (err) {
+        toast('Could not store: ' + err.message);
+      });
+  }
+
+  /**
+   * The panel.
+   *
+   * Order is load-bearing: the optical verdict is painted BEFORE the controls
+   * are enabled, and `canActivate` is false without it, so a page that lost the
+   * verdict loses the feature rather than offering a three-second start above a
+   * blank space where the sentence saying there is not one used to be.
+   */
+  function renderActivation() {
+    var K = closureLib();
+    var view = activationView();
+    var opticalBox = $('activateOptical');
+    var box = $('activateResult');
+    var unimplBox = $('activateUnimplemented');
+    opticalBox.textContent = '';
+    box.textContent = '';
+    unimplBox.textContent = '';
+
+    // No session yet is NOT a blocked activation. activationReceipt(null)
+    // reports `blocked` because a non-session cannot verify anything, and
+    // rendering that before anything has been chosen would tell an operator
+    // their activation had failed when they have not begun one — so the
+    // receipt is simply absent and the model says nothing has been activated.
+    var m = view
+      ? (K
+        ? view.model({
+          receipt: activation.session ? K.activationReceipt(activation.session) : null,
+          positions: activation.session ? K.positions(activation.session) : [],
+          optical: K.opticalBudget(),
+          unimplemented: K.describeUnimplemented(),
+          limits: K.describeLimits(),
+          last: activation.last
+        }, { moduleLoaded: true })
+        : view.model({}, { moduleLoaded: false }))
+      : null;
+
+    function disableAll() {
+      ['activatePick', 'activateDamage', 'activateOfferBtn', 'activateSealBtn',
+        'activateStoreBtn', 'activateResetBtn'].forEach(function (id) {
+        $(id).disabled = true;
+      });
+    }
+
+    if (!m || !m.canActivate) {
+      // No module, no arithmetic, NO ACTIVATION. A panel that drove a gate the
+      // page had simulated would be the single thing ADR-022 §3 warns about:
+      // a check that exists beside a path around it.
+      opticalBox.className = 'notice bad';
+      opticalBox.textContent = 'The progressive activation module did not load, so nothing here can ' +
+        'verify a closure — and no activation is offered. An artifact starts only when the whole of ' +
+        'it has been verified, which is where this app was before ADR-022.';
+      disableAll();
+      return;
+    }
+
+    // ADR-022 §4.6, first and unfoldable. The figures are separate rows from
+    // the module's own derivation so the conclusion survives a reader who skims.
+    opticalBox.className = m.optical.achievable ? 'notice' : 'notice bad';
+    opticalBox.appendChild(el('strong', '', 'The optical answer. '));
+    opticalBox.appendChild(document.createTextNode(m.optical.headline));
+    var ol = el('dl', 'kv');
+    m.optical.figures.forEach(function (f) {
+      ol.appendChild(el('dt', '', f.label));
+      ol.appendChild(el('dd', 'muted', f.text));
+    });
+    opticalBox.appendChild(ol);
+    opticalBox.appendChild(el('p', 'small muted', m.optical.text));
+
+    var started = !!(activation.session && activation.art);
+    var partial = m.state === 'partial';
+    $('activatePick').disabled = false;
+    $('activateResetBtn').disabled = false;
+    $('activateDamage').disabled = !started;
+    $('activateOfferBtn').disabled = !started ||
+      activation.offered >= activation.art.offers.length;
+    // Disabled rather than a no-op: sealing anything but a partial activation
+    // is a no-op inside closure.js, and a button that quietly did nothing would
+    // read as a decision that had been taken.
+    $('activateSealBtn').disabled = !partial;
+    $('activateStoreBtn').disabled = !started || !(m.state === 'partial' ||
+      m.state === 'incomplete' || m.state === 'complete');
+
+    $('activateSplitNote').textContent = activation.buildError
+      ? activation.buildError
+      : (activation.art
+        ? 'Split into four closures by this page: a manifest committing the other three, then a ' +
+          'quarter of the bytes as runtime, a quarter as code and the rest as cold state. Nothing ' +
+          'in this repository decides that split — see the list at the bottom of this panel — so ' +
+          'it is arbitrary and is shown as arbitrary.'
+        : 'Choose an artifact and this page will split it into four closures. The split is this ' +
+          'page’s own: no tool here decides which bytes are hot and which are cold.');
+
+    $('activateDamageNote').textContent = $('activateDamage').checked
+      ? 'The next closure will have one byte flipped before it is offered, so it fails on its ' +
+        'digest. That is a refusal ON THE MERITS, and it reads differently from a refusal on the ' +
+        'seal — which is the point of being able to cause one.'
+      : 'Every closure is offered as built. Tick this to damage the next one and see what a ' +
+        'refusal on the merits looks like beside a refusal on the seal.';
+
+    // The state, in the tone that state deserves. Two of the five wear the
+    // danger tone and `partial` is one of them: not-yet-whole is not nearly-whole.
+    var n = el('div', m.tone ? 'notice ' + m.tone : 'notice');
+    n.appendChild(el('strong', '', m.badge + ' — '));
+    n.appendChild(document.createTextNode(m.headline));
+    box.appendChild(n);
+    if (m.receiptLine) box.appendChild(el('p', 'small', m.receiptLine));
+    if (m.sealReason) box.appendChild(el('p', 'small muted', 'Sealed because: ' + m.sealReason));
+    if (m.blockedReason) box.appendChild(el('p', 'small muted', m.blockedReason));
+
+    // The refusal, when there is one, and WHAT WAS LOOKED AT. A refusal after
+    // sealing carries no verification state at all, and saying so is the
+    // difference between accusing the bytes and reporting the artifact.
+    if (m.refusal) {
+      box.appendChild(el('p', 'small', m.refusal.title));
+      var rl = el('dl', 'kv');
+      if (m.refusal.examined) {
+        rl.appendChild(el('dt', '', m.refusal.stateLabel));
+        rl.appendChild(el('dd', '', m.refusal.stateText));
+      }
+      rl.appendChild(el('dt', '', m.refusal.decisionLabel));
+      rl.appendChild(el('dd', '', m.refusal.decisionText));
+      box.appendChild(rl);
+      box.appendChild(el('p', 'small muted', m.refusal.note));
+    }
+
+    // Every position and where it stands. A list, never a bar.
+    if (m.closures.length) {
+      box.appendChild(el('p', 'small', 'The closures'));
+      var cl = el('dl', 'kv');
+      m.closures.forEach(function (c) {
+        cl.appendChild(el('dt', '', c.label + (c.activation ? ' · activation set' : '')));
+        cl.appendChild(el('dd', c.verified ? '' : 'muted', c.statusLabel));
+      });
+      box.appendChild(cl);
+    }
+
+    if (activation.storedId) {
+      box.appendChild(el('p', 'small muted',
+        'Stored in the vault, receipt and all. The vault list and the artifact’s own sheet report ' +
+        'the same completion state as this panel.'));
+    }
+
+    // What ADR-022 asks for that this build does not have, each name carrying
+    // its status. There is no picker of any of these, because every one of them
+    // is absent and offering one would claim a capability the module disclaims.
+    unimplBox.appendChild(el('p', 'small', 'What ADR-022 asks for that this build does not have'));
+    var ul = el('dl', 'kv');
+    m.unimplemented.forEach(function (r) {
+      ul.appendChild(el('dt', '', r.label));
+      ul.appendChild(el('dd', 'muted', r.text));
+    });
+    unimplBox.appendChild(ul);
+  }
+
   function startSend(id, overrideBytes, overrideName) {
     stopSend();
     // The delta path sends bytes that are in no vault record, and calls this
@@ -5761,6 +6826,17 @@
       renderAttestation(true);
     });
 
+    // --- progressive activation ---
+    // Choosing a different artifact is a different activation, so the session
+    // is discarded rather than carried across: a session anchored to one root
+    // has nothing to say about another artifact's closures.
+    $('activatePick').addEventListener('change', activationBegin);
+    $('activateResetBtn').addEventListener('click', activationBegin);
+    $('activateOfferBtn').addEventListener('click', activationOfferNext);
+    $('activateSealBtn').addEventListener('click', activationSeal);
+    $('activateStoreBtn').addEventListener('click', activationStore);
+    $('activateDamage').addEventListener('change', renderActivation);
+
     // --- delta ---
     $('deltaPairBtn').addEventListener('click', startPairing);
     $('deltaPairConfirmBtn').addEventListener('click', finishPairing);
@@ -5933,6 +7009,11 @@
     // renderAttestation() is also what disables the controls when attest.js is
     // absent, so it has to run whether the module arrived or not.
     renderAttestation();
+    // Same rule, same reason: ADR-022 §4.6's optical verdict has to be on
+    // screen before anything offers a progressive activation, and
+    // renderActivation() is also what turns the panel off when closure.js never
+    // arrived. So it runs on load whether the module is here or not.
+    renderActivation();
     offerResume();
     // The radio policy exists to constrain the planner. Without planner.js
     // there is nothing to constrain, so the control is removed rather than left
