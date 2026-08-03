@@ -806,6 +806,105 @@
       return gate.attempts + ' decode attempts for 100 frames (' + saved + '% skipped)';
     });
 
+    // -- welcome animation ---------------------------------------------------
+    // These exist because the loop shipped broken once: the canvas painted a
+    // single frame and never changed again, which is invisible to every test
+    // that does not actually advance a clock.
+
+    function pumpStage(env, ms, stepMs, opts) {
+      var model = core.createStageModel(opts);
+      var seen = [], draws = 0;
+      for (var t = 0; t <= ms; t += stepMs) {
+        var r = core.stageAdvance(model, t, env);
+        if (r.draw) { draws++; seen.push(core.stageFingerprint(model)); }
+      }
+      return { model: model, draws: draws, seen: seen, distinct: countDistinct(seen) };
+    }
+    function countDistinct(list) {
+      var map = {};
+      for (var i = 0; i < list.length; i++) map[list[i]] = true;
+      var n = 0;
+      for (var k in map) if (Object.prototype.hasOwnProperty.call(map, k)) n++;
+      return n;
+    }
+
+    test('welcome animation: the picture actually changes over time', function () {
+      // The exact scenario that caught the bug: 900 ms of 60 Hz frames with no
+      // motion preference. A frozen loop scores 1 here.
+      var run = pumpStage({ open: true, visible: true, reduced: false }, 900, 1000 / 60);
+      assert(run.draws > 0, 'nothing was drawn at all');
+      assert(run.distinct > 5, 'the picture barely changed: ' + run.distinct + ' distinct states');
+      assert(run.seen[0] !== run.seen[run.seen.length - 1],
+        'first and last frame are identical — the loop is not advancing');
+      return run.draws + ' draws, ' + run.distinct + ' distinct pictures in 900ms';
+    });
+
+    test('welcome animation: the first frame paints whatever the clock reads', function () {
+      // The clock is page-relative, so a model must not decide its first paint
+      // by comparing against a zero-initialised timestamp.
+      var model = core.createStageModel();
+      var late = core.stageAdvance(model, 1e9, { open: true, visible: true });
+      assert(late.draw, 'the first frame was skipped on a long-running page');
+      assertEqual(late.reason, 'advanced', 'reason');
+      var fresh = core.createStageModel();
+      assert(core.stageAdvance(fresh, 0, { open: true, visible: true }).draw,
+        'the first frame was skipped at time zero');
+      return 'paints at t=0 and at t=1e9';
+    });
+
+    test('welcome animation: throttled to its frame budget, not the display', function () {
+      var run = pumpStage({ open: true, visible: true, reduced: false }, 1000, 1000 / 120, { fps: 30 });
+      // One second at the configured 30fps, with a little slack for rounding.
+      assert(run.draws <= 32, 'drew ' + run.draws + ' times in a second at 30fps');
+      assert(run.draws >= 28, 'only drew ' + run.draws + ' times in a second at 30fps');
+      return run.draws + ' draws per second at 120Hz input';
+    });
+
+    test('welcome animation: stops when the dialog is closed or hidden', function () {
+      var closed = pumpStage({ open: false, visible: true }, 500, 16);
+      assertEqual(closed.draws, 0, 'drew while closed');
+      var hidden = pumpStage({ open: true, visible: false }, 500, 16);
+      assertEqual(hidden.draws, 0, 'drew while the page was hidden');
+      // And it resumes cleanly rather than staying wedged.
+      var model = core.createStageModel();
+      core.stageAdvance(model, 0, { open: false, visible: true });
+      assert(core.stageAdvance(model, 16, { open: true, visible: true }).draw, 'never resumed');
+      return 'no draws while closed or hidden, resumes after';
+    });
+
+    test('welcome animation: reduced motion paints one still and then rests', function () {
+      var env = { open: true, visible: true, reduced: true };
+      var run = pumpStage(env, 900, 1000 / 60);
+      assertEqual(run.draws, 1, 'reduced motion should paint exactly once');
+      // The still has to carry the idea on its own: partly filled, one in flight.
+      assert(run.model.landed > 0, 'the still shows an empty receiver');
+      assert(run.model.landed < run.model.cells, 'the still shows a finished transfer');
+      assertEqual(run.model.packets.length, 1, 'the still should show a frame in flight');
+      // And it must look different from the animated path, or the preference
+      // is not actually being honoured.
+      var moving = pumpStage({ open: true, visible: true, reduced: false }, 900, 1000 / 60);
+      assert(moving.distinct !== run.distinct, 'both motion modes produced the same output');
+      return 'one still: ' + core.stageFingerprint(run.model);
+    });
+
+    test('welcome animation: frames cross, land, and the loop restarts', function () {
+      var run = pumpStage({ open: true, visible: true, reduced: false }, 20000, 1000 / 60);
+      var landedSeen = 0, sawFull = false, sawReset = false;
+      var model = core.createStageModel();
+      var prevLanded = 0;
+      for (var t = 0; t <= 20000; t += 1000 / 60) {
+        core.stageAdvance(model, t, { open: true, visible: true });
+        if (model.landed > prevLanded) landedSeen++;
+        if (model.landed >= model.cells) sawFull = true;
+        if (sawFull && model.landed === 0) sawReset = true;
+        prevLanded = model.landed;
+      }
+      assert(landedSeen > 0, 'no frame ever landed');
+      assert(sawFull, 'the receiver grid never filled');
+      assert(sawReset, 'the animation never looped back to the start');
+      return landedSeen + ' landings, filled and looped';
+    });
+
     // -- first-run state -----------------------------------------------------
 
     test('welcome: shows once, then stays dismissed', function () {

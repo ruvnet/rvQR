@@ -277,9 +277,9 @@ frames per transfer:
 | `rlf` (reference) | 1.00 | 1.48 | 1.62 | 1.71 |
 | `lt` (reference) | 36.00 | 38.07 | 35.57 | 36.09 |
 
-At K=81 the shipped codec needed zero extra symbols in 498 of every 500 trials
-and one extra in the other two, at every loss rate from 10% to 60%, with a worst
-case of +1 across all 3,500. The reference codecs bracket it exactly as
+Across all 3,500 iid trials at K=81, the shipped codec needed zero extra symbols
+in 3,485 and exactly one in the remaining 15. No trial anywhere in the run needed
+two. The reference codecs bracket it exactly as
 predicted: the near-optimal random linear fountain costs ~1.5 symbols, and a
 textbook LT code costs 36.
 
@@ -287,7 +287,7 @@ textbook LT code costs 36.
 minimum by the time the transfer actually completed, which includes symbols that
 arrived while the receiver held full rank but was still waiting for a manifest.
 For the shipped fountain at K=81 the two are almost identical, but on a small
-object they diverge violently — see section 2. An earlier draft of this report
+object they diverge violently — see section 3. An earlier draft of this report
 conflated them and reported outliers of +6 and +11 symbols as coding overhead;
 they were manifest waits, and the corrected figure is +1.
 
@@ -308,7 +308,7 @@ K, since the solve is O(K²·(K+T)); the codec caps K at 4096 for that reason.
 
 ---
 
-## 1b. Reception overhead at the codec, and an independent reproduction
+## 2. Reception overhead at the codec, and an independent reproduction
 
 The loss suite measures the codec through a transport. This suite measures it
 directly: encoding symbols are handed to a decoder across a lossy channel with
@@ -399,7 +399,7 @@ the default rate, so the constraint that binds first is patience, not compute.
 
 ---
 
-## 2. Where the fountain loses: small objects and the manifest
+## 3. Where the fountain loses: small objects and the manifest
 
 Payload: `artifacts/demo/ruvnet-demo.rvf`, 2304 bytes, 512 bytes per frame.
 Baseline needs 6 frames; the fountain block is K=5.
@@ -458,7 +458,7 @@ should not pick a constant.
 
 ---
 
-## 3. Real payloads
+## 4. Real payloads
 
 QR versions are the smallest that fits each frame. Error-correction level L is
 the app's default (`artifacts/app.js`, `send.ecl = 'L'`); M is shown because it
@@ -505,7 +505,7 @@ takes 1,048,577 frames and 29.1 hours. The README's characterisation of this as
 
 ---
 
-## 4. Delta transfer
+## 5. Delta transfer
 
 `artifacts/delta.js` driven end to end on the 2304-byte demo container: build a
 receiver inventory, mutate the body of one span, build a sender inventory, diff,
@@ -562,7 +562,7 @@ edit shifts every subsequent offset, and none of the numbers above apply to it.
 
 ---
 
-## 5. QR encode and decode cost
+## 6. QR encode and decode cost
 
 Encoding is measured on real rvQR frames with `artifacts/vendor/qrcode.js`.
 Decoding uses `artifacts/vendor/qrdecode.js`, the JS fallback the app uses when
@@ -604,7 +604,7 @@ primary path is the native `BarcodeDetector`, which this harness cannot call.
 
 ---
 
-## 6. State of the art
+## 7. State of the art
 
 ### First, a category distinction that matters
 
@@ -682,7 +682,7 @@ context on what the research community reports, not as competitors.
   app at 10 fps; Decimen uses 2953-byte version-40 symbols at 60 fps. That is
   2.9× on density and 6× on rate. txqr, from 2018, also beats rvQR by roughly
   2–3× using 1850-byte frames at 12 fps.
-- **The caps look conservative rather than necessary.** Section 5 measures the
+- **The caps look conservative rather than necessary.** Section 6 measures the
   bundled JS decoder at 10.7 ms per frame at 720p, well inside a 100 ms budget.
   The binding constraints in practice are display refresh rate, camera capture
   rate, and how small a module a phone camera can resolve at arm's length —
@@ -718,7 +718,7 @@ Not faster — different. The honest list is short:
 
 ---
 
-## 7. Threats to validity
+## 8. Threats to validity
 
 **No camera, no screen, no optics.** This is the big one. The harness models
 frame loss as a probability and says nothing about where that probability comes
@@ -729,9 +729,9 @@ harness cannot see the second half of that trade — so it cannot tell you the
 optimal chunk size, which is precisely the question txqr's author spent four
 hours of automated testing on with real devices.
 
-**Goodput figures assume the receiver keeps up.** Section 3's KB/s numbers are
+**Goodput figures assume the receiver keeps up.** Section 4's KB/s numbers are
 frame counts divided by frame periods. If a phone's decode loop misses frames,
-the real rate is lower. Section 5 argues there is headroom on this hardware; it
+the real rate is lower. Section 6 argues there is headroom on this hardware; it
 does not prove it on a phone.
 
 **Millisecond figures come from an Apple M4 Pro.** Treat them as a floor for
@@ -760,12 +760,12 @@ shift every subsequent offset and are the harder case. They are not measured.
 **The fountain transport's framing is the harness's, not the app's.** rvQR does
 not yet have a fountain send path in `artifacts/app.js`. The JSON envelope and
 manifest schedule used in Section 1 are a reasonable design chosen here, and
-Section 2 shows the schedule choice matters a great deal. Real integration may
+Section 3 shows the schedule choice matters a great deal. Real integration may
 differ, and the slot counts would move with it.
 
 ---
 
-## 8. What could not be measured, and why
+## 9. What could not be measured, and why
 
 | Wanted | Status |
 |---|---|

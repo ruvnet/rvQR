@@ -1060,7 +1060,6 @@
   // instead, and it stops entirely whenever the dialog is not on screen.
   // ---------------------------------------------------------------------------
 
-  var STAGE_FPS = 30;
 
   function stageColors() {
     var css = getComputedStyle(document.documentElement);
@@ -1123,8 +1122,10 @@
     };
   }
 
-  function drawStage(st, phase) {
+  function drawStage(st) {
+    var m = st.model;
     var ctx = st.ctx, c = stageColors(), g = stageGeometry(st);
+    if (!ctx || g.side <= 0) return; // nothing sensible to draw into
     ctx.clearRect(0, 0, g.w, g.h);
 
     // Sender: the QR matrix.
@@ -1155,10 +1156,10 @@
     // Receiver: a grid that fills as frames land.
     var cols = 4, rows = 3;
     var rcw = g.side / cols, rch = g.side / rows;
-    for (var i = 0; i < st.cells; i++) {
+    for (var i = 0; i < m.cells; i++) {
       var cx = g.recvX + (i % cols) * rcw;
       var cy = g.recvY + Math.floor(i / cols) * rch;
-      var filled = i < st.landed;
+      var filled = i < m.landed;
       ctx.fillStyle = filled ? c.accent : c.line;
       ctx.globalAlpha = filled ? 0.9 : 0.5;
       roundRect(ctx, cx + 1.5, cy + 1.5, rcw - 3, rch - 3, Math.min(rcw, rch) * 0.18);
@@ -1168,10 +1169,10 @@
 
     // Frames in flight.
     var size = Math.max(6, g.side * 0.2);
-    for (var p = 0; p < st.packets.length; p++) {
-      var pk = st.packets[p];
+    for (var p = 0; p < m.packets.length; p++) {
+      var pk = m.packets[p];
       var px = g.senderX + g.side + pk.progress * g.travel;
-      var py = g.h / 2 - size / 2 + Math.sin(pk.progress * Math.PI) * pk.drift;
+      var py = g.h / 2 - size / 2 + Math.sin(pk.progress * Math.PI) * (pk.drift * g.h * 0.06);
       ctx.globalAlpha = pk.progress > 0.9 ? (1 - pk.progress) * 10 : 1;
       ctx.fillStyle = c.accent;
       roundRect(ctx, px, py, size, size, size * 0.22);
@@ -1183,11 +1184,11 @@
       ctx.fillRect(px + size * 0.6, py + size * 0.6, size * 0.22, size * 0.22);
     }
     ctx.globalAlpha = 1;
-    if (phase === 'static') return;
   }
 
   function roundRect(ctx, x, y, w, h, r) {
-    var rr = Math.min(r, w / 2, h / 2);
+    if (!(w > 0) || !(h > 0)) return; // arcTo throws on degenerate boxes
+    var rr = Math.max(0, Math.min(r, w / 2, h / 2));
     ctx.beginPath();
     ctx.moveTo(x + rr, y);
     ctx.arcTo(x + w, y, x + w, y + h, rr);

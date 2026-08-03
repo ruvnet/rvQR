@@ -48,10 +48,12 @@ export function loadDecoder() {
  * of the given size with a white surround. `scale` is chosen so the symbol
  * plus its 4-module quiet zone fills the frame.
  */
-function renderSymbol(qr, frameWidth, frameHeight) {
+function renderSymbol(qr, frameWidth, frameHeight, forcedScale) {
   const quiet = 4;
   const modules = qr.size + quiet * 2;
-  const scale = Math.max(1, Math.floor(Math.min(frameWidth, frameHeight) / modules));
+  const fitScale = Math.max(1, Math.floor(Math.min(frameWidth, frameHeight) / modules));
+  const scale = forcedScale || fitScale;
+  if (modules * scale > Math.min(frameWidth, frameHeight)) return null;
   const drawn = modules * scale;
   const ox = Math.floor((frameWidth - drawn) / 2);
   const oy = Math.floor((frameHeight - drawn) / 2);
@@ -74,6 +76,52 @@ function renderSymbol(qr, frameWidth, frameHeight) {
     }
   }
   return { data, width: frameWidth, height: frameHeight, moduleScale: scale };
+}
+
+/**
+ * Separable box blur over the RGBA buffer, `radius` pixels each way.
+ *
+ * This is a crude stand-in for what a camera does to a screen: defocus, motion
+ * smear and the display's own pixel structure all end up softening module
+ * edges, and softened edges are what makes a dense symbol undecodable. A box
+ * blur is not a lens model — it has no depth of field, no rolling shutter and
+ * no noise — so the results below bound the problem rather than predict it.
+ */
+function boxBlur(image, radius) {
+  if (!radius) return image;
+  const { width: w, height: h } = image;
+  const src = image.data;
+  const tmp = new Uint8ClampedArray(src.length);
+  const out = new Uint8ClampedArray(src.length);
+  const span = radius * 2 + 1;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let sum = 0;
+      for (let d = -radius; d <= radius; d++) {
+        const xx = Math.min(w - 1, Math.max(0, x + d));
+        sum += src[(y * w + xx) * 4];
+      }
+      const v = sum / span;
+      const i = (y * w + x) * 4;
+      tmp[i] = tmp[i + 1] = tmp[i + 2] = v;
+      tmp[i + 3] = 255;
+    }
+  }
+  for (let x = 0; x < w; x++) {
+    for (let y = 0; y < h; y++) {
+      let sum = 0;
+      for (let d = -radius; d <= radius; d++) {
+        const yy = Math.min(h - 1, Math.max(0, y + d));
+        sum += tmp[(yy * w + x) * 4];
+      }
+      const v = sum / span;
+      const i = (y * w + x) * 4;
+      out[i] = out[i + 1] = out[i + 2] = v;
+      out[i + 3] = 255;
+    }
+  }
+  return { data: out, width: w, height: h, moduleScale: image.moduleScale };
 }
 
 function timeIt(fn, reps) {
@@ -209,4 +257,87 @@ export function runVersionSweep({ versions = [5, 10, 15, 20, 25, 30, 35, 40], ec
   return out;
 }
 
-export { renderSymbol };
+/**
+ * Decode cost and decode robustness by QR version — the measurement that
+ * actually bounds a chunk-size recommendation.
+ *
+ * Two things are reported per version. **Cost** is how long the JS decoder
+ * takes on a clean frame, which sets an upper bound on frames per second.
+ * **Robustness** is the smallest number of camera pixels per QR module at which
+ * the symbol still decodes, sharp and then blurred; that is what decides
+ * whether a version works at arm's length or only pressed against the glass.
+ *
+ * Both are lower bounds on difficulty. The frames are synthetic, square-on and
+ * noiseless, and the blur is a box blur rather than a lens.
+ */
+export function runDecodeVersionSweep({
+  versions = [5, 10, 13, 16, 19, 22, 25, 27, 31, 35, 40],
+  ecl = 'L',
+  frame = { label: '1280x720', width: 1280, height: 720 },
+  scales = [1, 2, 3, 4, 5, 6, 8, 10],
+  blurRadii = [0, 1, 2],
+  reps = 15,
+  // One payload per version is a single sample of one mask pattern and one
+  // module layout, and the minimum-scale result moves with it. Several
+  // payloads, worst case reported, is the conservative answer.
+  payloadsPerVersion = 5,
+  seed = 11
+} = {}) {
+  const decoder = loadDecoder();
+  if (!decoder) return { available: false, reason: 'artifacts/vendor/qrdecode.js not present' };
+  const D = decoder.module;
+  const level = qrcode.ECC[ecl];
+  const rand = mulberry32(seed);
+
+  const rows = [];
+  for (const version of versions) {
+    const capacity = qrcode.byteCapacity(version, level);
+    const payload = randomBytes(rand, capacity);
+    const qr = qrcode.encodeBytes(payload, { ecl: level });
+    if (qr.version !== version) continue; // encoder chose a different version
+
+    // Cost on a clean frame at the largest scale that fits.
+    const natural = renderSymbol(qr, frame.width, frame.height);
+    const naturalOk = D.decodeImage(natural, { all: false }).length > 0;
+    const ms = timeIt(() => D.decodeImage(natural, { all: false }), reps);
+
+    // Robustness: smallest pixels-per-module that still decodes, per blur.
+    const minScale = {};
+    for (const radius of blurRadii) {
+      minScale[radius] = null;
+      for (const scale of scales) {
+        const img = renderSymbol(qr, frame.width, frame.height, scale);
+        if (!img) continue;
+        const blurred = boxBlur(img, radius);
+        if (D.decodeImage(blurred, { all: false }).length > 0) {
+          minScale[radius] = scale;
+          break;
+        }
+      }
+    }
+
+    rows.push({
+      version,
+      ecl,
+      capacityBytes: capacity,
+      modules: qr.size,
+      naturalModuleScale: natural.moduleScale,
+      naturalDecoded: naturalOk,
+      ms,
+      maxFps: 1000 / ms.p50,
+      minModuleScale: minScale,
+      // The smallest fraction of a 1280x720 frame's short side the symbol can
+      // occupy and still be read, at each blur level.
+      minFrameFraction: Object.fromEntries(
+        blurRadii.map((r) => [
+          r,
+          minScale[r] === null ? null : ((qr.size + 8) * minScale[r]) / frame.height
+        ])
+      )
+    });
+  }
+
+  return { available: true, frame, ecl, blurRadii, scales, rows };
+}
+
+export { renderSymbol, boxBlur };

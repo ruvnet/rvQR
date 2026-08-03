@@ -25,7 +25,7 @@ import { fmt, markdownTable, harmonic } from './lib/stats.mjs';
 import { runLossSuite, runManifestSweep, LOSS_RATES } from './suites/loss.mjs';
 import { runPayloadSuite, projectTransfer } from './suites/payloads.mjs';
 import { runDeltaSuite, projectLargeContainer } from './suites/delta.mjs';
-import { runQrCostSuite, runVersionSweep, loadDecoder } from './suites/qrcost.mjs';
+import { runQrCostSuite, runVersionSweep, runDecodeVersionSweep, loadDecoder } from './suites/qrcost.mjs';
 import { runOverheadSuite, runSymbolSizeSweep } from './suites/overhead.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
@@ -453,6 +453,51 @@ function printQrCostSuite(res, sweep) {
   say('');
 }
 
+function printDecodeVersionSweep(res) {
+  if (!res.available) {
+    say(`Decode-by-version sweep not run: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(`**Decode cost and robustness by QR version** (ECC ${res.ecl}, ${res.frame.label} synthetic capture):`);
+  say('');
+  say(
+    markdownTable(
+      [
+        'version',
+        'capacity',
+        'modules',
+        'decode p50',
+        'max fps',
+        'min px/module sharp',
+        'blur r=1',
+        'blur r=2',
+        'frame share needed (r=1)'
+      ],
+      res.rows.map((r) => [
+        String(r.version),
+        `${r.capacityBytes} B`,
+        `${r.modules}²`,
+        `${fmt(r.ms.p50, 1)} ms`,
+        fmt(r.maxFps, 0),
+        r.minModuleScale[0] === null ? 'fail' : String(r.minModuleScale[0]),
+        r.minModuleScale[1] === null ? 'fail' : String(r.minModuleScale[1]),
+        r.minModuleScale[2] === null ? 'fail' : String(r.minModuleScale[2]),
+        r.minFrameFraction[1] === null ? '—' : `${fmt(r.minFrameFraction[1] * 100, 0)}%`
+      ])
+    )
+  );
+  say('');
+  say(
+    'Min px/module is the smallest number of capture pixels per QR module at which the bundled JS ' +
+      'decoder still read the symbol. "Frame share needed" converts that into how much of the ' +
+      "capture's short side the symbol must occupy — the practical question when someone is holding " +
+      'a phone over another screen. Synthetic, square-on, noiseless frames with a box blur: these are ' +
+      'lower bounds on difficulty, not predictions of real camera behaviour.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 function main() {
@@ -619,6 +664,8 @@ function main() {
     results.qrCost = runQrCostSuite({ bytes: wasm, name: 'rvf_wasm_bg.wasm' });
     results.versionSweep = runVersionSweep({});
     printQrCostSuite(results.qrCost, results.versionSweep);
+    results.decodeVersionSweep = runDecodeVersionSweep({});
+    printDecodeVersionSweep(results.decodeVersionSweep);
   }
 
   if (args.json) {
