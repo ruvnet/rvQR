@@ -416,6 +416,123 @@
   };
 });
 
+/*
+ * The delta-choice view model.
+ *
+ * semdelta.chooseDelta() builds a span delta and a semantic delta, measures
+ * both, and returns the smaller one. That is a decision made on the user's
+ * behalf about how many bytes cross the link, and a decision made on someone's
+ * behalf that they cannot see is a decision they cannot check. So this turns
+ * the result into exactly the rows the panel renders: which strategy won, what
+ * both strategies would have cost, what the whole container would have cost,
+ * and the sentence chooseDelta() already wrote explaining why.
+ *
+ * It is a pure function for the same reason the provenance view model above is
+ * one: the failure mode of getting this wrong is a plausible-looking number
+ * rather than an exception, and a plausible-looking number is only catchable by
+ * asserting on the text that reaches the screen.
+ *
+ * It never recomputes the comparison. chooseDelta() owns the choice — including
+ * the guard where a unit table costs more than it saves — and a second opinion
+ * formed here could disagree with the payload actually sent.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    // tests.js already requires this file for the provenance view model above,
+    // so this hangs off that export rather than replacing it.
+    module.exports.deltaChoice = api;
+  } else {
+    root.RVQRDeltaChoiceView = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var SEMANTIC = 'semantic';
+  var SPAN = 'span';
+
+  var LABELS = {};
+  LABELS[SEMANTIC] = 'Semantic delta';
+  LABELS[SPAN] = 'Span delta';
+
+  // What the chosen row is suffixed with. It is spelled out rather than shown
+  // as a tick because this is a selection, not a verdict — nothing here was
+  // checked and found sound, and it must not read as if it had been.
+  var CHOSEN_NOTE = 'chosen';
+
+  function plain(n) { return String(n) + ' bytes'; }
+
+  /**
+   * @param chosen   the object semdelta.chooseDelta() returned
+   * @param opts     { formatBytes } — the same formatter the rest of the page
+   *                 uses, so the numbers on this panel read like the numbers
+   *                 everywhere else
+   */
+  function model(chosen, opts) {
+    opts = opts || {};
+    var fmt = typeof opts.formatBytes === 'function' ? opts.formatBytes : plain;
+    if (!chosen || (chosen.chosen !== SEMANTIC && chosen.chosen !== SPAN)) {
+      return null;
+    }
+    var strategy = chosen.chosen;
+    var label = LABELS[strategy];
+    var saved = Math.max(0, chosen.fullBytes - chosen.bytes);
+    var ratio = chosen.bytes > 0 ? chosen.fullBytes / chosen.bytes : 0;
+    // The smaller of two deltas can still be bigger than the container. It
+    // happens whenever most of a container turned over, and a panel that
+    // announced it in the same encouraging tone as a genuine saving would be
+    // selling a worse transfer as a better one.
+    var worthIt = chosen.bytes < chosen.fullBytes;
+
+    return {
+      strategy: strategy,
+      label: label,
+      // The strategy is named in the headline rather than a footnote: a reader
+      // who takes in one line of this panel should take in which one ran.
+      headline: label + ': ' + fmt(chosen.bytes) + ' instead of ' + fmt(chosen.fullBytes) + '.',
+      summary: (strategy === SEMANTIC
+        ? chosen.unitDiff.missing.length + ' of ' + chosen.unitCount + ' units to send'
+        : chosen.spanDiff.missing.length + ' of ' + chosen.spanCount + ' segments to send') +
+        ', ' + fmt(saved) + ' saved' +
+        (ratio >= 1.05 ? ' — ' + ratio.toFixed(1) + '× less data' : '') + '.',
+      // Both figures, always, whichever won. A panel that showed only the
+      // winner would be unfalsifiable: there would be no way to tell a good
+      // choice from a broken comparison.
+      rows: [
+        row('Span delta', chosen.spanBytes, strategy === SPAN, fmt),
+        row('Semantic delta', chosen.semanticBytes, strategy === SEMANTIC, fmt),
+        row('Full transfer', chosen.fullBytes, false, fmt)
+      ],
+      reason: chosen.reason,
+      note: worthIt ? null
+        : 'Neither delta is smaller than the container itself. Most of it changed, ' +
+          'so sending the whole artifact would cost fewer bytes than describing the difference.',
+      tone: worthIt ? 'good' : ''
+    };
+  }
+
+  function row(label, bytes, isChosen, fmt) {
+    return {
+      label: label,
+      bytes: bytes,
+      chosen: !!isChosen,
+      // `text` is what the definition list actually shows, so a test that
+      // asserts on it is asserting on the rendered string rather than on a
+      // number that some later formatter might mangle.
+      text: fmt(bytes) + (isChosen ? ' — ' + CHOSEN_NOTE : '')
+    };
+  }
+
+  return {
+    SEMANTIC: SEMANTIC,
+    SPAN: SPAN,
+    LABELS: LABELS,
+    CHOSEN_NOTE: CHOSEN_NOTE,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
 
@@ -440,6 +557,7 @@
   function fountainLib() { return window.RVQRFountain || null; }
   function cryptoLib() { return window.RVQRCrypto || null; }
   function deltaLib() { return window.RVQRDelta || null; }
+  function semDeltaLib() { return window.RVQRSemDelta || null; }
   function resumeLib() { return window.RVQRResume || null; }
   function proto2Lib() { return window.RVQRProto2 || null; }
   function provenanceLib() { return window.RVQRProvenance || null; }
@@ -448,6 +566,7 @@
   // for the same reason as the rest: a missing panel is better than a broken
   // one, and the vault must render either way.
   function provenanceView() { return window.RVQRProvenanceView || null; }
+  function deltaChoiceView() { return window.RVQRDeltaChoiceView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -1392,7 +1511,163 @@
   // the receiver shows an inventory of what it holds as a QR, and the sender
   // reads that with its own camera. Both devices therefore need a camera for
   // this flow, which is the honest cost of the feature.
+  //
+  // Two strategies can satisfy that request. delta.js resends whole segments;
+  // semdelta.js goes inside them and resends records, WASM function bodies or
+  // COW blocks. Neither is always smaller — a unit table costs bytes per unit,
+  // and a container of many small records can spend more describing itself than
+  // a span delta spends resending a segment. semdelta.chooseDelta() builds both
+  // payloads, measures both and returns the smaller, and this file does not
+  // form a second opinion: it renders the one chooseDelta() reached, both
+  // figures, and the sentence it wrote explaining the choice. A transfer size
+  // nobody can explain is a transfer size nobody can trust.
+  //
+  // The receiver's inventory is sealed to a crypto.js session, because an
+  // inventory is a list of what a device holds: segment types, content hashes
+  // and a root digest together tell anyone watching which artifacts and which
+  // versions this device has. Sealing needs a session, and a session needs a
+  // handshake, so pairing is a real step with a real cost rather than a
+  // checkbox.
   // ---------------------------------------------------------------------------
+
+  // What the sealed inventory's associated data names. Both ends must agree, or
+  // the ciphertext will not open — which is the point: a sealed inventory
+  // cannot be replayed into a slot that expected a different kind of message.
+  var INVENTORY_CONTEXT = 'rvqr/semantic-inventory/v1';
+
+  // delta.js's chunk header, so scanned text can be told from a single code.
+  var INVENTORY_CHUNK_PREFIX = 'RVQI1:';
+
+  // One session per device, whichever end of the handshake it happens to be.
+  // `state` is the initiator's half-finished handshake and is discarded the
+  // moment the session exists, so a stale invite cannot be confirmed twice.
+  var pairing = { role: null, state: null, session: null };
+
+  /** Draws a list of QR texts into `out`, with a part count when there is more than one. */
+  function appendQrCodes(out, chunks, ecl) {
+    chunks.forEach(function (text, idx) {
+      var holder = el('div');
+      holder.style.background = '#fff';
+      holder.style.padding = '8px';
+      holder.style.borderRadius = '10px';
+      holder.style.marginTop = '.5rem';
+      var canvas = document.createElement('canvas');
+      canvas.style.width = '100%';
+      canvas.style.maxWidth = '300px';
+      canvas.style.display = 'block';
+      canvas.style.imageRendering = 'pixelated';
+      holder.appendChild(canvas);
+      out.appendChild(holder);
+      var qr = qrlib.encodeText(text, { ecl: ecl || 'L' });
+      qrlib.drawOnCanvas(qr, canvas, { size: 600 });
+      out.appendChild(el('p', 'small muted',
+        (chunks.length > 1 ? 'part ' + (idx + 1) + ' of ' + chunks.length + ' · ' : '') +
+        'QR version ' + qr.version));
+    });
+  }
+
+  /**
+   * Splits text across as many symbols as it needs.
+   *
+   * A sealed semantic inventory carries a record per unit rather than per
+   * segment, so it routinely outgrows one symbol. Degrading it is not an
+   * option — a partial inventory would make the sender resend units the
+   * receiver already holds — so it is chunked, exactly as delta.js chunks its
+   * own oversized inventories, and the receiver's scanner reassembles them.
+   */
+  function qrChunksFor(lib, text) {
+    var fit = lib.qrVersionFor(text.length, 'L');
+    return fit ? [text] : lib.chunkInventory(text, lib.byteCapacity(40, 'L'));
+  }
+
+  /** The inverse: one text from however many codes were scanned or pasted. */
+  function reassembleInventory(lib, raw) {
+    var parts = String(raw).split(/\s+/).filter(function (s) { return s.length > 0; });
+    if (!parts.length) return '';
+    if (parts[0].slice(0, INVENTORY_CHUNK_PREFIX.length) === INVENTORY_CHUNK_PREFIX) {
+      return lib.joinInventoryChunks(parts);
+    }
+    return parts.join('');
+  }
+
+  // --- Pairing ---------------------------------------------------------------
+
+  /**
+   * What the session does and does not prove.
+   *
+   * An unpinned handshake stops a passive observer reading the inventory. It
+   * does not stop an active one from having been the party you paired with in
+   * the first place, and saying otherwise would be the same overclaim the
+   * signature panel refuses to make about an unpinned key.
+   */
+  function pairingNote(session) {
+    return session.identityVerified
+      ? 'Paired with the fingerprint you pinned. Their inventory travels encrypted.'
+      : 'Paired, so their inventory travels encrypted rather than in the clear. ' +
+        'Nothing here proves who you paired with — compare fingerprint ' +
+        session.peerFingerprint + ' out of band if that matters.';
+  }
+
+  function startPairing() {
+    var lib = cryptoLib();
+    var box = $('deltaPairResult');
+    box.textContent = '';
+    if (!lib) {
+      box.appendChild(el('div', 'notice bad',
+        'The crypto module did not load, so no session can be established.'));
+      return;
+    }
+    Promise.resolve(lib.sessionInvite({})).then(function (state) {
+      pairing.role = 'initiator';
+      pairing.state = state;
+      pairing.session = null;
+      box.textContent = '';
+      box.appendChild(el('p', 'small muted',
+        'Show this to the device holding the older copy. It answers with a code of ' +
+        'its own — scan or paste that below to finish.'));
+      appendQrCodes(box, [state.bootstrap]);
+    }, function (e) {
+      box.appendChild(el('div', 'notice bad', 'Could not start a session: ' + e.message));
+    });
+  }
+
+  function finishPairing() {
+    var lib = cryptoLib();
+    var box = $('deltaPairResult');
+    if (!lib) {
+      box.textContent = '';
+      box.appendChild(el('div', 'notice bad', 'The crypto module did not load.'));
+      return;
+    }
+    if (!pairing.state || pairing.role !== 'initiator') {
+      box.textContent = '';
+      box.appendChild(el('div', 'notice', 'Show your pairing code first, then scan their reply.'));
+      return;
+    }
+    var reply = $('deltaPairReply').value.trim();
+    if (!reply) {
+      box.textContent = '';
+      box.appendChild(el('div', 'notice', 'Paste or scan their reply code first.'));
+      return;
+    }
+    Promise.resolve(lib.sessionConfirm(pairing.state, reply, {})).then(function (r) {
+      box.textContent = '';
+      if (!r.ok) {
+        // Named rather than smoothed over: 'session-id-mismatch' and
+        // 'bad-bootstrap-signature' are different problems with different fixes.
+        box.appendChild(el('div', 'notice bad', 'Pairing failed: ' + r.reason + '.'));
+        return;
+      }
+      pairing.session = r.session;
+      pairing.state = null;
+      box.appendChild(el('div', 'notice good', pairingNote(r.session)));
+    }, function (e) {
+      box.textContent = '';
+      box.appendChild(el('div', 'notice bad', 'Pairing failed: ' + e.message));
+    });
+  }
+
+  // --- The receiver's half ---------------------------------------------------
 
   function buildInventoryPanel(box, bytes, kernel) {
     var lib = deltaLib();
@@ -1403,7 +1678,14 @@
     panel.appendChild(el('p', 'small muted',
       'Show this code to a device holding a newer copy. It works out which ' +
       'segments you are missing and sends only those.'));
+
+    var pairOut = el('div');
+    pairOut.style.marginTop = '.7rem';
+    buildAcceptPairingControls(panel, pairOut);
+    panel.appendChild(pairOut);
+
     var btn = el('button', 'btn-sm', 'Show my inventory');
+    btn.style.marginTop = '.7rem';
     panel.appendChild(btn);
     var out = el('div');
     out.style.marginTop = '.7rem';
@@ -1412,37 +1694,149 @@
 
     btn.addEventListener('click', function () {
       out.textContent = '';
+      var sem = semDeltaLib();
+      var parser;
       try {
-        var parser = kernel && lib.wasmParser ? lib.wasmParser(kernel.exports) : undefined;
-        var inv = lib.inventory(bytes, parser ? { parser: parser } : undefined);
-        var qrData = lib.inventoryQr(inv);
-        var chunks = qrData.chunks && qrData.chunks.length ? qrData.chunks : [qrData.text];
+        parser = kernel && lib.wasmParser ? lib.wasmParser(kernel.exports) : undefined;
+      } catch (e) { parser = undefined; }
+      var opts = parser ? { parser: parser } : undefined;
+
+      // Sealed when there is a session to seal to. Without one the inventory
+      // stays what it has always been — delta.js's span inventory, in the
+      // clear — because a semantic inventory is strictly more revealing and
+      // publishing it unsealed would be a downgrade dressed as a feature.
+      if (sem && pairing.session) {
+        sem.sealInventory(sem.semanticInventory(bytes, opts), pairing.session,
+          { context: INVENTORY_CONTEXT })
+          .then(function (sealed) {
+            var chunks = qrChunksFor(lib, sealed);
+            out.textContent = '';
+            out.appendChild(el('p', 'small muted',
+              sealed.length + ' characters of sealed inventory' +
+              (chunks.length > 1 ? ' across ' + chunks.length + ' codes — scan them all' : '') +
+              '. The contents are hidden; the size is not.'));
+            appendQrCodes(out, chunks);
+          }, function (e) {
+            out.textContent = '';
+            out.appendChild(el('div', 'notice bad', 'Could not seal the inventory: ' + e.message));
+          });
+        return;
+      }
+
+      try {
+        var inv = lib.inventory(bytes, opts);
+        var text = lib.encodeInventory(inv);
+        var spanChunks = qrChunksFor(lib, text);
         out.appendChild(el('p', 'small muted',
-          qrData.bytes + ' bytes of inventory' +
-          (chunks.length > 1 ? ' across ' + chunks.length + ' codes — scan them all' : '') + '.'));
-        chunks.forEach(function (text, idx) {
-          var holder = el('div');
-          holder.style.background = '#fff';
-          holder.style.padding = '8px';
-          holder.style.borderRadius = '10px';
-          holder.style.marginTop = '.5rem';
-          var canvas = document.createElement('canvas');
-          canvas.style.width = '100%';
-          canvas.style.maxWidth = '300px';
-          canvas.style.display = 'block';
-          canvas.style.imageRendering = 'pixelated';
-          holder.appendChild(canvas);
-          out.appendChild(holder);
-          var qr = qrlib.encodeText(text, { ecl: 'L' });
-          qrlib.drawOnCanvas(qr, canvas, { size: 600 });
-          out.appendChild(el('p', 'small muted',
-            (chunks.length > 1 ? 'part ' + (idx + 1) + ' of ' + chunks.length + ' · ' : '') +
-            'QR version ' + qr.version));
-        });
+          text.length + ' bytes of inventory' +
+          (spanChunks.length > 1 ? ' across ' + spanChunks.length + ' codes — scan them all' : '') +
+          '. Unpaired, so this travels in the clear and lists segments rather than records.'));
+        appendQrCodes(out, spanChunks);
       } catch (e) {
         out.appendChild(el('div', 'notice bad', 'Could not build an inventory: ' + e.message));
       }
     });
+  }
+
+  /** The responder's half of the handshake, inside the artifact's own panel. */
+  function buildAcceptPairingControls(panel, out) {
+    if (!cryptoLib() || !semDeltaLib()) return;
+    panel.appendChild(el('p', 'small muted',
+      'Pair first and your inventory is encrypted to that session — and detailed ' +
+      'enough for them to send individual records rather than whole segments.'));
+
+    var area = document.createElement('textarea');
+    area.placeholder = 'Paste their pairing code';
+    area.style.marginTop = '.5rem';
+    panel.appendChild(area);
+
+    var row = el('div', 'row');
+    row.style.marginTop = '.5rem';
+    var pick = el('button', 'btn-sm', 'Scan their pairing code from a picture');
+    var accept = el('button', 'btn-sm', 'Accept pairing');
+    row.appendChild(pick);
+    row.appendChild(accept);
+    panel.appendChild(row);
+
+    var file = document.createElement('input');
+    file.type = 'file';
+    file.accept = 'image/*';
+    panel.appendChild(file);
+
+    pick.addEventListener('click', function () { file.click(); });
+    file.addEventListener('change', function (e) {
+      var files = e.target.files;
+      e.target.value = '';
+      if (!files || !files.length || !qrdec) return;
+      decodeImageToText(files[0]).then(function (texts) {
+        if (!texts.length) { toast('No code found in that picture'); return; }
+        area.value = texts[0];
+        acceptPairing(area.value, out);
+      });
+    });
+    accept.addEventListener('click', function () { acceptPairing(area.value.trim(), out); });
+  }
+
+  function acceptPairing(inviteText, out) {
+    var lib = cryptoLib();
+    out.textContent = '';
+    if (!lib) {
+      out.appendChild(el('div', 'notice bad', 'The crypto module did not load.'));
+      return;
+    }
+    if (!inviteText) {
+      out.appendChild(el('div', 'notice', 'Paste or scan their pairing code first.'));
+      return;
+    }
+    Promise.resolve(lib.sessionAccept(inviteText, {})).then(function (r) {
+      out.textContent = '';
+      if (!r.ok) {
+        out.appendChild(el('div', 'notice bad', 'Pairing failed: ' + r.reason + '.'));
+        return;
+      }
+      pairing.role = 'responder';
+      pairing.state = null;
+      pairing.session = r.session;
+      out.appendChild(el('div', 'notice good', pairingNote(r.session)));
+      out.appendChild(el('p', 'small muted', 'Show this reply to their device to finish pairing.'));
+      appendQrCodes(out, [r.bootstrap]);
+    }, function (e) {
+      out.textContent = '';
+      out.appendChild(el('div', 'notice bad', 'Pairing failed: ' + e.message));
+    });
+  }
+
+  // --- The sender's half -----------------------------------------------------
+
+  /**
+   * Turns whatever was scanned into a receiver inventory.
+   *
+   * Plaintext inventories of either shape are readable without a session, and
+   * both still work. Anything else is treated as sealed, which is the only
+   * remaining possibility: a sealed record carries a counter and a tag, not a
+   * magic, so it is identified by neither plaintext magic matching rather than
+   * by a marker an attacker could set.
+   */
+  function openReceiverInventory(lib, sem, text) {
+    if (sem) {
+      try {
+        return Promise.resolve({ inventory: sem.decodeSemanticInventory(text), sealed: false });
+      } catch (e) { /* not a plaintext semantic inventory */ }
+    }
+    try {
+      return Promise.resolve({ inventory: lib.decodeInventory(text), sealed: false });
+    } catch (e) { /* not a plaintext span inventory either */ }
+    if (!sem) {
+      return Promise.reject(new Error(
+        'that is not an inventory, and the semantic-delta module did not load to try opening it as a sealed one'));
+    }
+    if (!pairing.session) {
+      return Promise.reject(new Error(
+        'that looks like a sealed inventory. Pair with their device first — a sealed ' +
+        'inventory only opens with the session it was sealed to'));
+    }
+    return sem.openInventory(text, pairing.session, { context: INVENTORY_CONTEXT })
+      .then(function (inv) { return { inventory: inv, sealed: true }; });
   }
 
   function runDeltaDiff() {
@@ -1457,13 +1851,89 @@
       box.appendChild(el('div', 'notice', 'Choose the artifact you want to send first.'));
       return;
     }
-    var text = $('deltaInventory').value.trim();
-    if (!text) {
+    var raw = $('deltaInventory').value.trim();
+    if (!raw) {
       box.appendChild(el('div', 'notice', 'Paste or scan their inventory first.'));
       return;
     }
+    var text;
     try {
-      var receiverInv = lib.decodeInventory(text);
+      text = reassembleInventory(lib, raw);
+    } catch (e) {
+      box.appendChild(el('div', 'notice bad', 'Those codes do not assemble: ' + e.message));
+      return;
+    }
+    openReceiverInventory(lib, semDeltaLib(), text).then(function (r) {
+      renderDeltaChoice(box, r.inventory, r.sealed);
+    }, function (e) {
+      box.textContent = '';
+      box.appendChild(el('div', 'notice bad',
+        'That does not look like an inventory: ' + (e && e.message ? e.message : e)));
+    });
+  }
+
+  /**
+   * Renders the choice, both figures, and why.
+   *
+   * The payload rendered here is the payload sent: chooseDelta() already built
+   * both, so the button ships the very bytes that were measured rather than
+   * rebuilding from the losing plan and quoting a number from the winning one.
+   */
+  function renderDeltaChoice(box, receiverInv, sealed) {
+    var sem = semDeltaLib();
+    var view = deltaChoiceView();
+    box.textContent = '';
+    if (!sem || !view) {
+      renderSpanOnlyDiff(box, receiverInv);
+      return;
+    }
+    var chosen, model;
+    try {
+      chosen = sem.chooseDelta(recordBytes(send.record), receiverInv);
+      model = view.model(chosen, { formatBytes: core.formatBytes });
+    } catch (e) {
+      box.appendChild(el('div', 'notice bad', 'Could not compare the two deltas: ' + e.message));
+      return;
+    }
+    if (!model) {
+      box.appendChild(el('div', 'notice bad', 'The delta comparison returned no choice.'));
+      return;
+    }
+
+    var n = el('div', model.tone ? 'notice ' + model.tone : 'notice');
+    n.appendChild(el('strong', '', model.headline + ' '));
+    n.appendChild(document.createTextNode(model.summary));
+    if (model.note) {
+      n.appendChild(el('span', 'small', ' ' + model.note));
+    }
+    box.appendChild(n);
+
+    var dl = el('dl', 'kv');
+    dl.style.marginTop = '.7rem';
+    model.rows.forEach(function (row) {
+      dl.appendChild(el('dt', '', row.label));
+      dl.appendChild(el('dd', row.chosen ? '' : 'muted', row.text));
+    });
+    box.appendChild(dl);
+
+    box.appendChild(el('p', 'small muted', model.reason));
+    box.appendChild(el('p', 'small muted', sealed
+      ? 'Their inventory arrived sealed and opened under this session.'
+      : 'Their inventory arrived in the clear. Pair first to keep it from anyone watching.'));
+
+    var go = el('button', 'btn-primary', 'Send the ' + model.label.toLowerCase());
+    go.style.marginTop = '.6rem';
+    go.addEventListener('click', function () {
+      startSend(null, chosen.payload, send.record.name + '.delta');
+      toast('Sending a ' + core.formatBytes(chosen.bytes) + ' ' + model.label.toLowerCase());
+    });
+    box.appendChild(go);
+  }
+
+  /** delta.js alone, for the build where semdelta.js did not load. */
+  function renderSpanOnlyDiff(box, receiverInv) {
+    var lib = deltaLib();
+    try {
       var mine = lib.inventory(recordBytes(send.record));
       var d = lib.diff(mine, receiverInv);
       var saved = d.bytesSaved || 0;
@@ -1478,6 +1948,8 @@
         (ratio ? ' — ' + ratio.toFixed(1) + '× less data' : '') + '.'
       ));
       box.appendChild(n);
+      box.appendChild(el('p', 'small muted',
+        'The semantic-delta module did not load, so only whole segments could be compared.'));
 
       var go = el('button', 'btn-primary', 'Send just those segments');
       go.style.marginTop = '.6rem';
@@ -3365,6 +3837,19 @@
     });
 
     // --- delta ---
+    $('deltaPairBtn').addEventListener('click', startPairing);
+    $('deltaPairConfirmBtn').addEventListener('click', finishPairing);
+    $('deltaPairImageBtn').addEventListener('click', function () { $('deltaPairImageInput').click(); });
+    $('deltaPairImageInput').addEventListener('change', function (e) {
+      var files = e.target.files;
+      e.target.value = '';
+      if (!files || !files.length || !qrdec) return;
+      decodeImageToText(files[0]).then(function (texts) {
+        if (!texts.length) { toast('No code found in that picture'); return; }
+        $('deltaPairReply').value = texts[0];
+        finishPairing();
+      });
+    });
     $('deltaDiffBtn').addEventListener('click', runDeltaDiff);
     $('deltaImageBtn').addEventListener('click', function () { $('deltaImageInput').click(); });
     $('deltaImageInput').addEventListener('change', function (e) {
@@ -3519,6 +4004,10 @@
     if (!fountainLib()) $('modePick').disabled = true;
     if (!cryptoLib()) $('signSend').disabled = true;
     if (!deltaLib()) $('deltaSendCard').hidden = true;
+    // Pairing only exists to seal a semantic inventory. Without either module
+    // the controls would take a device through a handshake that bought it
+    // nothing, so they are removed rather than left to disappoint.
+    if (!cryptoLib() || !semDeltaLib()) $('deltaPairStep').hidden = true;
     // The picker offers v2 only when the module that builds it is here. A
     // choice that silently means something else is worse than no choice.
     if (!proto2Lib()) $('formatPick').disabled = true;

@@ -1002,16 +1002,45 @@
     <details class="card tight" id="deltaSendCard">
       <summary>Send only what they are missing</summary>
       <div class="details-body">
-        <p class="small muted">If the other device already holds an older copy of this container, it can show you an inventory QR. Scan or paste it here and rvQR will send only the segments they lack.</p>
-        <div class="row">
-          <button class="btn-sm" id="deltaImageBtn">Scan their inventory from a picture</button>
-        </div>
-        <input type="file" id="deltaImageInput" accept="image/*">
-        <textarea id="deltaInventory" placeholder="…or paste the inventory text" style="margin-top:.6rem"></textarea>
-        <div class="row" style="margin-top:.5rem">
-          <button class="btn-sm" id="deltaDiffBtn">Work out the difference</button>
-        </div>
-        <div id="deltaResult" style="margin-top:.7rem"></div>
+        <p class="small muted">If the other device already holds an older copy of this container, it can show you an inventory QR. Scan or paste it here and rvQR compares a whole-segment delta against a record-level one, then sends whichever is smaller.</p>
+
+        <!--
+          An inventory names every artifact and every version a device holds, so
+          it is sealed to a session rather than shown in the clear. That takes a
+          handshake, and a handshake is two codes each way — the honest cost of
+          not broadcasting what you have. When crypto.js or semdelta.js is
+          absent app.js hides the pairing step outright, and the numbering
+          closes up behind it, because a step that buys nothing should not be
+          offered.
+        -->
+        <ol class="steps">
+          <li id="deltaPairStep">
+            <h3>Pair with their device</h3>
+            <p>Show them this code, then read the one they answer with. Their inventory is encrypted to the session that results.</p>
+            <div class="row">
+              <button class="btn-sm" id="deltaPairBtn">Show my pairing code</button>
+              <button class="btn-sm" id="deltaPairImageBtn">Scan their reply from a picture</button>
+            </div>
+            <input type="file" id="deltaPairImageInput" accept="image/*">
+            <textarea id="deltaPairReply" placeholder="…or paste their reply code" style="margin-top:.6rem"></textarea>
+            <div class="row" style="margin-top:.5rem">
+              <button class="btn-sm" id="deltaPairConfirmBtn">Finish pairing</button>
+            </div>
+            <div id="deltaPairResult" style="margin-top:.7rem"></div>
+          </li>
+          <li>
+            <h3>Read their inventory</h3>
+            <div class="row">
+              <button class="btn-sm" id="deltaImageBtn">Scan their inventory from a picture</button>
+            </div>
+            <input type="file" id="deltaImageInput" accept="image/*">
+            <textarea id="deltaInventory" placeholder="…or paste the inventory text" style="margin-top:.6rem"></textarea>
+            <div class="row" style="margin-top:.5rem">
+              <button class="btn-sm" id="deltaDiffBtn">Work out the difference</button>
+            </div>
+            <div id="deltaResult" style="margin-top:.7rem"></div>
+          </li>
+        </ol>
       </div>
     </details>
 
@@ -1383,6 +1412,12 @@
 <script src="./fountain.js" defer></script>
 <script src="./crypto.js" defer></script>
 <script src="./delta.js" defer></script>
+<!--
+  semdelta.js reads RVQRDelta and RVQRCrypto at load time, so it follows both.
+  Deferred scripts run in document order, which is what makes that ordering a
+  guarantee rather than a hope.
+-->
+<script src="./semdelta.js" defer></script>
 <script src="./resume.js" defer></script>
 <!--
   proto2.js reads RVQRCore at load time, so it must follow core.js — which it

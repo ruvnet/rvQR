@@ -94,6 +94,20 @@ observe 800 frame slots at 60% loss with v1's indexed chunks and 214 with
 **98.45% needed exactly K symbols, 100% needed no more than K+1, mean overhead
 +0.0155, worst case +1.**
 
+**10. Diffing inside segments is worth 2.4×–27.9× over diffing between them, and
+the module knows when it is not worth anything.** MEASURED on seven scenarios,
+all seven reconstructing byte-exactly: a 1.13 MB container with 8 vector
+records, one COW cluster, three membership bits and one WASM byte changed moves
+**40,285 bytes semantically against 1,125,630 bytes span-wise**, and one changed
+WASM function body moves 3,693 bytes against 41,155. But **a finer diff costs a
+table row per unit, and two scenarios measure it losing**: halving the demo's
+vector dimension rewrites every record, so the semantic payload is the span
+payload plus a 392-byte 28-unit table — 1,510 B against 1,174 B — and
+`chooseDelta` correctly returns the span delta. It also declines for a cold
+receiver. The semantic *inventory* is larger in every case too (667 B against
+134 B for the demo, 44,235 B against 190 B for the large container), which
+`chooseDelta` does not look at and which no scenario here makes decisive.
+
 ---
 
 ## Reproducing this
@@ -114,6 +128,7 @@ node bench/index.mjs --suite objective   # G = R × C × E × P
 node bench/index.mjs --suite fleet       # N receivers, peer exchange (a model)
 node bench/index.mjs --suite closures    # progressive activation (a model)
 node bench/index.mjs --suite memory      # working memory and payload copies
+node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
 
 # The memory suite spawns its own child process; to run that probe directly:
 node --expose-gc bench/lib/memprobe.mjs
@@ -600,6 +615,94 @@ One figure confirmed independently: the demo container's inventory encodes to
 **134 base64url bytes, exactly a version 6-L QR symbol's capacity**. The
 receiver's half of a delta handshake is a single low-density symbol, which is
 the part of the design that has to work on a shaky handheld camera.
+
+### Semantic delta: diffing inside the segments
+
+`node bench/index.mjs --suite semdelta`
+
+`artifacts/semdelta.js` goes one level below the span plan above, decomposing
+the segments it can parse safely into *units* — vector records, WASM sections
+and function bodies, COW cluster-map blocks, membership-bitmap blocks. Segment
+interiors here are parsed by the real `rvf_wasm_bg.wasm` microkernel, not the JS
+fallback scanner.
+
+Every row below reports three payloads that were all built for real, and then
+which one `chooseDelta` returned. That last column is the point: a finer diff
+costs a table row per unit, so it is not always the smaller one, and two of the
+seven scenarios are constructed so that it loses.
+
+| scenario | full transfer | span delta | semantic delta | span ÷ semantic | chooser picked |
+|---|---|---|---|---|---|
+| demo container, 1 record changed, 1 removed, 3 added | 2,448 B | 2,086 B | **866 B** | 2.41× | semantic |
+| 1.13 MB container, 8 records + 1 COW cluster + 3 membership bits + 1 WASM byte † | 1,125,950 B | 1,125,630 B | **40,285 B** | 27.94× | semantic |
+| WASM module, 1 byte in the 37,135 B Code section | 41,053 B | 41,155 B | **3,693 B** | 11.14× | semantic |
+| RVCOW branch, 5 of 2,000 clusters flipped † | 18,163 B | 18,265 B | **2,284 B** | 8.00× | semantic |
+| membership bitmap, 3 of 40,000 bits cleared † | 5,160 B | 5,262 B | **894 B** | 5.89× | semantic |
+| demo container, vector dimension halved 16 → 8 | 1,536 B | **1,174 B** | 1,510 B | 0.78× | **span** |
+| demo container, cold receiver | 2,304 B | **2,448 B** | 2,784 B | 0.88× | **span** |
+
+† Synthetic containers. The repository ships no COW map or membership filter at
+the scale the mechanism exists for, so those three are constructed; the demo and
+WASM rows are the real container and the real microkernel off disk.
+
+**All seven reconstructed byte-exactly**, checked by SHA-256 against the
+sender's container rather than by length.
+
+**The two span-wins rows are the ones that show the chooser working.** Halving
+the vector dimension rewrites every record, so the semantic delta carries the
+same 1,030 payload bytes as the span delta *plus* a 392-byte table describing 28
+units, 25 of which changed — 1,510 B against 1,174 B, and the chooser correctly
+declines it. The cold receiver is the same verdict for a different reason: with
+nothing held, all 4 spans and all 28 units are missing, the table describes
+bytes that were going to be sent anyway, and the semantic payload is 2,784 B
+against 2,448 B. Neither is a failure mode; both are `chooseDelta` returning the
+smaller of two payloads it actually built.
+
+**A single-segment container is the case where the span delta cannot help at
+all.** The WASM, RVCOW and membership rows each hold one segment, so their span
+delta resends the whole container and its framing — 41,155 B, 18,265 B and
+5,262 B against full transfers of 41,053 B, 18,163 B and 5,160 B respectively.
+Each span delta is *larger than sending the file*. Only the unit decomposition
+recovers anything, and what it recovers is the bulk of the transfer: one changed
+WASM function body carries 1 of 71 units and 2,611 payload bytes out of a
+37,135-byte Code section.
+
+**The receiver's hop gets bigger in exactly the cases the sender's gets
+smaller,** and both halves are counted here rather than one. A semantic
+inventory carries a unit table on top of the span table `delta.js` sends: for
+the demo container that is 667 B against 134 B, and for the 1.13 MB container
+44,235 B against 190 B. Across the six scenarios with a base inventory the
+semantic inventory is larger every time, by between 402 B and 44,045 B. It never
+costs enough to overturn the payload saving — summing both hops, the demo
+transfer is 1,533 B semantic against 2,220 B span, and the large container
+84,520 B against 1,125,820 B — so on these scenarios `chooseDelta`'s
+payload-only comparison reaches the same verdict as the two-hop total in all six
+cases. **That is a property of these seven scenarios and not a proof.**
+
+The gap this exposes is upstream of `chooseDelta`, and it is worth being exact
+about which function is at fault. `chooseDelta` receives the receiver's
+inventory as an argument: by the time it runs, that hop has already crossed the
+wire and its cost is sunk. Comparing payloads alone is therefore the *correct*
+comparison at that call site, and folding the inventory back in would be a
+sunk-cost error — it cannot change which of the two remaining payloads is
+cheaper to send. The unexamined decision belongs to `semanticInventory`, which
+builds a unit table unconditionally, for every container, before anyone knows
+what changed. The receiver pays for unit granularity even when the sender will
+decline it, and the "every record rewritten" row is that bill arriving: summing
+both hops it costs 2,177 B against the span path's 1,308 B, a case where the
+semantic machinery loses overall while `chooseDelta` still returns the right
+answer to the narrower question it was asked. No granularity rule exists
+anywhere in the module. A receiver cannot know what changed, but it can bound
+what a unit table can possibly save, and it currently does not try.
+
+Cost of the machinery, median of 5 runs on the machine recorded above: the
+1.13 MB container plans in about 15 ms, inventories in about 27 ms, and takes
+about 49 ms in `chooseDelta` — which is the expensive call because it builds
+*both* payloads before returning one, the span delta even in the rows where the
+semantic delta wins. Applying and verifying it costs about 33 ms, for roughly
+120 ms end to end. Every other scenario returns from `chooseDelta` in under
+2 ms; the largest of them, the 41 KB WASM container, is about 4 ms for the whole
+plan-inventory-choose-apply sequence.
 
 ## 8. QR encode and decode cost
 

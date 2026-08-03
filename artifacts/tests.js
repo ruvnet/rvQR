@@ -30,6 +30,9 @@
       try { mods.fountain = require('./fountain.js'); } catch (e) { /* optional */ }
       try { mods.proto2 = require('./proto2.js'); } catch (e) { /* optional */ }
       try { mods.provenance = require('./provenance.js'); } catch (e) { /* optional */ }
+      try { mods.delta = require('./delta.js'); } catch (e) { /* optional */ }
+      try { mods.crypto = require('./crypto.js'); } catch (e) { /* optional */ }
+      try { mods.semdelta = require('./semdelta.js'); } catch (e) { /* optional */ }
       // app.js exports its provenance view model and nothing else outside a
       // browser: the UI half of that file returns early without a document.
       try { mods.view = require('./app.js'); } catch (e) { /* optional */ }
@@ -51,17 +54,24 @@
         );
         if (typeof process !== 'undefined') process.exit(summary.failed ? 1 : 0);
       };
+      // The sealed-inventory tests need a real handshake, so they are
+      // asynchronous like the RVF suite and land in the same summary.
+      var async = api.runDeltaChoiceTests(core, mods).then(null, function (err) {
+        return [{ name: 'delta choice suite', ok: false, detail: String(err) }];
+      });
       if (fs.existsSync(kernelPath) && fs.existsSync(containerPath)) {
-        api.runRvfTests(
-          rvflib,
-          new Uint8Array(fs.readFileSync(kernelPath)),
-          new Uint8Array(fs.readFileSync(containerPath))
-        ).then(finish, function (err) {
-          finish([{ name: 'RVF suite', ok: false, detail: String(err) }]);
+        async = async.then(function (rows) {
+          return api.runRvfTests(
+            rvflib,
+            new Uint8Array(fs.readFileSync(kernelPath)),
+            new Uint8Array(fs.readFileSync(containerPath))
+          ).then(function (more) { return rows.concat(more); },
+            function (err) { return rows.concat([{ name: 'RVF suite', ok: false, detail: String(err) }]); });
         });
-      } else {
-        finish([]);
       }
+      async.then(finish, function (err) {
+        finish([{ name: 'async suites', ok: false, detail: String(err) }]);
+      });
     }
   } else {
     root.RVQRTests = api;
@@ -2095,7 +2105,422 @@
       });
     }
 
+    // -- the delta strategy choice, as the send panel presents it -------------
+    //
+    // semdelta.test.js already asserts that chooseDelta() picks the smaller of
+    // the two payloads. These assert that the panel tells the user which one it
+    // picked, what both would have cost, and why — and that the size it quotes
+    // is the size of the bytes the button actually ships. A strategy chosen
+    // silently is a strategy nobody can debug, and a quoted size that came from
+    // a different plan than the payload is worse than no size at all.
+
+    var SD = mods.semdelta ||
+      (typeof window !== 'undefined' ? window.RVQRSemDelta : null) || null;
+    var DL = mods.delta ||
+      (typeof window !== 'undefined' ? window.RVQRDelta : null) || null;
+    var choiceView = (mods.view && mods.view.deltaChoice) ||
+      (typeof window !== 'undefined' ? window.RVQRDeltaChoiceView : null) || null;
+
+    if (mods.indexHtml) {
+      test('delta choice: the page loads semdelta.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./semdelta.js"');
+        assert(tag >= 0, 'index.html does not reference semdelta.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a module the page does not name is a module no user ever
+        // receives — which is the whole reason this test exists.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(line.indexOf('defer') >= 0, 'semdelta.js should be deferred with the optional modules');
+        assert(/<script[^>]*src="\.\/semdelta\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+
+        // It reads RVQRDelta and RVQRCrypto at load time, and deferred scripts
+        // run in document order, so it has to come after both.
+        var afterDelta = html.indexOf('src="./delta.js"');
+        var afterCrypto = html.indexOf('src="./crypto.js"');
+        assert(afterDelta >= 0 && afterDelta < tag, 'semdelta.js is not loaded after delta.js');
+        assert(afterCrypto >= 0 && afterCrypto < tag, 'semdelta.js is not loaded after crypto.js');
+        return 'loaded, deferred, after both of its dependencies';
+      });
+
+      test('delta choice: the send panel offers the pairing step the sealed inventory needs', function () {
+        var html = mods.indexHtml;
+        // Every control the wiring reaches for by id. A missing one is a
+        // TypeError on boot, not a missing feature.
+        ['deltaPairStep', 'deltaPairBtn', 'deltaPairConfirmBtn', 'deltaPairImageBtn',
+          'deltaPairImageInput', 'deltaPairReply', 'deltaPairResult'].forEach(function (id) {
+          assert(html.indexOf('id="' + id + '"') >= 0, 'index.html has no #' + id);
+        });
+        // Inside the delta card rather than somewhere else on the page.
+        var card = html.indexOf('id="deltaSendCard"');
+        assert(card >= 0 && html.indexOf('id="deltaPairStep"') > card,
+          'the pairing step is not inside the delta card');
+        // And it reuses the page's own numbered-step register rather than
+        // introducing a second one.
+        assert(/<ol class="steps">[\s\S]{0,400}id="deltaPairStep"/.test(html),
+          'the pairing step does not use the existing .steps list');
+        return '7 controls, inside the delta card, in the existing step register';
+      });
+    }
+
+    if (SD && DL && choiceView) {
+      // Vec containers built here rather than read from disk so these tests need
+      // no fixture and no kernel. The payload layout is the one semdelta.js
+      // documents: u16 dim | u16 count | u16 flags | count × {u64 id, dim × f32}.
+      var VEC_TYPE = 0x01;
+      function vecRecord(id, dim, fill) {
+        var r = new Uint8Array(8 + dim * 4);
+        r[0] = id & 0xff; r[1] = (id >>> 8) & 0xff;
+        r[2] = (id >>> 16) & 0xff; r[3] = (id >>> 24) & 0xff;
+        for (var i = 8; i < r.length; i++) r[i] = (fill + i * 7) & 0xff;
+        return r;
+      }
+      function vecContainer(dim, fills) {
+        var stride = 8 + dim * 4;
+        var payload = new Uint8Array(6 + stride * fills.length);
+        payload[0] = dim & 0xff; payload[1] = (dim >>> 8) & 0xff;
+        payload[2] = fills.length & 0xff; payload[3] = (fills.length >>> 8) & 0xff;
+        for (var i = 0; i < fills.length; i++) {
+          payload.set(vecRecord(i + 1, dim, fills[i]), 6 + i * stride);
+        }
+        var out = new Uint8Array(64 + payload.length);
+        out.set([0x53, 0x46, 0x56, 0x52], 0); // 'SFVR'
+        out[4] = 1;
+        out[5] = VEC_TYPE;
+        var dv = new DataView(out.buffer);
+        dv.setUint32(8, 1, true);
+        dv.setUint32(16, payload.length, true);
+        out.set(payload, 64);
+        return out;
+      }
+      function fillsOf(n) {
+        var out = [];
+        for (var i = 0; i < n; i++) out.push(i & 0xff);
+        return out;
+      }
+      function withChanged(fills, count) {
+        var out = fills.slice();
+        for (var i = 0; i < count; i++) out[i] = (out[i] + 91) & 0xff;
+        return out;
+      }
+      // dim 6 clears semdelta's 32-byte minimum unit, so records really are
+      // decomposed rather than silently collapsing back to one span.
+      var DIM = 6;
+      function panel(sender, receiverBytes) {
+        var chosen = SD.chooseDelta(sender, SD.semanticInventory(receiverBytes));
+        return { chosen: chosen, model: choiceView.model(chosen, { formatBytes: core.formatBytes }) };
+      }
+      function labelled(model) {
+        var out = {};
+        model.rows.forEach(function (r) { out[r.label] = r; });
+        return out;
+      }
+
+      test('delta choice: a slab with three records rewritten sends the semantic delta, and says so', function () {
+        var base = fillsOf(200);
+        var receiver = vecContainer(DIM, base);
+        var sender = vecContainer(DIM, withChanged(base, 3));
+        var p = panel(sender, receiver);
+
+        assertEqual(p.chosen.chosen, 'semantic', 'strategy chosen');
+        assertEqual(p.model.strategy, 'semantic', 'strategy the panel reports');
+
+        // The headline names the strategy. A reader who takes in one line has
+        // to take in which one ran.
+        assert(p.model.headline.indexOf('Semantic delta') === 0,
+          'the headline does not lead with the strategy: ' + p.model.headline);
+        assert(p.model.headline.indexOf(core.formatBytes(p.chosen.bytes)) >= 0,
+          'the headline does not carry the delta size: ' + p.model.headline);
+        assert(p.model.headline.indexOf(core.formatBytes(p.chosen.fullBytes)) >= 0,
+          'the headline does not carry the full size: ' + p.model.headline);
+
+        // Both figures are on screen, whichever won. A panel that showed only
+        // the winner would be unfalsifiable.
+        var rows = labelled(p.model);
+        assertEqual(p.model.rows.length, 3, 'row count');
+        assertEqual(rows['Span delta'].text, core.formatBytes(p.chosen.spanBytes), 'span row');
+        assertEqual(rows['Semantic delta'].text,
+          core.formatBytes(p.chosen.semanticBytes) + ' — chosen', 'semantic row');
+        assertEqual(rows['Full transfer'].text, core.formatBytes(p.chosen.fullBytes), 'full row');
+        assertEqual(rows['Span delta'].chosen, false, 'the losing row is marked chosen');
+        assertEqual(rows['Semantic delta'].chosen, true, 'the winning row is not marked chosen');
+
+        // The explanation is semdelta's own sentence, unedited: the module that
+        // made the choice is the one that describes it.
+        assertEqual(p.model.reason, p.chosen.reason, 'the panel rewrote the reason');
+        assert(/3 of \d+ units carried/.test(p.model.reason), 'reason: ' + p.model.reason);
+        assertEqual(p.model.summary.indexOf('3 of ' + p.chosen.unitCount + ' units to send'), 0,
+          'summary: ' + p.model.summary);
+
+        // A real saving, and presented as one.
+        assertEqual(p.model.tone, 'good', 'tone');
+        assertEqual(p.model.note, null, 'a genuine saving carried a caveat: ' + p.model.note);
+        assert(p.model.summary.indexOf('× less data') > 0, 'summary: ' + p.model.summary);
+        return p.model.headline + ' / ' + p.model.summary;
+      });
+
+      test('delta choice: when the unit table costs more than it saves the span delta wins, and the panel says why', function () {
+        // 60 of 100 records rewritten. The table costs 1414 bytes and saves
+        // 1350, so the finer delta is the bigger one — the exact case
+        // semdelta.js warns about, and the reason the comparison is measured
+        // rather than assumed.
+        var base = fillsOf(100);
+        var receiver = vecContainer(DIM, base);
+        var sender = vecContainer(DIM, withChanged(base, 60));
+        var p = panel(sender, receiver);
+
+        assertEqual(p.chosen.chosen, 'span', 'strategy chosen');
+        assert(p.chosen.semanticBytes > p.chosen.spanBytes,
+          'the fixture no longer makes the semantic delta the larger one');
+        assertEqual(p.model.strategy, 'span', 'strategy the panel reports');
+        assert(p.model.headline.indexOf('Span delta') === 0,
+          'the headline does not lead with the strategy: ' + p.model.headline);
+
+        var rows = labelled(p.model);
+        assertEqual(rows['Span delta'].text,
+          core.formatBytes(p.chosen.spanBytes) + ' — chosen', 'span row');
+        assertEqual(rows['Semantic delta'].text, core.formatBytes(p.chosen.semanticBytes), 'semantic row');
+        assertEqual(rows['Semantic delta'].chosen, false, 'the losing row is marked chosen');
+        // The number the semantic delta would have cost is still on screen, so
+        // the choice can be checked rather than taken on trust.
+        assert(rows['Semantic delta'].bytes > rows['Span delta'].bytes,
+          'the losing figure was not rendered');
+        assert(/unit table costs \d+ bytes, more than the \d+ bytes of payload it saves/.test(p.model.reason),
+          'the panel does not explain the guard: ' + p.model.reason);
+
+        // This fixture also lands on the case where the winning delta is still
+        // bigger than the container. It must not be dressed as a saving: no
+        // encouraging tone, and a sentence saying plainly that sending the
+        // whole artifact would be cheaper.
+        assert(p.chosen.bytes > p.chosen.fullBytes, 'the fixture no longer exceeds a full transfer');
+        assertEqual(p.model.tone, '', 'a delta larger than the artifact wore the good tone');
+        assert(p.model.note && /smaller than the container itself/.test(p.model.note),
+          'the panel does not say the delta costs more than the whole artifact');
+        assert(p.model.summary.indexOf('0 B saved') > 0, 'summary: ' + p.model.summary);
+        assert(p.model.summary.indexOf('× less data') < 0,
+          'a delta larger than the artifact claimed a ratio: ' + p.model.summary);
+        return p.model.headline + ' — ' + p.model.reason;
+      });
+
+      test('delta choice: the size the panel quotes is the size of the bytes the button sends', function () {
+        // The button ships chosen.payload. If the panel quoted a figure derived
+        // from anything else — a re-run of the losing plan, an estimate — this
+        // is where it would part company from reality.
+        var base = fillsOf(200);
+        var cases = [
+          ['semantic', vecContainer(DIM, base), vecContainer(DIM, withChanged(base, 3))],
+          ['span', vecContainer(DIM, fillsOf(100)), vecContainer(DIM, withChanged(fillsOf(100), 60))]
+        ];
+        var notes = [];
+        for (var i = 0; i < cases.length; i++) {
+          var expect = cases[i][0], receiver = cases[i][1], sender = cases[i][2];
+          var p = panel(sender, receiver);
+          assertEqual(p.chosen.chosen, expect, 'strategy for the ' + expect + ' case');
+          assertEqual(p.chosen.bytes, p.chosen.payload.length,
+            'the quoted size is not the payload length (' + expect + ')');
+          assert(p.model.headline.indexOf(core.formatBytes(p.chosen.payload.length)) >= 0,
+            'the headline quotes something other than the payload it would send: ' + p.model.headline);
+
+          // And those bytes really do rebuild the sender's container on a
+          // device holding the receiver's. A quoted size for a payload that
+          // does not reconstruct is a lie with a number attached.
+          var rebuilt = SD.applyChosen(receiver, p.chosen);
+          assertEqual(rebuilt.sha256, core.sha256Hex(sender), 'reconstruction (' + expect + ')');
+          notes.push(expect + ' ' + p.chosen.payload.length + ' B');
+        }
+        return notes.join(', ') + ' — quoted, sent and reconstructed';
+      });
+
+      test('delta choice: a receiver holding everything still gets an honest comparison', function () {
+        // Nothing to send. The span delta is a bare header; the semantic delta
+        // is a bare header plus a table describing the whole container, so it
+        // loses — and the panel must not present "no change" as a saving it
+        // did not make.
+        var same = vecContainer(DIM, fillsOf(100));
+        var p = panel(same, same);
+        assertEqual(p.chosen.chosen, 'span', 'strategy chosen');
+        assertEqual(p.chosen.spanDiff.missing.length, 0, 'segments to send');
+        assertEqual(p.chosen.unitDiff.missing.length, 0, 'units to send');
+        assertEqual(p.model.summary.indexOf('0 of ' + p.chosen.spanCount + ' segments to send'), 0,
+          'summary: ' + p.model.summary);
+        var rows = labelled(p.model);
+        assert(rows['Semantic delta'].bytes > rows['Span delta'].bytes,
+          'the empty semantic delta was not the larger one');
+        assertEqual(rows['Span delta'].chosen, true, 'the span row is not marked chosen');
+        return p.model.headline + ' — ' + p.model.summary;
+      });
+
+      test('delta choice: a result the panel cannot describe renders nothing rather than something wrong', function () {
+        // The panel is fed by a module that may not have loaded and by data
+        // that ultimately arrived from another device. Neither may produce a
+        // confident-looking figure out of nothing.
+        assertEqual(choiceView.model(null, {}), null, 'null');
+        assertEqual(choiceView.model({}, {}), null, 'an empty object');
+        assertEqual(choiceView.model({ chosen: 'best', bytes: 10 }, {}), null, 'an unknown strategy');
+        return '3 unusable results, no panel';
+      });
+    }
+
     return results;
+  }
+
+  /**
+   * The delta-choice tests that need a real crypto.js session.
+   *
+   * Separate from runAll for the same reason the RVF suite is: sealing is
+   * asynchronous. The sealed path is the point of the exercise — an inventory
+   * lists which artifacts and which versions a device holds, so it travels
+   * encrypted or the feature is not the feature — and a test that skipped the
+   * seal would be testing something the app does not do.
+   */
+  function runDeltaChoiceTests(core, mods) {
+    mods = mods || {};
+    var results = [];
+    function record(name, promise) {
+      return Promise.resolve(promise).then(
+        function (detail) { results.push({ name: name, ok: true, detail: detail || '' }); },
+        function (e) {
+          results.push({ name: name, ok: false, detail: e && e.message ? e.message : String(e) });
+        }
+      );
+    }
+    function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
+    function assertEqual(a, b, m) {
+      if (a !== b) throw new Error((m || 'expected') + ': got ' + a + ', want ' + b);
+    }
+
+    var SD = mods.semdelta ||
+      (typeof window !== 'undefined' ? window.RVQRSemDelta : null) || null;
+    var CR = mods.crypto ||
+      (typeof window !== 'undefined' ? window.RVQRCrypto : null) || null;
+    var choiceView = (mods.view && mods.view.deltaChoice) ||
+      (typeof window !== 'undefined' ? window.RVQRDeltaChoiceView : null) || null;
+    if (!SD || !CR || !choiceView) return Promise.resolve(results);
+
+    // The context string app.js seals under. It is asserted here rather than
+    // merely used, because both ends have to name the same thing and a silent
+    // disagreement shows up as an unopenable inventory much later.
+    var CONTEXT = 'rvqr/semantic-inventory/v1';
+
+    function vecContainer(dim, fills) {
+      var stride = 8 + dim * 4;
+      var payload = new Uint8Array(6 + stride * fills.length);
+      payload[0] = dim & 0xff; payload[1] = (dim >>> 8) & 0xff;
+      payload[2] = fills.length & 0xff; payload[3] = (fills.length >>> 8) & 0xff;
+      for (var i = 0; i < fills.length; i++) {
+        var r = new Uint8Array(stride);
+        var id = i + 1;
+        r[0] = id & 0xff; r[1] = (id >>> 8) & 0xff;
+        r[2] = (id >>> 16) & 0xff; r[3] = (id >>> 24) & 0xff;
+        for (var k = 8; k < stride; k++) r[k] = (fills[i] + k * 7) & 0xff;
+        payload.set(r, 6 + i * stride);
+      }
+      var out = new Uint8Array(64 + payload.length);
+      out.set([0x53, 0x46, 0x56, 0x52], 0);
+      out[4] = 1;
+      out[5] = 0x01;
+      var dv = new DataView(out.buffer);
+      dv.setUint32(8, 1, true);
+      dv.setUint32(16, payload.length, true);
+      out.set(payload, 64);
+      return out;
+    }
+    function fillsOf(n) {
+      var out = [];
+      for (var i = 0; i < n; i++) out.push(i & 0xff);
+      return out;
+    }
+
+    /** A real handshake: invite, accept, confirm. No stubs on either side. */
+    function sessionPair() {
+      return Promise.resolve(CR.sessionInvite({})).then(function (state) {
+        return Promise.resolve(CR.sessionAccept(state.bootstrap, {})).then(function (accepted) {
+          assert(accepted.ok, 'the responder rejected the invite: ' + accepted.reason);
+          return Promise.resolve(CR.sessionConfirm(state, accepted.bootstrap, {}))
+            .then(function (confirmed) {
+              assert(confirmed.ok, 'the initiator rejected the reply: ' + confirmed.reason);
+              // responder seals (it is the receiver), initiator opens (it is
+              // the sender) — the same direction app.js uses.
+              return { receiver: accepted.session, sender: confirmed.session };
+            });
+        });
+      });
+    }
+
+    var base = fillsOf(200);
+    var receiverBytes = vecContainer(6, base);
+    var senderFills = base.slice();
+    senderFills[4] = (senderFills[4] + 91) & 0xff;
+    senderFills[9] = (senderFills[9] + 91) & 0xff;
+    var senderBytes = vecContainer(6, senderFills);
+
+    var chain = record(
+      'delta choice: the sealed inventory drives the same choice the plaintext one would',
+      sessionPair().then(function (pair) {
+        var plain = SD.semanticInventory(receiverBytes);
+        return SD.sealInventory(plain, pair.receiver, { context: CONTEXT }).then(function (sealed) {
+          assertEqual(typeof sealed, 'string', 'a sealed inventory is base64url text');
+          // It really is sealed: neither plaintext inventory magic survives.
+          var raw = core.b64uDecode(sealed);
+          var head = core.toHex(raw.subarray(0, 4));
+          assert(head !== '52565349', 'the semantic inventory magic is still in the clear');
+          assert(head !== '52565149', 'the span inventory magic is still in the clear');
+
+          return SD.openInventory(sealed, pair.sender, { context: CONTEXT }).then(function (opened) {
+            assertEqual(opened.root, plain.root, 'the opened inventory describes a different container');
+            assertEqual(opened.units.length, plain.units.length, 'unit count');
+
+            var fromSealed = SD.chooseDelta(senderBytes, opened);
+            var fromPlain = SD.chooseDelta(senderBytes, plain);
+            assertEqual(fromSealed.chosen, fromPlain.chosen, 'strategy');
+            assertEqual(fromSealed.bytes, fromPlain.bytes, 'chosen size');
+            assertEqual(fromSealed.spanBytes, fromPlain.spanBytes, 'span size');
+            assertEqual(fromSealed.semanticBytes, fromPlain.semanticBytes, 'semantic size');
+
+            var model = choiceView.model(fromSealed, { formatBytes: core.formatBytes });
+            assertEqual(model.strategy, 'semantic', 'strategy the panel reports');
+            assert(model.headline.indexOf('Semantic delta') === 0, 'headline: ' + model.headline);
+
+            // And the payload chosen against the sealed inventory rebuilds the
+            // sender's container on the receiver's copy. The encryption is on
+            // the path, not around it.
+            var rebuilt = SD.applyChosen(receiverBytes, fromSealed);
+            assertEqual(rebuilt.sha256, core.sha256Hex(senderBytes), 'reconstruction');
+            return sealed.length + ' sealed characters, ' + model.headline;
+          });
+        });
+      })
+    );
+
+    chain = chain.then(function () {
+      return record(
+        'delta choice: a sealed inventory does not open for anyone but the session it was sealed to',
+        Promise.all([sessionPair(), sessionPair()]).then(function (pairs) {
+          var inv = SD.semanticInventory(receiverBytes);
+          return SD.sealInventory(inv, pairs[0].receiver, { context: CONTEXT }).then(function (sealed) {
+            var attempts = [
+              ['a different session', SD.openInventory(sealed, pairs[1].sender, { context: CONTEXT })],
+              ['a different context', SD.openInventory(sealed, pairs[0].sender, { context: 'rvqr/manifest' })],
+              ['a flipped byte', (function () {
+                var raw = core.b64uDecode(sealed);
+                raw[raw.length - 1] ^= 0x01;
+                return SD.openInventory(core.b64uEncode(raw), pairs[0].sender, { context: CONTEXT });
+              })()]
+            ];
+            return Promise.all(attempts.map(function (a) {
+              return a[1].then(
+                function () { throw new Error(a[0] + ' opened the inventory'); },
+                function () { return a[0]; }
+              );
+            })).then(function (names) {
+              return names.length + ' rejected: ' + names.join(', ');
+            });
+          });
+        })
+      );
+    });
+
+    return chain.then(function () { return results; });
   }
 
   /**
@@ -2255,5 +2680,10 @@
     return { total: results.length, passed: passed, failed: results.length - passed };
   }
 
-  return { runAll: runAll, runRvfTests: runRvfTests, summarize: summarize };
+  return {
+    runAll: runAll,
+    runRvfTests: runRvfTests,
+    runDeltaChoiceTests: runDeltaChoiceTests,
+    summarize: summarize
+  };
 });

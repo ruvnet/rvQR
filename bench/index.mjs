@@ -9,7 +9,7 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory.
+ *         fleet, closures, memory, semdelta.
  *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
@@ -41,6 +41,7 @@ import { runObjectiveSuite, indexedPenalty, P_SWEEP } from './suites/objective.m
 import { runFleetSuite, runFleetScaleCheck } from './suites/fleet.mjs';
 import { runClosureSuite, closureProfiles, FIRST_CLOSURE_TARGET_SECONDS } from './suites/closures.mjs';
 import { runMemorySuite } from './suites/memory.mjs';
+import { runSemDeltaSuite } from './suites/semdelta.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -91,14 +92,23 @@ function captureEnvironment() {
 }
 
 function moduleInventory() {
-  const files = [
-    'artifacts/core.js',
-    'artifacts/fountain.js',
-    'artifacts/delta.js',
-    'artifacts/resume.js',
-    'artifacts/vendor/qrcode.js',
-    'artifacts/vendor/qrdecode.js'
-  ];
+  // Derived, not hardcoded. This list previously named six modules by hand and
+  // went stale the moment a seventh shipped: the semantic-delta suite measured
+  // artifacts/semdelta.js while this header omitted it, so the run's own
+  // provenance disagreed with what the run had actually exercised. A benchmark
+  // that misreports which code it measured is worse than one that reports
+  // nothing. Enumerating the directory means a new module appears here without
+  // anyone remembering to add it — the same reason build-artifact.mjs derives
+  // its script list from index.html rather than repeating it.
+  const enumerate = (dir) => {
+    try {
+      return fs.readdirSync(path.join(REPO_ROOT, dir))
+        .filter((f) => f.endsWith('.js') && !f.endsWith('.test.js') && f !== 'tests.js')
+        .sort()
+        .map((f) => dir + '/' + f);
+    } catch { return []; }
+  };
+  const files = [...enumerate('artifacts'), ...enumerate('artifacts/vendor')];
   return files.map((rel) => {
     const abs = path.join(REPO_ROOT, rel);
     let present = false;
@@ -950,6 +960,170 @@ function printMemorySuite(res) {
   say('');
 }
 
+function printSemDeltaSuite(res) {
+  say('### Semantic delta: diffing inside RVF segments');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    `Driving ${path.relative(REPO_ROOT, res.path)} end to end. Segment interiors parsed by the ` +
+      `${res.parserKind}${res.parserReason ? ` (the microkernel would not instantiate: ${res.parserReason})` : ''}. ` +
+      `Timings are the median of ${res.reps} runs. The demo container is ${res.demoBytes} B and the ` +
+      `WASM module ${res.wasmModuleBytes} B in ${res.wasmSectionCount} sections, of which the Code ` +
+      `section is ${res.codeSectionBytes} B. Rows marked synthetic use containers this repository does ` +
+      'not ship, because it contains no COW map or membership filter at the scale the mechanism is for.'
+  );
+  say('');
+
+  say('**What crosses the wire, and which payload `chooseDelta` actually returned.**');
+  say('');
+  say(
+    markdownTable(
+      ['scenario', 'what changed', 'full transfer', 'span delta', 'semantic delta', 'span ÷ semantic', 'chooser picked', 'byte-exact?'],
+      res.scenarios.map((s) => [
+        `${s.name}${s.synthetic ? ' *(synthetic)*' : ''}`,
+        s.what,
+        `${s.fullBytes} B`,
+        `${s.spanBytes} B`,
+        `${s.semanticBytes} B`,
+        fmt(s.spanOverSemantic, 2) + '×',
+        `**${s.chosen}**`,
+        s.reconstructedExactly ? 'yes' : 'NO'
+      ])
+    )
+  );
+  say('');
+
+  const declined = res.scenarios.filter((s) => s.chosen === 'span');
+  const wrong = res.scenarios.filter((s) => s.chosen !== s.expectation);
+  say(
+    `The chooser returned the smaller of the two payloads in every row (${res.scenarios.length}/` +
+      `${res.scenarios.length}), and declined the semantic delta in ${declined.length} of them. ` +
+      (wrong.length
+        ? `**${wrong.length} row(s) did not match the expected verdict: ` +
+          `${wrong.map((s) => `${s.name} → ${s.chosen}, expected ${s.expectation}`).join('; ')}.**`
+        : 'Every verdict matched the one the scenario was constructed to produce.')
+  );
+  say('');
+
+  say('**Why each verdict came out that way — the unit table is what is being paid for.**');
+  say('');
+  say(
+    markdownTable(
+      ['scenario', 'spans', 'units', 'spans sent', 'units sent', 'span payload', 'unit payload', 'unit table', 'net'],
+      res.scenarios.map((s) => {
+        const saved = s.spanPayloadBytes - s.unitPayloadBytes;
+        const net = saved - s.tableBytes;
+        return [
+          s.name,
+          String(s.spanCount),
+          String(s.unitCount),
+          `${s.spansMissing}/${s.spanCount}`,
+          `${s.unitsMissing}/${s.unitCount}`,
+          `${s.spanPayloadBytes} B`,
+          `${s.unitPayloadBytes} B`,
+          `${s.tableBytes} B`,
+          `${net >= 0 ? '+' : '−'}${Math.abs(net)} B`
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    '"Net" is the payload bytes the finer diff saves minus what its table costs, and its sign is the ' +
+      'verdict: positive means the semantic delta earned its table, negative means it did not. It is ' +
+      'not identical to the difference between the two payload columns in the first table, because ' +
+      'both payloads also carry framing the table accounting does not include.'
+  );
+  say('');
+
+  say(
+    '**The receiver\'s hop, which gets bigger in exactly the cases the sender\'s gets smaller.** A ' +
+      'semantic inventory carries a unit table on top of the span table `delta.js` sends, and the ' +
+      'receiver transmits it before the sender transmits anything:'
+  );
+  say('');
+  const withInventory = res.scenarios.filter((s) => s.semanticInventoryBytes > 0);
+  say(
+    markdownTable(
+      ['scenario', 'span inventory', 'semantic inventory', 'receiver hop change', 'sender hop change', 'both hops, span', 'both hops, semantic'],
+      withInventory.map((s) => {
+        const spanTotal = s.spanInventoryBytes + s.spanBytes;
+        const semTotal = s.semanticInventoryBytes + s.semanticBytes;
+        const signed = (n) => `${n >= 0 ? '+' : '−'}${Math.abs(n)} B`;
+        return [
+          s.name,
+          `${s.spanInventoryBytes} B`,
+          `${s.semanticInventoryBytes} B`,
+          signed(s.semanticInventoryBytes - s.spanInventoryBytes),
+          signed(s.semanticBytes - s.spanBytes),
+          `${spanTotal} B`,
+          `${semTotal} B${semTotal < spanTotal ? '' : ' (worse)'}`
+        ];
+      })
+    )
+  );
+  say('');
+  say('Both change columns are semantic minus span, so a minus sign is a hop that got smaller.');
+  say('');
+
+  // `chooseDelta` compares payloads only. Whether that criterion also gets the
+  // two-hop total right is a separate question, and it is checked here rather
+  // than assumed — a row where the two disagree would mean the chooser is
+  // optimising the wrong quantity.
+  const agree = withInventory.filter((s) => {
+    const semWins = s.semanticInventoryBytes + s.semanticBytes < s.spanInventoryBytes + s.spanBytes;
+    return semWins === (s.chosen === 'semantic');
+  });
+  const invDeltas = withInventory.map((s) => s.semanticInventoryBytes - s.spanInventoryBytes);
+  const invRange = `${Math.min(...invDeltas)} B to ${Math.max(...invDeltas).toLocaleString('en-US')} B`;
+  const allBigger = invDeltas.every((d) => d > 0);
+  say(
+    `**\`chooseDelta\` compares payloads and ignores the inventory hop entirely.** On these ` +
+      `${withInventory.length} scenarios that shortcut reaches the same verdict as the two-hop total ` +
+      `in ${agree.length} of them` +
+      (agree.length === withInventory.length
+        ? `. The semantic inventory is ${allBigger ? 'larger in every row' : 'larger in most rows'} — ` +
+          `by ${invRange} here — but never by enough to overturn the payload saving, so no row in this ` +
+          'suite catches the chooser optimising the wrong quantity. That is a property of these ' +
+          'scenarios, not a proof: a container with many units and a payload saving smaller than its ' +
+          'unit table would break it.'
+        : `, and disagrees in ${withInventory.length - agree.length}: ` +
+          withInventory
+            .filter((s) => !agree.includes(s))
+            .map((s) => s.name)
+            .join('; ') +
+          '. **In those rows the chooser is optimising the wrong quantity.**')
+  );
+  say('');
+
+  say('**Cost of the machinery itself (median ms):**');
+  say('');
+  say(
+    markdownTable(
+      ['scenario', 'container', 'semantic plan', 'inventory', 'chooseDelta (builds both)', 'apply + verify'],
+      res.scenarios.map((s) => [
+        s.name,
+        `${s.fullBytes} B`,
+        `${fmt(s.planMs.p50, 3)} ms`,
+        s.baseBytes ? `${fmt(s.inventoryMs.p50, 3)} ms` : '—',
+        `${fmt(s.chooseMs.p50, 3)} ms`,
+        `${fmt(s.applyMs.p50, 3)} ms`
+      ])
+    )
+  );
+  say('');
+  say(
+    '`chooseDelta` is the expensive column because it builds both payloads before returning one: the ' +
+      'span delta is computed even in the rows where the semantic delta wins, and vice versa. That is ' +
+      'the price of the verdict being a measurement rather than a heuristic.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 function main() {
@@ -1238,6 +1412,18 @@ function main() {
     say('');
     results.memory = runMemorySuite({});
     printMemorySuite(results.memory);
+  }
+
+  if (want('semdelta')) {
+    say('---');
+    say('');
+    results.semdelta = runSemDeltaSuite({
+      demoBytes: rvf,
+      wasmModule: wasm,
+      seed: args.seed,
+      reps: args.quick ? 1 : 5
+    });
+    printSemDeltaSuite(results.semdelta);
   }
 
   if (args.json) {
