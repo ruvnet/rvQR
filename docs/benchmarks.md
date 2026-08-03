@@ -68,16 +68,17 @@ content.** With 64-byte Ed25519 the budget is a comfortable 7,788 bytes. Neither
 ADR reaches this conclusion because it is a product of the two.
 
 **6. The pipeline is inside its memory budget and outside its copy budget.**
-MEASURED on `standalone.html` (507,527 B) in a separate process under
-`--expose-gc`: peak RSS 86.4 MiB, of which 38.4 MiB is the pipeline itself —
-comfortably inside 128 MiB. But **the receiver peaks at 2.84 payload copies for
-v1 and 2.58 for v2**, against a budget of fewer than two. Both overshoot for
-the same structural reason: the decoded chunks and the assembled output are
+MEASURED on `standalone.html` (572,166 B) in a separate process under
+`--expose-gc`: peak RSS 87.9 MiB, of which 39.9 MiB is the pipeline itself —
+comfortably inside 128 MiB. But **the receiver peaks at 2.78 payload copies for
+v1 and 2.56 for v2**, against ADR-025's budget of fewer than two. Both overshoot
+for the same structural reason: the decoded chunks and the assembled output are
 alive at the same time.
 
 **7. `proto2.toTransport` leaves a cons-string rope that costs about 30 bytes
-per output byte.** MEASURED: armouring 765 frames retained 18.2 MiB for 605 KB
-of output — 37.6× the artifact. Holding one frame at a time costs nothing
+per output byte.** MEASURED: armouring every frame and retaining them cost
+37.6× the artifact in heap, against the 1.14× the armour's own expansion
+accounts for. Holding one frame at a time costs nothing
 (0.03×), so this only bites a sender that pre-armours a batch. It is a
 one-character-at-a-time `+=` loop that V8 never flattens.
 
@@ -147,12 +148,13 @@ figures also vary a few tens of percent *between runs on this machine*
 depending on how warm the JIT is by the time a suite runs — see the note under
 "Decode cost against symbol size".
 
-**Two artifacts moved while these benchmarks were being taken.**
-`standalone.html` was 503,216 bytes at the start of the session and 507,527 at
-the time of this run; `artifacts/app.js` went from 91,487 to 111,853. Both are
-under active development by other agents. Every measurement below records the
-size it saw, and any figure quoted against a different size is a different
-measurement of a different file.
+**Two artifacts moved while these benchmarks were being taken, repeatedly.**
+`standalone.html` was 503,216 bytes at the start of the session, 507,527 midway
+through, and 572,166 at the time of this run; `artifacts/app.js` went from
+91,487 to 112,319. Both are under active development by other agents. Every
+measurement below records the size it saw, and any figure quoted against a
+different size is a measurement of a different file. Ratios and percentages
+survive this; absolute byte counts do not, and are quoted with their size.
 
 ---
 
@@ -334,17 +336,18 @@ matched exactly, armoured and unarmoured.
 | `artifacts/demo/ruvnet-demo.rvf` | 2,304 | 1,745 B | 1.320× | 23.2% | brotli-9 | 1.326× | 23.5% |
 | `artifacts/demo/rvf_wasm_bg.wasm` | 40,989 | 16,636 B | 2.464× | 59.3% | brotli-11 | 2.767× | 63.7% |
 | `artifacts/core.js` | 51,683 | 15,851 B | 3.261× | 69.2% | brotli-11 | 3.679× | 72.7% |
-| `artifacts/app.js` | 111,853 | 30,118 B | 3.714× | 73.0% | brotli-11 | 4.144× | 75.8% |
-| `standalone.html` | 507,527 | 143,695 B | 3.532× | 71.7% | brotli-11 | 3.950× | 74.7% |
+| `artifacts/app.js` | 112,319 | 30,286 B | 3.709× | 73.0% | brotli-11 | 4.138× | 75.8% |
+| `standalone.html` | 572,166 | 158,868 B | 3.602× | 72.2% | brotli-11 | 4.042× | 75.2% |
 | synthetic float32 vectors | 16,384 | 14,929 B | 1.097× | 8.7% | brotli-11 | 1.103× | 9.1% |
 
 **The three reference points this was asked to reproduce independently, all
 reproduced.** 40,989 → 16,636 at Brotli-6, ratio 2.464× — the same byte count.
-2,304 → 1,745, ratio 1.320× — the same byte count. The standalone app's ratio
-reproduces at 3.532×, but the byte count does not: 143,695 against a previously
-reported 142,368, because the file grew from 503,216 to 507,527 bytes between
-the two measurements. The ratio is the reproducible quantity; the byte count is
-a measurement of a file that has changed.
+2,304 → 1,745, ratio 1.320× — the same byte count. The standalone app reproduces only
+approximately, and the reason is instructive: 3.602× against a previously
+reported 3.53×, and 158,868 bytes against 142,368, because the file grew from
+503,216 to 572,166 bytes **during this session** — it was 507,527 midway
+through. The ratio is the near-reproducible quantity; the byte count is a
+measurement of a file that changed three times while it was being measured.
 
 The float32 row is the case the corpus would otherwise flatter away. It is
 synthetic, generated from the harness seed, in the shape an RVF `VEC` span
@@ -355,19 +358,19 @@ source code and WASM would make compression look uniformly free.
 
 | artifact | zstd-6 enc | zstd-6 dec | brotli-6 enc | brotli-6 dec | brotli-11 enc |
 |---|---|---|---|---|---|
-| `ruvnet-demo.rvf` (2.3 KB) | 0.03 ms | 0.01 ms | 0.05 ms | 0.01 ms | 2.3 ms |
-| `rvf_wasm_bg.wasm` (41 KB) | 0.39 ms | 0.05 ms | 0.66 ms | 0.09 ms | 37.0 ms |
-| `standalone.html` (508 KB) | 3.67 ms | 0.36 ms | 7.94 ms | 0.84 ms | 527.5 ms |
+| `ruvnet-demo.rvf` (2.3 KB) | 0.02 ms | 0.01 ms | 0.04 ms | 0.01 ms | 2.4 ms |
+| `rvf_wasm_bg.wasm` (41 KB) | 0.34 ms | 0.05 ms | 0.63 ms | 0.11 ms | 37.8 ms |
+| `standalone.html` (572 KB) | 4.59 ms | 0.42 ms | 9.34 ms | 0.92 ms | 602.9 ms |
 
 Decode is the number that matters, because it is on the receiver's critical
 path, and it is negligible: under a millisecond for half a megabyte. Encode at
-Brotli-11 is not — 527 ms for the standalone app — but it is a sender-side
+Brotli-11 is not — 603 ms for the standalone app — but it is a sender-side
 one-off before the first frame is painted, against a transfer measured in
 minutes.
 
 ADR-003 §2.3 reports Brotli-6 encoding `standalone.html` at 503,216 bytes in
-8.38 ms, about 60 MB/s. This harness measures 507,527 bytes in 7.94 ms, about
-64 MB/s, on a file that grew between the two runs — an independent
+8.38 ms, about 60 MB/s. This harness measures 572,166 bytes in 9.34 ms, about
+61 MB/s, on a file that grew between the two runs — an independent
 corroboration rather than a restatement, and close enough that ADR-003's
 "compress the whole thing and compare up to 8 MB" policy is well founded.
 
@@ -650,8 +653,9 @@ shutter, no noise, no glare, no motion.
 `node bench/index.mjs --suite memory`
 
 Budget: under 128 MiB of working memory and fewer than two full payload copies
-live at once, on the largest artifact in the repository — `standalone.html`,
-507,527 bytes.
+live at once ([ADR-025](adr/ADR-025-rvqr-zero-copy-pipeline.md) §2.2), on the
+largest artifact in the repository — `standalone.html`, 572,166 bytes at the
+time of this run.
 
 Measured in a separate process under `--expose-gc`, because both matter: without
 a forced collection `heapUsed` is whatever the collector has not got round to
@@ -663,29 +667,32 @@ harness made and corrected.
 
 | stage | heap Δ | external Δ | live copies | peak RSS |
 |---|---|---|---|---|
-| v1 sender: buildFrames | 1.73× | 0.08× | 1.81× | 54.3 MiB |
-| v1 receiver: ingest (frames drained) | −0.99× | 1.00× | 1.82× | 55.4 MiB |
-| v1 receiver: finalize (assemble + SHA-256) | 0.02× | 1.00× | **2.84×** | 56.8 MiB |
-| v2 sender: buildFrames | 0.37× | 1.04× | 1.42× | 58.0 MiB |
-| v2 sender: armour, one frame retained | 0.03× | 0.00× | 1.45× | 58.0 MiB |
-| v2 harness: armour every frame, all retained | **37.60×** | 0.00× | 39.06× | 84.2 MiB |
-| v2 receiver: ingest (frames drained) | −37.49× | 0.00× | 1.57× | 86.2 MiB |
-| v2 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | **2.58×** | 86.4 MiB |
+| v1 sender: buildFrames | 1.70× | 0.07× | 1.78× | 54.6 MiB |
+| v1 receiver: ingest (frames drained) | −1.01× | 1.00× | 1.77× | 55.9 MiB |
+| v1 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | **2.78×** | 56.5 MiB |
+| v2 sender: buildFrames | 0.36× | 1.04× | 1.41× | 58.4 MiB |
+| v2 sender: armour, one frame retained | 0.04× | 0.00× | 1.45× | 58.7 MiB |
+| v2 harness: armour every frame, all retained | **37.60×** | 0.00× | 39.05× | 83.3 MiB |
+| v2 receiver: ingest (frames drained) | −37.50× | 0.00× | 1.55× | 87.4 MiB |
+| v2 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | **2.56×** | 87.9 MiB |
 
 Sender and receiver are measured as separate pipelines because they are separate
 devices: holding the whole frame list is something this harness does and a
 receiver never does, so the receiver stages drain the list as they consume it.
 
-**Peak RSS 86.4 MiB, of which 38.4 MiB is the pipeline above an empty Node
-process — inside the 128 MiB budget.**
+**Peak RSS 87.9 MiB, of which 39.9 MiB is the pipeline above an empty Node
+process — inside the 128 MiB budget.** ADR-025 §2.4 is right that the budget is
+a system budget rather than a pipeline budget, and this measures only the
+pipeline; a browser tab's DOM, canvas backing store and camera buffers are
+outside it.
 
 **Both receivers are over the copy budget, and by roughly the same amount: v1
-peaks at 2.84 payload copies, v2 at 2.58, against a budget of fewer than two.**
+peaks at 2.78 payload copies, v2 at 2.56, against a budget of fewer than two.**
 The cause is structural and identical in both: the per-frame chunks and the
 assembled output are alive at the same time, so the floor for the current
 `assemble`-then-verify design is 2.00 copies before any framing cost is counted.
-v1 adds 0.84 on top because its base64url frame strings are not fully released;
-v2 adds 0.58 because `proto2.ingest` stores `f.payload` as a **subarray view of
+v1 adds 0.78 on top because its base64url frame strings are not fully released;
+v2 adds 0.56 because `proto2.ingest` stores `f.payload` as a **subarray view of
 the whole frame buffer**, so all 693 bytes of a frame stay alive to keep 665
 bytes of payload — 1.04× rather than 1.00×.
 
@@ -693,8 +700,9 @@ Getting under two copies means not materialising the assembled artifact
 separately from the chunks: writing each chunk into its final position as it
 arrives, and hashing incrementally. That is a design change, not a tuning knob.
 
-**`proto2.toTransport` leaves a cons-string rope.** Armouring all 765 frames and
-retaining them cost 18.2 MiB — 37.6× the artifact, for output that is 605 KB.
+**`proto2.toTransport` leaves a cons-string rope.** Armouring every frame and
+retaining them cost 37.6× the artifact in heap, where the armour's own 8/7
+expansion accounts for 1.14×.
 `toTransport` appends one character at a time with `+=`, so V8 builds a
 cons-string tree of ~792 nodes per frame and never flattens it until something
 reads the string; each node costs more than the character it carries. The next
@@ -1092,8 +1100,8 @@ in the brief for this work. Reported rather than smoothed.
 | A v1 data frame is 739 B / 44.3% overhead (`proto2.js` docblock) vs 741 B / 44.7% (elsewhere) | Both, depending on transfer size: 739 B for a 6-frame transfer, 740–741 B for an 82-frame one | v1's `i` and `n` are decimal and grow by a byte at each power of ten. Neither figure is wrong; neither is a constant. |
 | v2 binary carries 764 B/frame at version 19-L, 1.492× v1's default | 764 B confirmed, and 1.389× against v1's *measured maximum* of 550 B at that version. 1.49× is against the app's 512 B setting, which is not v1's maximum | Both ratios are defensible; they answer different questions. Against v1's best at the same symbol, v2 binary is 1.39× and v2 armoured 1.21×. |
 | v2 binary is the dense path | The shipped `qrdecode.js` returns 830 bytes for a 792-byte binary frame and `parseFrame` rejects it | The binary path is unreachable with any decoder in this repository. `proto2.js`'s docblock says so; this measures it. The armoured path is the real one. |
-| `standalone.html` is 503,216 B, compressing to 142,368 B with Brotli-6 | 507,527 B compressing to 143,695 B, ratio 3.532× | The ratio reproduces exactly; the file grew during this session. Byte counts against a moving build artifact are not reproducible quantities. |
-| ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.84×, v2 at 2.58× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
+| `standalone.html` is 503,216 B, compressing to 142,368 B with Brotli-6 (ratio 3.53×) | 572,166 B compressing to 158,868 B, ratio 3.602× — and it was 507,527 B midway through this session | The ratio is stable to about 2%; the byte counts are not, because the file changed three times while being measured. Byte counts against a moving build artifact are not reproducible quantities and should be quoted with their size. |
+| ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.78×, v2 at 2.56× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
 | A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
 | ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps | **Jointly infeasible.** Neither ADR is wrong alone. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
 | ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule survives — §2 measures every corpus artifact clearing it — but the supporting arithmetic is 15% optimistic: 8% of 40 KB is 5.0 frames and 1.0 s at 665 B, not the 4.3 frames and 0.9 s the ADR states. The conclusion does not move. |

@@ -35,7 +35,12 @@
     0x10: 'Wasm', 0x11: 'Dashboard', 0x20: 'CowMap', 0x21: 'Refcount',
     0x22: 'Membership', 0x23: 'Delta', 0x30: 'TransferPrior',
     0x31: 'PolicyKernel', 0x32: 'CostCurve', 0x33: 'FederatedManifest',
-    0x34: 'DiffPrivacyProof', 0x35: 'RedactionLog', 0x36: 'AggregateWeights'
+    0x34: 'DiffPrivacyProof', 0x35: 'RedactionLog', 0x36: 'AggregateWeights',
+    // rvQR-local, per ADR-020. Upstream's table ends at 0x36 in the version this
+    // app bundles, so 0x37 is the next free slot. Named here only so the segment
+    // table reads as 'Provenance' rather than 'type 0x37'; provenance.js owns
+    // the payload, and a reader without it walks past this segment unchanged.
+    0x37: 'Provenance'
   };
 
   var SEGMENT_HEADER_SIZE = 64;

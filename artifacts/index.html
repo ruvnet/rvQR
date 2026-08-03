@@ -555,6 +555,11 @@
   /* --- Dialogs ------------------------------------------------------------- */
   dialog {
     width: min(680px, 100%); max-height: 88vh; margin: auto auto 0;
+    /* dvh tracks the collapsing mobile URL bar, where vh does not. The sheet
+       is bottom-anchored on a phone, so reclaiming that strip is the
+       difference between the actions sitting on screen and below it. */
+    max-height: min(88vh, 94dvh);
+    display: flex; flex-direction: column;
     border: 1px solid var(--line-2); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     background: var(--surface); color: var(--text); padding: 0;
     padding-bottom: env(safe-area-inset-bottom);
@@ -571,7 +576,25 @@
   .sheet-body { padding: 1rem; overflow-y: auto; }
 
   #welcome { width: min(460px, 100%); }
-  #welcome .sheet-body { padding: 0 1rem 1rem; }
+  #welcome .sheet-body { padding: 0 1rem 1rem; flex: 1 1 auto; min-height: 0; }
+  /* The two actions stay reachable without scrolling past the copy. On a short
+     phone the intro is longer than the sheet, and an action you have to hunt
+     for is an action most people will not take. */
+  #welcome .row {
+    position: sticky; bottom: 0; z-index: 2;
+    margin: 0 -1rem; padding: .75rem 1rem calc(.75rem + env(safe-area-inset-bottom));
+    background: linear-gradient(180deg, transparent, var(--surface) 28%);
+    border-top: 1px solid var(--line);
+  }
+  /* Short viewports: the animation is the first thing that should give up
+     space, since it decorates a point the copy already makes. */
+  @media (max-height: 720px) {
+    .welcome-stage { aspect-ratio: 16 / 5; margin-top: .6rem; }
+    #welcome .welcome-title { font-size: 1.3rem; }
+  }
+  @media (max-height: 600px) {
+    .welcome-stage { display: none; }
+  }
   .welcome-stage {
     display: block; width: 100%; height: auto; aspect-ratio: 8 / 3;
     border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--line);

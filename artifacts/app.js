@@ -2348,7 +2348,18 @@
     startStage();
     // Focus the primary action, not the dialog, so Enter does the useful thing.
     var primary = $('welcomeStart');
-    if (primary && primary.focus) primary.focus();
+    // preventScroll matters on a phone: without it, focusing the primary
+    // action scrolls the sheet to the bottom, so the reader lands on the last
+    // beat and never sees the opening. Keyboard focus still starts on the
+    // useful control; the view just does not jump to it.
+    if (primary && primary.focus) {
+      try {
+        primary.focus({ preventScroll: true });
+      } catch (e) {
+        primary.focus();
+      }
+      if (welcomeDialog) welcomeDialog.scrollTop = 0;
+    }
   }
 
   function closeWelcome() {

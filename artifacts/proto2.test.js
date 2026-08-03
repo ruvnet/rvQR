@@ -671,6 +671,212 @@
       return rows.join(' | ');
     });
 
+    // --- armour and payload allocation ----------------------------------------
+    //
+    // toTransport used to append one character at a time and fromTransport's
+    // output used to be handed on as a view. Both were found by measurement,
+    // not by review — bench/suites/memory.mjs caught the first at 37.60× the
+    // artifact retained and the second at 1.04×. These tests pin the fixes and,
+    // just as importantly, pin the wire bytes across them.
+
+    /**
+     * The armour, computed a completely different way: bit by bit, MSB-first,
+     * with no shift accumulator at all. Obviously correct at the cost of being
+     * slow, which is what a reference implementation is for. If this and
+     * toTransport ever disagree, the fast one is wrong.
+     */
+    function referenceArmour(frame) {
+      var outLen = Math.ceil((frame.length * 8) / 7);
+      var chars = new Array(outLen);
+      for (var j = 0; j < outLen; j++) {
+        var v = 0;
+        for (var k = 0; k < 7; k++) {
+          var bit = j * 7 + k;
+          var byteIndex = (bit - (bit % 8)) / 8;
+          // Bits past the end of the frame are the zero padding fromTransport
+          // insists on. Reading them as 0 here is what makes that a spec.
+          var b = byteIndex < frame.length ? (frame[byteIndex] >>> (7 - (bit % 8))) & 1 : 0;
+          v = (v << 1) | b;
+        }
+        chars[j] = String.fromCharCode(v);
+      }
+      return chars.join('');
+    }
+
+    /** The armour string as the bytes it stands for. Every char is <= 0x7F. */
+    function armourBytes(text) {
+      var b = new Uint8Array(text.length);
+      for (var i = 0; i < text.length; i++) b[i] = text.charCodeAt(i);
+      return b;
+    }
+
+    test('proto2: the armour is byte-identical to the pre-change implementation', function () {
+      // Every size that exercises a different tail: the septet boundary at 7
+      // bytes, the header at 28, a full frame at 693, the version 40 ceiling.
+      var sizes = [0, 1, 2, 3, 4, 5, 6, 7, 8, 13, 27, 28, 29, 55, 56, 127, 128,
+        255, 512, 665, 693, 1024, 2953];
+
+      // Taken from the character-at-a-time implementation this replaced, over
+      // exactly these sizes and this filler. It is the wire format: if this
+      // digest moves, every v2 receiver in the world stops reading v2.
+      var GOLDEN = '9423dc627887302a5916ab2e748abac7aee6c119baeda76ab2fbed2dd35ea909';
+
+      var joined = [];
+      var chars = 0;
+      for (var i = 0; i < sizes.length; i++) {
+        var frame = filler(sizes[i], i + 1);
+        var text = P.toTransport(frame);
+        eq(text.length, Math.ceil((sizes[i] * 8) / 7), 'armour length at ' + sizes[i] + ' B');
+        eq(text, referenceArmour(frame), 'armour of ' + sizes[i] + ' B differs from the reference');
+        sameBytes(P.fromTransport(text), frame, 'armour roundtrip at ' + sizes[i] + ' B');
+        joined.push(text);
+        chars += text.length;
+      }
+      eq(sha256Hex(armourBytes(joined.join(''))), GOLDEN, 'the armoured bytes moved');
+      return sizes.length + ' sizes, ' + chars + ' armoured characters, digest unchanged';
+    });
+
+    test('proto2: armouring many frames does not retain a rope', function () {
+      var g = typeof globalThis !== 'undefined' ? globalThis : null;
+      var canWeigh = !!(g && typeof g.gc === 'function' && g.process &&
+        typeof g.process.memoryUsage === 'function');
+      if (!canWeigh) return 'skipped — needs node --expose-gc';
+
+      // heapUsed + external, because a string lands in one and a typed array in
+      // the other, and this test is about not confusing the two.
+      function live() {
+        var m = g.process.memoryUsage();
+        return m.heapUsed + m.external;
+      }
+      function settle() { g.gc(); g.gc(); g.gc(); }
+
+      var COUNT = 400;
+      var frames = new Array(COUNT);
+      for (var i = 0; i < COUNT; i++) frames[i] = filler(693, 1000 + i);
+
+      settle();
+      var before = live();
+      var held = new Array(COUNT);
+      var outBytes = 0;
+      for (var j = 0; j < COUNT; j++) {
+        held[j] = P.toTransport(frames[j]);
+        outBytes += held[j].length;
+      }
+      settle();
+      var perOutputByte = (live() - before) / outBytes;
+      // Deliberately loose. A flat one-byte-per-character string measures about
+      // 1.03 B per output byte here and the rope measured 31.58 — the interval
+      // between them is two orders of magnitude wide, so a threshold of 4 can
+      // absorb any amount of allocator noise and still fail the moment the
+      // concatenation comes back.
+      assert(perOutputByte < 4,
+        'armouring ' + COUNT + ' frames retained ' + perOutputByte.toFixed(2) +
+        ' B per output byte — a cons-string rope is back');
+      // The strings must still be the strings. A cheap measurement of the wrong
+      // thing is worse than no measurement.
+      eq(held[0], referenceArmour(frames[0]), 'the first armoured frame is wrong');
+      eq(held[COUNT - 1], referenceArmour(frames[COUNT - 1]), 'the last armoured frame is wrong');
+      return COUNT + ' frames held at ' + perOutputByte.toFixed(2) + ' B per output byte (rope: 31.58)';
+    });
+
+    test('proto2: a parsed frame owns its payload, so the frame buffer is collectable', function () {
+      var built = P.buildFrames(filler(2000, 41), { chunk: 665, name: 'own.bin' });
+      var frame = built.frames[1];
+      var parsed = P.parseFrame(frame);
+      assert(parsed.ok, 'refused: ' + parsed.reason);
+      var payload = parsed.frame.payload;
+
+      // Structural: nothing sits in front of the payload and nothing sits
+      // behind it. A subarray view of a 693-byte frame would fail both.
+      eq(payload.byteOffset, 0, 'the payload starts partway into a larger buffer');
+      eq(payload.buffer.byteLength, payload.length,
+        'the payload is backed by a buffer larger than itself');
+      eq(payload.length, parsed.frame.payloadLen, 'payload length');
+
+      // Behavioural: the caller still holds the frame it passed in. Writing
+      // through it must not reach the payload, or "owns" means nothing.
+      var expected = payload.slice();
+      frame[P.HEADER_BYTES] = frame[P.HEADER_BYTES] ^ 0xff;
+      sameBytes(payload, expected, 'the payload changed when the caller mutated the frame');
+
+      // The same for the armoured path, which is the one the app actually uses.
+      var viaArmour = P.parseFrame(P.toTransport(built.frames[2]));
+      assert(viaArmour.ok, 'armoured frame refused: ' + viaArmour.reason);
+      eq(viaArmour.frame.payload.byteOffset, 0, 'armoured payload is offset into a frame buffer');
+      eq(viaArmour.frame.payload.buffer.byteLength, viaArmour.frame.payload.length,
+        'armoured payload is backed by the whole frame');
+      return 'payload owns a ' + payload.buffer.byteLength + '-byte buffer, frame is ' +
+        frame.length + ' B';
+    });
+
+    test('proto2: holding payloads costs less than holding views of frames', function () {
+      var g = typeof globalThis !== 'undefined' ? globalThis : null;
+      var canWeigh = !!(g && typeof g.gc === 'function' && g.process &&
+        typeof g.process.memoryUsage === 'function');
+      if (!canWeigh) return 'skipped — needs node --expose-gc';
+
+      function live() {
+        var m = g.process.memoryUsage();
+        return m.heapUsed + m.external;
+      }
+      function settle() { g.gc(); g.gc(); g.gc(); }
+
+      // The app's operating point: 665-byte payloads in 693-byte frames.
+      //
+      // Both arms start from armoured strings and NOT from a live frame list,
+      // which is the whole point: a view costs nothing extra while something
+      // else still holds the frame, and a receiver holds nothing else. Its
+      // camera hands it one frame at a time. Measuring against a retained frame
+      // list would show the header as free, which is the mistake that let this
+      // through in the first place.
+      var CHUNK = 665;
+      var COUNT = 900;
+      var armoured = new Array(COUNT);
+      for (var i = 0; i < COUNT; i++) {
+        armoured[i] = P.toTransport(P.encodeFrame({
+          mode: P.MODE_INDEXED, codecId: P.CODEC_NONE, dictId: P.DICT_NONE,
+          transferId: 1, index: i + 1, total: COUNT + 1, contentHash32: 0,
+          payload: filler(CHUNK, 2000 + i)
+        }));
+      }
+
+      // Both arms hold exactly COUNT typed arrays, so per-object overhead is
+      // identical and the difference is only the bytes each one keeps alive.
+      function weigh(pick) {
+        settle();
+        var before = live();
+        var kept = new Array(COUNT);
+        for (var k = 0; k < COUNT; k++) kept[k] = pick(armoured[k]);
+        settle();
+        var bytes = live() - before;
+        kept.length = 0;
+        return bytes;
+      }
+
+      // What the receiver used to hold: a payload-shaped window onto a frame
+      // buffer that nothing else references, so the header rides along.
+      var viewBytes = weigh(function (text) {
+        return P.fromTransport(text).subarray(P.HEADER_BYTES);
+      });
+      var ownBytes = weigh(function (text) { return P.parseFrame(text).frame.payload; });
+
+      var payloadTotal = CHUNK * COUNT;
+      var viewRatio = viewBytes / payloadTotal;
+      var ownRatio = ownBytes / payloadTotal;
+      // A view pins the header too: 693/665 = 1.0421× the payload bytes. The
+      // copy is what removes that, and this is the assertion that a future
+      // change back to a view has to argue with.
+      assert(ownBytes < viewBytes,
+        'copied payloads (' + ownBytes + ' B) did not cost less than views (' + viewBytes + ' B)');
+      var saved = (viewBytes - ownBytes) / COUNT;
+      assert(saved > P.HEADER_BYTES / 2,
+        'the saving was ' + saved.toFixed(1) + ' B per frame, well under the ' +
+        P.HEADER_BYTES + '-byte header a view pins');
+      return COUNT + ' payloads: owned ' + ownRatio.toFixed(3) + '× vs view ' +
+        viewRatio.toFixed(3) + '× (saved ' + saved.toFixed(1) + ' B per frame, header is ' +
+        P.HEADER_BYTES + ' B)';
+    });
+
     // --- receiver discipline --------------------------------------------------
 
     test('proto2: the receiver refuses frames that disagree about the transfer', function () {

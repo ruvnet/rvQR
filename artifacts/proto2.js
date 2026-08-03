@@ -112,6 +112,13 @@
  *
  * Both numbers are measured against v1 at a fixed QR version in proto2.test.js
  * rather than asserted here.
+ *
+ * WHO OWNS WHICH BYTES. toTransport builds its output in one allocation and
+ * decodes it once; parseFrame copies the payload out of the frame buffer. Both
+ * are deliberate and both were chosen on measurements, which are recorded at
+ * the functions themselves. The rule they add up to is that a parsed frame
+ * owns its payload and a frame buffer is free the moment the parse returns —
+ * so a receiver holding 862 payloads holds 862 payloads, not 862 frames.
  * ---------------------------------------------------------------------------
  *
  * Browser: load core.js before this file (RVQRCore must exist).
@@ -244,15 +251,67 @@
     return s;
   }
 
+  // One decoder, reused. Stateless for a non-streaming decode() call, and
+  // constructing one per frame is measurable at frame rates.
+  var ASCII_DECODER = null;
+
+  // The block size for the fromCharCode fallback. Engines cap how many
+  // arguments apply() may spread; 4096 is far below every limit that matters
+  // and keeps the number of concatenations at outLen/4096 rather than outLen.
+  var ASCII_BLOCK = 4096;
+
+  /**
+   * Turns armour bytes — every one of them 0x00-0x7F by construction — into the
+   * string that carries them, in ONE step.
+   *
+   * Separate from utf8Decode on purpose, even though the two agree on ASCII:
+   * utf8Decode's no-TextDecoder fallback appends a character at a time, which
+   * is the exact rope this function exists to avoid. A fallback that rebuilt it
+   * would move the defect rather than fix it.
+   */
+  function asciiDecode(bytes) {
+    if (typeof TextDecoder !== 'undefined') {
+      if (!ASCII_DECODER) ASCII_DECODER = new TextDecoder('utf-8');
+      return ASCII_DECODER.decode(bytes);
+    }
+    var s = '';
+    for (var o = 0; o < bytes.length; o += ASCII_BLOCK) {
+      s += String.fromCharCode.apply(null, bytes.subarray(o, Math.min(o + ASCII_BLOCK, bytes.length)));
+    }
+    return s;
+  }
+
   // --- base128 ASCII armour --------------------------------------------------
   // Bits are taken most-significant-first from the frame and emitted 7 at a
   // time as bytes 0x00-0x7F. The final group is zero-padded, and fromTransport
   // insists those pad bits really are zero: two different strings must never
   // decode to the same frame, or a frame's identity stops being its bytes.
 
+  /**
+   * Armours one frame. The output is the frame's bits repacked 7 per byte, as
+   * a string of characters 0x00-0x7F.
+   *
+   * The septets are written into a typed array and decoded once, rather than
+   * concatenated a character at a time. That is not a style preference; it is
+   * the whole cost of this function. `out += String.fromCharCode(...)` builds a
+   * cons-string rope — V8 does not flatten it until something reads the string
+   * — so a 693-byte frame became a tree of ~792 nodes, each costing more than
+   * the character it carried. bench/suites/memory.mjs caught it: armouring 862
+   * frames and holding them retained **37.60× the artifact** where the armour's
+   * own 8/7 expansion accounts for 1.14×. Writing into a Uint8Array and
+   * decoding once retains **1.15×**, and is also 2.4× faster (1.06 ms against
+   * 2.52 ms per 900 frames), because the rope is paid for on the read instead.
+   *
+   * An Array of characters joined once was measured too: same 1.18× retained,
+   * but 5.98 ms — 5.6× slower than the typed array, because every septet
+   * becomes a heap-allocated one-character string.
+   *
+   * The output is byte-identical to the rope version; proto2.test.js pins it
+   * against a golden digest taken from that implementation.
+   */
   function toTransport(frame) {
     var outLen = Math.ceil((frame.length * 8) / 7);
-    var out = '';
+    var out = new Uint8Array(outLen);
     var acc = 0;
     var bits = 0;
     var produced = 0;
@@ -261,12 +320,11 @@
       bits += 8;
       while (bits >= 7) {
         bits -= 7;
-        out += String.fromCharCode((acc >>> bits) & 0x7f);
-        produced++;
+        out[produced++] = (acc >>> bits) & 0x7f;
       }
     }
-    if (produced < outLen) out += String.fromCharCode((acc << (7 - bits)) & 0x7f);
-    return out;
+    if (produced < outLen) out[produced] = (acc << (7 - bits)) & 0x7f;
+    return asciiDecode(out);
   }
 
   /** Inverse of {@link toTransport}. Returns null on anything malformed. */
@@ -613,6 +671,23 @@
 
     var payload = bytes.subarray(HEADER_BYTES, HEADER_BYTES + payloadLen);
     if (hash32(payload) !== transportHash32) return fail('transport-hash-mismatch');
+
+    // The payload is COPIED out of the frame buffer, not handed back as a view
+    // of it. A view keeps the whole frame alive for as long as anything holds
+    // the payload, and `ingest` holds every payload until the transfer
+    // finishes: at the app's operating point that is 693 bytes retained to
+    // carry 665, measured at 1.3318× the artifact against 1.2905× for the copy
+    // — 0.041×, which is the 28-byte header per frame almost exactly (693/665
+    // = 1.0421). The copy costs one pass over 665 bytes per frame and did not
+    // move the parse time out of noise (4.15 ms against 4.13 ms for 861
+    // frames), so it is bought for free. The hash above deliberately runs on
+    // the view, so a frame that fails it never pays for the copy.
+    //
+    // It also makes the contract uniform: a parsed frame owns its payload
+    // whether it arrived as armour or as bytes a caller still has a reference
+    // to. `manifest.contentHash` below is a view of this copy, which retains
+    // only the manifest body and only once per transfer.
+    payload = payload.slice();
 
     var frame = {
       kind: index === 0 ? 'manifest' : 'data',
