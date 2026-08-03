@@ -34,6 +34,13 @@
       try { mods.crypto = require('./crypto.js'); } catch (e) { /* optional */ }
       try { mods.semdelta = require('./semdelta.js'); } catch (e) { /* optional */ }
       try { mods.planner = require('./planner.js'); } catch (e) { /* optional */ }
+      try { mods.compress = require('./compress.js'); } catch (e) { /* optional */ }
+      // The compression panel is asserted against REAL codec output, not a
+      // stub: compress.js takes its codecs by injection precisely so a caller
+      // can hand it the platform's own, and node:zlib is this runner's. A
+      // browser has none of these — see the platform tests, which assert what
+      // the panel says when it has only CompressionStream, or nothing at all.
+      try { mods.zlib = require('node:zlib'); } catch (e) { /* optional */ }
       // app.js exports its provenance view model and nothing else outside a
       // browser: the UI half of that file returns early without a document.
       try { mods.view = require('./app.js'); } catch (e) { /* optional */ }
@@ -41,6 +48,13 @@
       // loaded rather than merely present on disk. An unreferenced module is
       // dead code, and the standalone build derives its script list from here.
       try { mods.indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'); } catch (e) { /* optional */ }
+      // The artifact the app's own demo button loads, so the compression panel
+      // is asserted against the bytes an operator will actually put through it
+      // rather than against a fixture invented to compress well. Optional: the
+      // suite falls back to a deterministic structured blob without it.
+      try {
+        mods.demoWasm = new Uint8Array(fs.readFileSync(path.join(__dirname, 'demo', 'rvf_wasm_bg.wasm')));
+      } catch (e) { /* optional */ }
       var results = api.runAll(core, qrlib, qrdec, mods);
       results.forEach(print);
 
@@ -2674,6 +2688,431 @@
         assertEqual(planView.model({ chosen: { label: 'x' } }, {}), null, 'a plan with no rejected list');
         assertEqual(planView.model('a plan', {}), null, 'a string');
         return '4 unusable results, no panel';
+      });
+    }
+
+    // --- Compression ----------------------------------------------------------
+    //
+    // compress.test.js already asserts that the gate is applied to the envelope
+    // and not to the ratio, and that an identifier determines a decoder. These
+    // assert something it cannot: that the decision, BOTH of its figures, and
+    // every refusal behind it reach the screen.
+    //
+    // Every string checked below is a string the panel renders verbatim — the
+    // headline and summary go into the notice, each gain row's `label` and
+    // `text` become a <dt>/<dd> pair, each codec row and each absent codec
+    // become another, and `platform`, `gapText`, `wireNote`, `sampleNote` and
+    // `reason` are each a paragraph. Asserting on those rather than on the
+    // numbers behind them is deliberate: this file has already shipped a
+    // regression that a test reading an element's property could not see.
+    //
+    // The measurements are REAL. compress.js takes its codecs by injection
+    // precisely so a caller can hand it the platform's own, and node:zlib is
+    // this runner's; where a browser is the thing under test, the PLATFORM is
+    // faked through detectCodecs()'s injectable env and the codec behind it is
+    // still real zlib. Nothing here stubs a compression ratio.
+
+    var CMP = mods.compress ||
+      (typeof window !== 'undefined' ? window.RVQRCompress : null) || null;
+    var cmpView = (mods.view && mods.view.compression) ||
+      (typeof window !== 'undefined' ? window.RVQRCompressionView : null) || null;
+
+    if (mods.indexHtml) {
+      test('compression: the page loads compress.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./compress.js"');
+        assert(tag >= 0, 'index.html does not reference compress.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a tag of any other shape ships a page whose compression
+        // decision is missing — which is how a module with a green suite
+        // reaches nobody.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(/<script[^>]*src="\.\/compress\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+        assert(line.indexOf('defer') >= 0, 'compress.js should be deferred with the optional modules');
+
+        // It reads RVQRCore at load time, so it has to follow core.js.
+        var afterCore = html.indexOf('src="./core.js"');
+        assert(afterCore >= 0 && afterCore < tag, 'compress.js is not loaded after core.js');
+        // And before app.js, which reaches it through a getter on the send path.
+        var appTag = html.indexOf('src="./app.js"');
+        assert(appTag >= 0 && tag < appTag, 'compress.js is not loaded before app.js');
+        return 'loaded, deferred, after core.js and before app.js';
+      });
+
+      test('compression: the send tab shows the decision where it cannot be missed', function () {
+        var html = mods.indexHtml;
+        ['compressCard', 'compressResult'].forEach(function (id) {
+          assert(html.indexOf('id="' + id + '"') >= 0, 'index.html has no #' + id);
+        });
+        var sendTab = html.indexOf('id="tab-send"');
+        var receiveTab = html.indexOf('id="tab-receive"');
+        var card = html.indexOf('id="compressCard"');
+        assert(sendTab >= 0 && card > sendTab && card < receiveTab,
+          'the compression card is not inside the send tab');
+        // After the stage whose bytes it describes, and before the delta
+        // controls, which are a thing you go and do rather than a thing that
+        // was already decided for you.
+        assert(html.indexOf('id="sendStageCard"') < card,
+          'the compression card does not follow the stage it describes');
+        assert(card < html.indexOf('id="deltaSendCard"'),
+          'the compression card is inside or after the delta controls');
+
+        // A plain card and NOT a <details>. The outcome that matters most is a
+        // refusal, and a refusal folded behind a summary nobody opens is a
+        // refusal nobody sees — which is the same failure as not rendering it.
+        var open = html.lastIndexOf('<', card);
+        assertEqual(html.slice(open, card).indexOf('<div'), 0,
+          'the compression card is not a plain div: ' + html.slice(open, card));
+        return 'a plain card in the send tab, after the stage and before the delta controls';
+      });
+    }
+
+    // node:zlib is what makes these measurements real rather than asserted. A
+    // browser has none of it, which is itself one of the cases under test —
+    // see the platform tests, which fake the PLATFORM and keep the codec real.
+    if (CMP && cmpView && mods.zlib) {
+      var zlib = mods.zlib;
+
+      function zlibCodecs() {
+        var map = {
+          'deflate-raw': {
+            compress: function (b) { return new Uint8Array(zlib.deflateRawSync(Buffer.from(b))); }
+          }
+        };
+        if (typeof zlib.brotliCompressSync === 'function') {
+          map.brotli = { compress: function (b) { return new Uint8Array(zlib.brotliCompressSync(Buffer.from(b))); } };
+        }
+        if (typeof zlib.zstdCompressSync === 'function') {
+          map.zstd = { compress: function (b) { return new Uint8Array(zlib.zstdCompressSync(Buffer.from(b))); } };
+        }
+        return map;
+      }
+
+      function decide(bytes, over) {
+        var opts = { env: { zlib: zlib }, codecs: zlibCodecs() };
+        Object.keys(over || {}).forEach(function (k) { opts[k] = over[k]; });
+        return CMP.compressArtifact(bytes, opts);
+      }
+
+      // The same two arguments app.js hands the model: the page's own byte
+      // formatter, and the header constant the envelope was computed with, so
+      // the caption explaining the gap quotes the number behind it.
+      function panel(decision) {
+        return cmpView.model(decision, {
+          formatBytes: core.formatBytes,
+          headerBytes: CMP.HEADER_BYTES
+        });
+      }
+
+      function byLabel(rows) {
+        var out = {};
+        rows.forEach(function (r) { out[r.label] = r; });
+        return out;
+      }
+
+      var PAYLOAD_LABEL = 'Payload gain — the codec’s number';
+      var ENVELOPE_LABEL = 'Envelope gain — what the receiver waits through';
+      function figure(row) { return row.text.split(' ')[0]; }
+
+      // A deterministic artifact with the structure a codec actually sees in
+      // one: a repeated record with a counter in it. Used where the demo WASM
+      // module is not on disk, so the suite does not depend on a fixture file.
+      function structured(n) {
+        var out = new Uint8Array(n);
+        for (var i = 0; i < n; i++) {
+          out[i] = (i % 96) < 80 ? 0x41 + ((i % 96) % 23) : (Math.floor(i / 96) & 0xff);
+        }
+        return out;
+      }
+      var subject = mods.demoWasm && mods.demoWasm.length ? mods.demoWasm : structured(48000);
+
+      /**
+       * Deterministic bytes with nothing in them a codec can find.
+       *
+       * Not this suite's shared rndBytes(): its multiply runs past 2^53 and
+       * loses the low bits, and the result compresses by about 40% — measured,
+       * after it silently turned the refusal test below into a passing
+       * compression. This is xorshift128, which is exact in 32-bit integer
+       * arithmetic. Brotli returns 40,004 bytes for 40,000 of it.
+       */
+      function noiseBytes(n) {
+        var x = 0x9e3779b9, y = 0x243f6a88, z = 0xb7e15162, w = 0x0f1e2d3c;
+        var out = new Uint8Array(n);
+        for (var i = 0; i < n; i++) {
+          var t = x ^ (x << 11);
+          x = y; y = z; z = w;
+          w = (w ^ (w >>> 19)) ^ (t ^ (t >>> 8));
+          out[i] = w & 0xff;
+        }
+        return out;
+      }
+
+      test('compression: both figures reach the screen, and they are not the same figure', function () {
+        var d = decide(subject);
+        assertEqual(d.compress, true, 'the fixture no longer compresses at all');
+        var m = panel(d);
+
+        assertEqual(m.gains.length, 2, 'gain rows');
+        var g = byLabel(m.gains);
+        assert(g[PAYLOAD_LABEL], 'no payload row: ' + Object.keys(g).join(' | '));
+        assert(g[ENVELOPE_LABEL], 'no envelope row: ' + Object.keys(g).join(' | '));
+
+        // Two percentages, displayed separately, and DIFFERENT. A panel that
+        // showed one of them would hide the disagreement this whole module
+        // exists to act on.
+        var pf = figure(g[PAYLOAD_LABEL]);
+        var ef = figure(g[ENVELOPE_LABEL]);
+        assert(/^-?\d+\.\d\d%$/.test(pf), 'the payload figure is not a percentage: ' + g[PAYLOAD_LABEL].text);
+        assert(/^-?\d+\.\d\d%$/.test(ef), 'the envelope figure is not a percentage: ' + g[ENVELOPE_LABEL].text);
+        assert(pf !== ef, 'the two figures are identical, so the panel shows no gap: ' + pf);
+        assert(Number(pf.slice(0, -1)) > Number(ef.slice(0, -1)),
+          'the envelope gain is not the smaller of the two: payload ' + pf + ', envelope ' + ef);
+
+        // Each figure is compress.js's own, not one this panel recomputed:
+        // both appear verbatim inside the sentence that module wrote.
+        assert(d.best.reason.indexOf('payload ' + pf) > 0,
+          'the payload figure is not the module\'s: ' + d.best.reason);
+        assert(d.best.reason.indexOf('envelope ' + ef) > 0,
+          'the envelope figure is not the module\'s: ' + d.best.reason);
+
+        // The envelope row carries the wire bytes and the frames, because a
+        // percentage on its own cannot be checked against anything.
+        assert(g[ENVELOPE_LABEL].text.indexOf(
+          d.best.envelopeBefore + ' B became ' + d.best.envelopeAfter + ' B') > 0,
+          'the envelope row does not carry the byte counts: ' + g[ENVELOPE_LABEL].text);
+        assert(g[PAYLOAD_LABEL].text.indexOf(
+          d.best.originalBytes + ' B of artifact became ' + d.best.compressedBytes + ' B') > 0,
+          'the payload row does not carry the byte counts: ' + g[PAYLOAD_LABEL].text);
+
+        // And the caption under them agrees with the two figures it sits under,
+        // to the precision they are displayed at.
+        var gap = (Number(pf.slice(0, -1)) - Number(ef.slice(0, -1))).toFixed(2);
+        assert(m.gapText.indexOf('differ by ' + gap + ' points') > 0, 'gapText: ' + m.gapText);
+        assert(m.gapText.indexOf(CMP.HEADER_BYTES + ' B header') > 0,
+          'the caption does not name what the gap is made of: ' + m.gapText);
+        return pf + ' payload, ' + ef + ' envelope, ' + gap + ' points apart';
+      });
+
+      test('compression: a codec that clears the gate and cannot cross the wire says both', function () {
+        // ADR-003 §2.1 numbers zstd 2, brotli 4 and deflate-raw 6; proto2.js
+        // ships a four-entry table that means different codecs by 1, 2 and 3
+        // and refuses anything past it. So a winner today is a winner that
+        // cannot be put on a frame, and the panel has to carry both facts —
+        // "this compresses well" and "this transfer would be rejected on the
+        // first frame" are different news.
+        var d = decide(subject);
+        assertEqual(d.compress, true, 'the fixture no longer compresses');
+        assertEqual(d.wire.ok, false,
+          'proto2.js now agrees with ADR-003 §2.1 — the send path can carry a codec and should');
+        var m = panel(d);
+
+        assertEqual(m.ok, true, 'ok — a codec did clear the gate');
+        assertEqual(m.sendable, false, 'sendable');
+        assertEqual(m.tone, '', 'a transfer that is not actually compressed wore the good tone');
+        assertEqual(m.headline, d.codecName + ' clears the gate, and cannot be put on a frame.',
+          'headline');
+        // What actually happens, in compress.js's own vocabulary for an
+        // uncompressed transfer.
+        assertEqual(m.summary, 'The artifact goes as it stands: ' +
+          core.formatBytes(d.originalBytes) + ', codec id 0, transport hash equal to content hash.',
+          'summary');
+        // The verdict is the module's sentence, unedited, and it names the id.
+        assertEqual(m.wireNote, d.wire.reason, 'the panel rewrote the wire verdict');
+        assert(m.wireNote.indexOf('codec id ' + d.codecId) > 0,
+          'the wire note does not say which id: ' + m.wireNote);
+        return m.headline + ' ' + m.wireNote;
+      });
+
+      test('compression: incompressible bytes are refused, and the panel shows the envelope growing', function () {
+        var noise = noiseBytes(40000);
+        var d = decide(noise);
+        assertEqual(d.compress, false, 'random bytes compressed');
+        assertEqual(d.codecId, CMP.CODEC_NONE, 'codec id');
+        var m = panel(d);
+
+        assertEqual(m.ok, false, 'ok');
+        assertEqual(m.sendable, false, 'sendable');
+        assertEqual(m.headline, 'Not compressed: nothing clears the 8.00% envelope gate.', 'headline');
+        assertEqual(m.summary, 'The artifact goes as it stands: ' + core.formatBytes(40000) +
+          ', codec id 0, transport hash equal to content hash.', 'summary');
+
+        // A refusal is a MEASUREMENT and is rendered as one. Both figures are
+        // still on screen and both are negative — the alternative, an empty
+        // panel, is indistinguishable from a module that never ran.
+        assertEqual(m.gains.length, 2, 'gain rows');
+        var g = byLabel(m.gains);
+        assertEqual(figure(g[PAYLOAD_LABEL]).charAt(0), '-',
+          'the payload gain is not shown as negative: ' + g[PAYLOAD_LABEL].text);
+        assertEqual(figure(g[ENVELOPE_LABEL]).charAt(0), '-',
+          'the envelope gain is not shown as negative: ' + g[ENVELOPE_LABEL].text);
+
+        // The envelope GREW, and the row says by how much and that no frame
+        // was saved for it.
+        var best = null;
+        d.considered.forEach(function (c) { if (!best || c.envelopeGain > best.envelopeGain) best = c; });
+        assert(best.envelopeAfter > best.envelopeBefore,
+          'the fixture no longer grows the envelope: ' + best.envelopeBefore + ' → ' + best.envelopeAfter);
+        assert(g[ENVELOPE_LABEL].text.indexOf(
+          best.envelopeBefore + ' B became ' + best.envelopeAfter + ' B') > 0,
+          'the envelope row does not show the growth: ' + g[ENVELOPE_LABEL].text);
+        assert(g[ENVELOPE_LABEL].text.indexOf('no frame saved') > 0,
+          'the envelope row does not say no frame was saved: ' + g[ENVELOPE_LABEL].text);
+
+        // Every codec that was tried is on screen with its own sentence, each
+        // saying what its attempt would have COST to send.
+        assertEqual(m.rows.length, d.considered.length, 'codec rows');
+        m.rows.forEach(function (r) {
+          assert(r.text.indexOf('the envelope did not shrink at all, so this costs') > 0,
+            'a refused codec\'s row does not say what it costs: ' + r.label + ' — ' + r.text);
+        });
+        assertEqual(m.reason, d.reason, 'the panel rewrote the decision\'s reason');
+        return g[ENVELOPE_LABEL].text;
+      });
+
+      test('compression: a browser with neither brotli nor zstd says what it does have', function () {
+        // The platform every receiver of this app actually runs on: no
+        // node:zlib at all, and a CompressionStream whose format list is the
+        // WHATWG one. The PLATFORM is faked here through detectCodecs()'s own
+        // injectable env; the codec behind deflate-raw is still real zlib, so
+        // the figures on the panel are measured rather than asserted.
+        var ok = ['gzip', 'deflate', 'deflate-raw'];
+        function Streams(format) { if (ok.indexOf(format) < 0) throw new Error('unsupported format'); }
+        var det = CMP.detectCodecs({ CompressionStream: Streams, DecompressionStream: Streams });
+
+        assertEqual(det.available.length, 1, 'a browser offered more than one codec');
+        assertEqual(det.available[0].name, 'deflate-raw', 'the one codec a browser has');
+        assertEqual(det.available[0].via, 'CompressionStream', 'how it has it');
+
+        var d = decide(subject, { detection: det });
+        var m = panel(d);
+
+        assertEqual(m.platform, 'This platform offers deflate-raw via CompressionStream. ' +
+          'It does not offer zstd or brotli — each one’s own reason is below.', 'platform');
+        assert(m.platform.indexOf('brotli via') < 0,
+          'the panel claimed a codec the browser does not have: ' + m.platform);
+
+        // Each absent codec's own sentence, unedited. The brotli one is the
+        // one worth reading twice: a CompressionStream that accepts 'brotli'
+        // is a Node extension and is not evidence of browser brotli.
+        assertEqual(m.missing.length, 2, 'missing rows');
+        var miss = byLabel(m.missing);
+        assert(miss.zstd.text.indexOf('no browser exposes zstd through CompressionStream') > 0,
+          'zstd row: ' + miss.zstd.text);
+        assert(miss.brotli.text.indexOf('is a Node extension and is not evidence of browser brotli') > 0,
+          'brotli row: ' + miss.brotli.text);
+
+        // And it still decided, on the one codec it has, with both figures.
+        assertEqual(m.rows.length, 1, 'codec rows');
+        assertEqual(m.rows[0].label, 'deflate-raw', 'the codec that ran');
+        assertEqual(m.gains.length, 2, 'gain rows');
+        return m.platform + ' → ' + figure(byLabel(m.gains)[ENVELOPE_LABEL]) + ' envelope';
+      });
+
+      test('compression: a platform with no codec at all is a decision, not a failure', function () {
+        var det = CMP.detectCodecs({});
+        assertEqual(det.anyAvailable, false, 'something was available on an empty platform');
+        var d = decide(subject, { detection: det });
+        var m = panel(d);
+
+        assertEqual(m.ok, false, 'ok');
+        assertEqual(m.headline, 'Not compressed: this platform has no codec to try.', 'headline');
+        // No figures, because no encode happened. Printing a gain for a codec
+        // that never ran would put a number on the panel nothing produced.
+        assertEqual(m.gains.length, 0, 'figures shown for encodes that never happened');
+        assertEqual(m.gapText, null, 'a gap caption with no figures above it');
+        assertEqual(m.rows.length, 0, 'codec rows');
+        assertEqual(m.platform, 'This platform offers no codec at all, so nothing was tried ' +
+          'and the artifact goes as it stands.', 'platform');
+        // The three codecs that have an implementation somewhere each say why
+        // they are not here, rather than being silently absent.
+        assertEqual(m.missing.length, 3, 'missing rows');
+        assertEqual(m.reason.indexOf('no codec was available, so the artifact goes as it stands'), 0,
+          'reason: ' + m.reason);
+        return m.headline;
+      });
+
+      test('compression: a decision taken from a sample says so, and does not imply a fast estimate', function () {
+        // The above-8 MB branch, reached at this size through compress.js's own
+        // sampleAbove parameter rather than by building an 8 MB fixture.
+        var d = decide(subject, { sampleAbove: 1024, samplePrefix: 2048 });
+        assertEqual(d.sampled, true, 'the sampled branch was not taken');
+        var m = panel(d);
+        assertEqual(m.sampleNote.indexOf('Measured on a 2048 B prefix first'), 0,
+          'sampleNote: ' + m.sampleNote);
+        // ADR-003 §2.3 wants that prefix encoded at a FAST level, which is the
+        // caller's to supply and this one did not. Saying so is the difference
+        // between a report and a claim.
+        assert(m.sampleNote.indexOf('at the SAME level as the full encode') > 0,
+          'the panel implied a fast estimate that never ran: ' + m.sampleNote);
+        return m.sampleNote;
+      });
+
+      test('compression: codecs declined on a sample are on screen, not counted as zero', function () {
+        var noise = noiseBytes(40000);
+        var d = decide(noise, { sampleAbove: 1024, samplePrefix: 2048 });
+        assertEqual(d.compress, false, 'random bytes compressed');
+        assertEqual(d.considered.length, 0, 'a codec was encoded in full after its estimate lost');
+        assert(d.declined.length > 0, 'nothing was declined on the sample');
+        var m = panel(d);
+
+        assertEqual(m.headline, 'Not compressed: nothing clears the 8.00% envelope gate.',
+          'headline — a codec existed, its estimate lost');
+        assertEqual(m.gains.length, 0, 'figures shown for a full encode that never happened');
+        assertEqual(m.rows.length, d.declined.length, 'codec rows');
+        m.rows.forEach(function (r) {
+          assert(r.text.indexOf('so the whole artifact was never encoded') > 0,
+            'a declined codec\'s row does not say it was never encoded: ' + r.label + ' — ' + r.text);
+        });
+        return m.rows.length + ' declined on a 2048 B sample, all on screen';
+      });
+
+      test('compression: a v1 send is told the envelope is not its own framing', function () {
+        // compress.js's envelope is v2's geometry, restated from proto2.js. On
+        // a v2 send that IS the transport. On a v1 send it is not — a v1 frame
+        // is JSON with a base64 payload and carries more per chunk, and more
+        // fixed overhead means a SMALLER envelope gain for the same payload
+        // saving. Presenting the v2 figure to a v1 sender without saying so
+        // would be presenting an upper bound as a measurement.
+        var d = decide(subject, { chunk: 512 });
+
+        var v2 = cmpView.model(d, {
+          formatBytes: core.formatBytes,
+          headerBytes: CMP.HEADER_BYTES,
+          manifestBytes: CMP.MANIFEST_FIXED_BYTES,
+          v2Frames: true
+        });
+        assertEqual(v2.geometryNote,
+          'Envelope modelled at 512 B per frame, which is the framing this send uses.',
+          'the v2 note');
+
+        var v1 = cmpView.model(d, {
+          formatBytes: core.formatBytes,
+          headerBytes: CMP.HEADER_BYTES,
+          manifestBytes: CMP.MANIFEST_FIXED_BYTES,
+          v2Frames: false
+        });
+        assertEqual(v1.geometryNote, 'Envelope modelled at 512 B per frame, on v2 binary ' +
+          'frames — a ' + CMP.HEADER_BYTES + ' B header, a ' + CMP.MANIFEST_FIXED_BYTES +
+          ' B manifest and 8/7 ASCII armour. This send is v1 JSON, which carries more per ' +
+          'chunk, so the envelope gain above is an upper bound on what a v1 transfer would ' +
+          'actually save.', 'the v1 note');
+        // The two figures themselves are untouched by which framing is in use:
+        // only the caption changes, because only the caveat changed.
+        assertEqual(v1.gains[1].text, v2.gains[1].text, 'the envelope row moved with the caption');
+        return v1.geometryNote;
+      });
+
+      test('compression: nothing that is not a decision produces a panel', function () {
+        // The panel is fed by a module that may not have loaded and by a codec
+        // shim that may have thrown. Neither may produce a confident-looking
+        // percentage out of nothing.
+        assertEqual(cmpView.model(null, {}), null, 'null');
+        assertEqual(cmpView.model({}, {}), null, 'an empty object');
+        assertEqual(cmpView.model({ compress: true }, {}), null, 'a decision with no considered list');
+        assertEqual(cmpView.model({ considered: [] }, {}), null, 'a decision with no verdict');
+        assertEqual(cmpView.model('compressed', {}), null, 'a string');
+        return '5 unusable results, no panel';
       });
     }
 

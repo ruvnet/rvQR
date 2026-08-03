@@ -735,6 +735,303 @@
   };
 });
 
+/*
+ * The compression view model.
+ *
+ * compress.js answers one question — does compressing this artifact make the
+ * thing that crosses the wire smaller — and it answers it with TWO figures,
+ * because the codec's number and the transport's number are not the same
+ * number. On the WASM demo they are 63.86% and 63.69%; that gap is the 28-byte
+ * header every frame pays and the manifest frame that carries no artifact at
+ * all, and it is the entire reason the module gates on the second one. A panel
+ * that showed either figure alone would be a panel that hid the disagreement,
+ * so both are rendered, side by side, on every outcome.
+ *
+ * INCLUDING THE REFUSALS, WHICH ARE THE OUTCOMES THAT MATTER MOST. On
+ * incompressible input both figures are NEGATIVE — measured, the envelope goes
+ * from 47,555 B to 47,560 B, five bytes worse for the trouble — and compression
+ * is refused. That renders as loudly as a win does. A decision taken on the
+ * operator's behalf that they cannot see is indistinguishable from a module
+ * that never ran, which is the state this whole increment exists to leave.
+ *
+ * Three things this model will not do:
+ *
+ *   1. It never re-words a reason. `decision.reason`, every per-codec
+ *      `cell.reason`, every declined codec's `note`, every detection row's
+ *      `reason` and `wire.reason` are sentences compress.js already wrote and
+ *      they are rendered verbatim. A reason restated here is a reason that can
+ *      drift away from the rule enforcing it — the same argument the transfer
+ *      plan above makes about planner.js's rejections.
+ *   2. It never claims a codec. What this platform has comes from
+ *      detectCodecs(), which is a probe and not a list. A browser has no
+ *      node:zlib, so it has neither brotli nor zstd however much this app might
+ *      like them; the panel says what it DOES have and gives the module's own
+ *      sentence for each one it does not.
+ *   3. It never folds "this compresses well" into "this can be sent". Whether
+ *      the winning identifier can be put on a frame at all is a separate
+ *      question with a separate answer — wireCompatible() — and proto2.js as
+ *      shipped answers no for every codec above id 0. That is reported as its
+ *      own state, because a sender that ignored it would build a transfer the
+ *      receiver rejects on the first frame.
+ *
+ * Pure, for the same reason as the three models above it: the failure mode here
+ * is a plausible-looking percentage, and a plausible-looking percentage is only
+ * catchable by asserting on the text that reaches the screen.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    // Hangs off the provenance view model's export like the two above it, so
+    // tests.js requires this file once and reaches all four.
+    module.exports.compression = api;
+  } else {
+    root.RVQRCompressionView = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /**
+   * compress.js's own percentage format, restated so the two figures at the top
+   * of the panel read identically to the sentences rendered underneath them.
+   * The test suite asserts each displayed figure is a substring of the module's
+   * own reason, which pins this to that formatter rather than to a memory of it.
+   */
+  function pctNumber(fraction) { return Number((fraction * 100).toFixed(2)); }
+  function pct(fraction) { return pctNumber(fraction).toFixed(2) + '%'; }
+
+  /** Raw bytes, not a human-rounded size: these figures are compared. */
+  function plainBytes(n) { return String(n) + ' B'; }
+
+  function framesText(cell) {
+    return cell.framesBefore === cell.framesAfter
+      ? 'no frame saved, ' + cell.framesBefore + ' either way'
+      : cell.framesSaved + ' of ' + cell.framesBefore + ' frames saved';
+  }
+
+  /**
+   * The two figures, separately, each labelled with what it is a fact about.
+   *
+   * The labels carry the distinction rather than leaving it to a caption: one
+   * of these is what the codec did and the other is what the receiver waits
+   * through, and a reader who takes in nothing else should take in that they
+   * are two different measurements of the same decision.
+   */
+  function gainRows(cell) {
+    return [
+      {
+        term: 'payload',
+        label: 'Payload gain — the codec’s number',
+        text: pct(cell.payloadGain) + ' — ' + plainBytes(cell.originalBytes) +
+          ' of artifact became ' + plainBytes(cell.compressedBytes)
+      },
+      {
+        term: 'envelope',
+        label: 'Envelope gain — what the receiver waits through',
+        text: pct(cell.envelopeGain) + ' — ' + plainBytes(cell.envelopeBefore) +
+          ' became ' + plainBytes(cell.envelopeAfter) + ', ' + framesText(cell)
+      }
+    ];
+  }
+
+  /**
+   * Why the two figures differ, computed from the two figures AS DISPLAYED.
+   *
+   * Taking the difference of the underlying fractions would print 0.16 points
+   * beneath a 63.86% and a 63.69% that differ by 0.17, and a panel whose parts
+   * do not agree with its own arithmetic is a panel nobody can check.
+   */
+  function gapText(cell, headerBytes) {
+    var points = pctNumber(cell.payloadGain) - pctNumber(cell.envelopeGain);
+    if (points.toFixed(2) === '0.00' || points.toFixed(2) === '-0.00') {
+      return 'The two figures agree to the hundredth of a point here, so this ' +
+        'artifact was never near the boundary the gate exists for.';
+    }
+    return 'The two differ by ' + points.toFixed(2) + ' points: every frame pays a ' +
+      (headerBytes ? headerBytes + ' B header' : 'frame header') +
+      ' and the manifest frame carries no artifact at all, and none of that ' +
+      'compresses. The gate reads the envelope.';
+  }
+
+  /**
+   * At what framing the envelope was computed — and, on a v1 send, that it was
+   * not this one.
+   *
+   * compress.js's envelope is v2's geometry, restated from proto2.js: a fixed
+   * binary header per frame, a manifest frame carrying no artifact, and 8/7
+   * ASCII armour. When the sender is on v2 that IS the transport and the
+   * figures above are about it. When the sender is on v1 it is not: a v1 frame
+   * is JSON with a base64 payload and carries considerably more per chunk than
+   * 28 bytes, and more fixed overhead per frame means a SMALLER envelope gain
+   * for the same payload saving. So the figure above is an upper bound there,
+   * and saying so is the difference between a measurement and a claim.
+   */
+  function geometryNote(cell, opts) {
+    if (!cell) return null;
+    var head = 'Envelope modelled at ' + cell.chunk + ' B per frame';
+    if (opts.v2Frames !== false) return head + ', which is the framing this send uses.';
+    var geometry = (opts.headerBytes && opts.manifestBytes)
+      ? 'a ' + opts.headerBytes + ' B header, a ' + opts.manifestBytes +
+        ' B manifest and 8/7 ASCII armour'
+      : 'a fixed binary header, a manifest frame and ASCII armour';
+    return head + ', on v2 binary frames — ' + geometry + '. This send is v1 JSON, ' +
+      'which carries more per chunk, so the envelope gain above is an upper bound ' +
+      'on what a v1 transfer would actually save.';
+  }
+
+  /**
+   * One row per codec that was actually run, plus one per codec that was
+   * declined on a sample — which is a different fact from a codec that measured
+   * badly, and is reported as compress.js reported it rather than as a zero.
+   */
+  function codecRows(decision) {
+    var best = decision.best || null;
+    var rows = [];
+    (decision.considered || []).forEach(function (cell) {
+      rows.push({ label: cell.codecName, text: cell.reason, chosen: !!best && cell === best });
+    });
+    (decision.declined || []).forEach(function (d) {
+      rows.push({ label: d.codecName, text: d.note, chosen: false });
+    });
+    return rows;
+  }
+
+  /**
+   * What this platform turned out to have, split into what it offers and what
+   * it does not. Id 0 is skipped: "send it as it stands" is always available
+   * and is not an offer anybody made.
+   */
+  function platformRows(detection) {
+    var offered = [];
+    var missing = [];
+    ((detection && detection.codecs) || []).forEach(function (row) {
+      if (row.id === 0) return;
+      if (row.available) offered.push(row.name + ' via ' + row.via);
+      else if (row.implemented) missing.push({ label: row.name, text: row.reason });
+    });
+    return { offered: offered, missing: missing };
+  }
+
+  function platformText(p) {
+    if (!p.offered.length) {
+      return 'This platform offers no codec at all, so nothing was tried and the ' +
+        'artifact goes as it stands.';
+    }
+    if (p.missing.length) {
+      return 'This platform offers ' + p.offered.join(', ') + '. It does not offer ' +
+        p.missing.map(function (m) { return m.label; }).join(' or ') +
+        ' — each one’s own reason is below.';
+    }
+    return 'This platform offers ' + p.offered.join(', ') + '.';
+  }
+
+  /**
+   * Above 8 MB the decision starts from a bounded prefix, and a report that did
+   * not say so would imply every figure on the panel came from a full encode.
+   * Whether the estimate genuinely ran at a faster level is compress.js's own
+   * `sampleCodecsDistinct`, said plainly rather than assumed.
+   */
+  function sampleNote(decision) {
+    if (!decision.sampled) return null;
+    var note = 'Measured on a ' + decision.samplePrefixBytes + ' B prefix first, ' +
+      (decision.sampleCodecsDistinct
+        ? 'at the faster level the caller supplied for the estimate'
+        : 'at the SAME level as the full encode — no faster estimate was supplied') + '.';
+    var overturned = decision.overturned || [];
+    if (overturned.length) {
+      note += ' ' + overturned.length + (overturned.length === 1 ? ' estimate was' : ' estimates were') +
+        ' overturned by the full encode: ' + overturned[0].note + '.';
+    }
+    return note;
+  }
+
+  /** The cell explainNothing() would have quoted, so the panel agrees with it. */
+  function bestConsidered(considered) {
+    var best = null;
+    for (var i = 0; i < considered.length; i++) {
+      if (!best || considered[i].envelopeGain > best.envelopeGain) best = considered[i];
+    }
+    return best;
+  }
+
+  /**
+   * @param decision  what compress.compressArtifact() returned
+   * @param opts      { formatBytes, headerBytes } — the page's own formatter,
+   *                  and compress.HEADER_BYTES, so the caption explaining the
+   *                  gap quotes the constant the envelope was computed with
+   */
+  function model(decision, opts) {
+    opts = opts || {};
+    if (!decision || typeof decision !== 'object' ||
+        typeof decision.compress !== 'boolean' ||
+        !Array.isArray(decision.considered)) {
+      return null;
+    }
+
+    var fmt = typeof opts.formatBytes === 'function' ? opts.formatBytes : plainBytes;
+    var cell = decision.best || bestConsidered(decision.considered);
+    var wire = decision.wire || null;
+    // Two conditions, and they are separate on purpose: a codec that cleared
+    // the gate still cannot be sent if its identifier means something else to
+    // the receiver's parser.
+    var sendable = !!(decision.compress && wire && wire.ok);
+    var tried = decision.considered.length + ((decision.declined || []).length);
+    var platform = platformRows(decision.detection);
+
+    var headline;
+    if (sendable) {
+      headline = decision.codecName + ' compresses this transfer.';
+    } else if (decision.compress) {
+      headline = decision.codecName + ' clears the gate, and cannot be put on a frame.';
+    } else if (tried) {
+      headline = 'Not compressed: nothing clears the ' + pct(decision.gate) + ' envelope gate.';
+    } else {
+      headline = 'Not compressed: this platform has no codec to try.';
+    }
+
+    return {
+      ok: decision.compress,
+      sendable: sendable,
+      codecId: decision.codecId,
+      codecName: decision.codecName,
+      headline: headline,
+      // What actually happens, in compress.js's own vocabulary for an
+      // uncompressed transfer: codec id 0, and the transport hash is the
+      // content hash because there is no codec between them.
+      summary: sendable
+        ? 'The stream goes as ' + fmt(decision.streamBytes) + ' instead of ' +
+          fmt(decision.originalBytes) + '.'
+        : 'The artifact goes as it stands: ' + fmt(decision.originalBytes) +
+          ', codec id 0, transport hash equal to content hash.',
+      // Only a transfer that is genuinely compressed earns the good tone. A win
+      // the wire refuses is news, not good news.
+      tone: sendable ? 'good' : '',
+      gains: cell ? gainRows(cell) : [],
+      gapText: cell ? gapText(cell, opts.headerBytes) : null,
+      geometryNote: geometryNote(cell, opts),
+      rows: codecRows(decision),
+      platform: platformText(platform),
+      missing: platform.missing,
+      wireNote: (!sendable && decision.compress && wire) ? wire.reason : null,
+      sampleNote: sampleNote(decision),
+      reason: decision.reason
+    };
+  }
+
+  return {
+    pct: pct,
+    framesText: framesText,
+    gainRows: gainRows,
+    gapText: gapText,
+    geometryNote: geometryNote,
+    codecRows: codecRows,
+    platformRows: platformRows,
+    platformText: platformText,
+    sampleNote: sampleNote,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
 
@@ -764,6 +1061,7 @@
   function proto2Lib() { return window.RVQRProto2 || null; }
   function provenanceLib() { return window.RVQRProvenance || null; }
   function plannerLib() { return window.RVQRPlanner || null; }
+  function compressLib() { return window.RVQRCompress || null; }
 
   // The view model above, which this file also defines. Read through a getter
   // for the same reason as the rest: a missing panel is better than a broken
@@ -771,6 +1069,7 @@
   function provenanceView() { return window.RVQRProvenanceView || null; }
   function deltaChoiceView() { return window.RVQRDeltaChoiceView || null; }
   function transferPlanView() { return window.RVQRTransferPlanView || null; }
+  function compressionView() { return window.RVQRCompressionView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -2598,6 +2897,9 @@
       opt.value = '';
       pick.appendChild(opt);
       $('sendStageCard').hidden = true;
+      // The compression panel describes one artifact's bytes. With nothing to
+      // send it would be describing a decision about nothing.
+      $('compressCard').hidden = true;
       stopSend();
       return;
     }
@@ -2618,6 +2920,250 @@
     send.timer = null;
   }
 
+  // --- Compression -----------------------------------------------------------
+  //
+  // ADR-003's question is asked HERE, before the frames exist, because it is a
+  // question about what the frames carry. It is asked on the very bytes that
+  // are about to be staged — the whole artifact on the ordinary path, and the
+  // measured delta payload when the delta road was taken, which compress.js
+  // supports and says so.
+  //
+  // The answer is always shown and it is never silently acted on. Three
+  // outcomes exist and all three are rendered:
+  //
+  //   A codec cleared the 8% envelope gate, and proto2.js will not carry its
+  //   identifier. Every codec above id 0 is in this state today — ADR-003 §2.1
+  //   numbers zstd 2, brotli 4 and deflate-raw 6, and proto2.parseFrame refuses
+  //   anything past its own four-entry table and means different codecs by 1, 2
+  //   and 3. compress.wireCompatible() answers that per codec and the panel
+  //   prints its sentence. Putting the id on a frame anyway would build a
+  //   transfer the receiver rejects on the first frame, so nothing does.
+  //
+  //   Nothing cleared the gate. On incompressible input the envelope GROWS —
+  //   47,555 B to 47,560 B, measured — and the artifact goes as it stands.
+  //
+  //   The platform has no codec at all, which is a browser with no
+  //   CompressionStream and is a first-class outcome rather than an error.
+  //
+  // What is deliberately NOT here is a branch that puts a codec on a frame.
+  // proto2.buildFrames() accepts a stream and a codecId, so the mechanism
+  // exists; what does not exist is an identifier both ends agree on, and
+  // writing the branch anyway would be writing a send nothing can reach and
+  // nobody can test. The panel reports the blockage instead, which is the state
+  // of the repository stated out loud.
+
+  /**
+   * The platform compress.detectCodecs() gets to probe, and nothing else.
+   *
+   * There is no `zlib` key here and there is not going to be one: a browser has
+   * no node:zlib, so the honest env is the compression streams and whatever
+   * they turn out to accept. detectCodecs() then refuses to promote a
+   * non-standard stream format into a capability, which is what stops a
+   * CompressionStream that happens to accept 'brotli' from being reported as
+   * browser brotli — the exact claim this app must never make.
+   */
+  function codecEnv() {
+    return {
+      CompressionStream: window.CompressionStream,
+      DecompressionStream: window.DecompressionStream
+    };
+  }
+
+  /** One encode through CompressionStream, which is the only kind a browser has. */
+  function streamEncode(format, input) {
+    var stream = new window.CompressionStream(format);
+    var piped = new Blob([input]).stream().pipeThrough(stream);
+    return new Response(piped).arrayBuffer().then(function (buf) {
+      return new Uint8Array(buf);
+    });
+  }
+
+  /**
+   * Runs every encode first, so the decision itself can stay synchronous.
+   *
+   * compress.js takes its codecs by injection and calls compress(bytes)
+   * expecting the bytes back — synchronous by design, because a decision that
+   * awaited would be a decision with a clock in it, and compress.js is explicit
+   * that nothing in it may depend on how busy this machine was. Node's zlib
+   * fits that directly. A browser's does not: CompressionStream is a stream and
+   * the only way to reach its output is to await it.
+   *
+   * So the asynchrony is moved OUT of the decision rather than into it. Every
+   * candidate encode runs here, is awaited, and is handed over through a map
+   * whose compress() returns bytes already in hand.
+   *
+   * ONE CONSEQUENCE, STATED BECAUSE IT IS REAL: above 8 MB compress.js encodes
+   * a bounded prefix first and only encodes in full the codecs whose estimate
+   * passed. That saving cannot survive the flip, because the full encode has to
+   * be prepared before the estimate has been judged. The numbers are identical
+   * either way; what is lost is one wasted encode on a large artifact whose
+   * prefix would have declined it.
+   */
+  function precompress(bytes, detection, prefixBytes) {
+    var jobs = [];
+    var table = {};
+    detection.available.forEach(function (row) {
+      // node:zlib is the only other route detectCodecs() reports, and it does
+      // not exist here. A row claiming one would be a row this shim cannot
+      // honour, so it is left out rather than faked.
+      if (row.via !== 'CompressionStream') return;
+      table[row.name] = {};
+      var inputs = [bytes];
+      if (prefixBytes > 0 && prefixBytes < bytes.length) inputs.push(bytes.subarray(0, prefixBytes));
+      inputs.forEach(function (input) {
+        jobs.push(streamEncode(row.name, input).then(function (out) {
+          table[row.name][input.length] = out;
+        }));
+      });
+    });
+    return Promise.all(jobs).then(function () { return codecMap(table); });
+  }
+
+  function codecMap(table) {
+    var out = {};
+    Object.keys(table).forEach(function (name) {
+      out[name] = {
+        compress: function (input) {
+          var prepared = table[name][input.length];
+          // compressArtifact only ever asks for the whole artifact or the
+          // bounded prefix, and both were encoded above. Anything else is a
+          // change in that module this shim has not been told about, and
+          // handing back the wrong buffer would put a measured-looking figure
+          // on the panel that no encode produced.
+          if (!prepared) {
+            throw new Error('no ' + name + ' encode was prepared for ' + input.length + ' bytes');
+          }
+          return prepared;
+        }
+      };
+    });
+    return out;
+  }
+
+  /**
+   * The decision, or a report that it could not be reached.
+   *
+   * Returns null when compress.js never loaded, which is a different outcome
+   * from a decision that declined: the first means nobody asked, the second
+   * means somebody asked and the answer was no.
+   *
+   * The envelope is modelled at THIS transfer's chunk size and THIS artifact's
+   * name length rather than at the operating point compress.js's docblock
+   * measures, because the figures on screen have to be about the transfer in
+   * front of the operator.
+   */
+  function decideCompression(bytes, name) {
+    var C = compressLib();
+    if (!C || !bytes || !bytes.length) return Promise.resolve(null);
+    var detection;
+    try {
+      detection = C.detectCodecs(codecEnv());
+    } catch (e) {
+      return Promise.resolve({ error: e });
+    }
+    var prefix = bytes.length > C.SAMPLE_ABOVE_BYTES ? C.SAMPLE_PREFIX_BYTES : 0;
+    return precompress(bytes, detection, prefix).then(function (codecs) {
+      return {
+        detection: detection,
+        decision: C.compressArtifact(bytes, {
+          detection: detection,
+          codecs: codecs,
+          chunk: send.chunk,
+          nameLen: name.length
+        })
+      };
+    }).then(null, function (e) { return { error: e }; });
+  }
+
+  /**
+   * The verdict, both figures, every codec's own sentence, and what the
+   * platform turned out to have.
+   */
+  function renderCompression(decided) {
+    var card = $('compressCard');
+    var box = $('compressResult');
+    box.textContent = '';
+    card.hidden = false;
+
+    if (!decided) {
+      box.appendChild(el('p', 'small muted',
+        'The compression module did not load, so nothing decided whether these ' +
+        'bytes should be compressed. The artifact goes as it stands.'));
+      return;
+    }
+    if (decided.error) {
+      box.appendChild(el('div', 'notice bad',
+        'Could not decide on compression: ' +
+        (decided.error.message || decided.error) + '. The artifact goes as it stands.'));
+      return;
+    }
+    var view = compressionView();
+    var C = compressLib();
+    var m = view ? view.model(decided.decision, {
+      formatBytes: core.formatBytes,
+      headerBytes: C.HEADER_BYTES,
+      manifestBytes: C.MANIFEST_FIXED_BYTES,
+      // Whether the envelope compress.js models is the framing this send is
+      // about to use. sendFormat() rather than send.wire: the latter is not
+      // assigned until the frames are built, which is after this.
+      v2Frames: sendFormat() === core.FORMAT_V2
+    }) : null;
+    if (!m) {
+      box.appendChild(el('div', 'notice bad',
+        'The compression decision returned nothing this panel can render. ' +
+        'The artifact goes as it stands.'));
+      return;
+    }
+
+    var n = el('div', m.tone ? 'notice ' + m.tone : 'notice');
+    n.appendChild(el('strong', '', m.headline + ' '));
+    n.appendChild(document.createTextNode(m.summary));
+    box.appendChild(n);
+
+    // The two figures, always both, always separately labelled. This is the
+    // panel's reason to exist.
+    if (m.gains.length) {
+      var dl = el('dl', 'kv');
+      dl.style.marginTop = '.7rem';
+      m.gains.forEach(function (row) {
+        dl.appendChild(el('dt', '', row.label));
+        dl.appendChild(el('dd', '', row.text));
+      });
+      box.appendChild(dl);
+      box.appendChild(el('p', 'small muted', m.gapText));
+    }
+    if (m.geometryNote) box.appendChild(el('p', 'small muted', m.geometryNote));
+
+    if (m.wireNote) {
+      // Its own notice rather than a footnote: a codec that wins the gate and
+      // cannot cross the wire is the difference between a transfer that saves
+      // 63% and one the receiver rejects on the first frame.
+      box.appendChild(el('div', 'notice', m.wireNote));
+    }
+
+    if (m.rows.length) {
+      box.appendChild(el('p', 'small', 'Every codec that was tried'));
+      var cl = el('dl', 'kv');
+      m.rows.forEach(function (row) {
+        cl.appendChild(el('dt', '', row.label));
+        cl.appendChild(el('dd', row.chosen ? '' : 'muted', row.text));
+      });
+      box.appendChild(cl);
+    }
+
+    box.appendChild(el('p', 'small muted', m.platform));
+    if (m.missing.length) {
+      var ml = el('dl', 'kv');
+      m.missing.forEach(function (row) {
+        ml.appendChild(el('dt', '', row.label));
+        ml.appendChild(el('dd', 'muted', row.text));
+      });
+      box.appendChild(ml);
+    }
+    if (m.sampleNote) box.appendChild(el('p', 'small muted', m.sampleNote));
+    box.appendChild(el('p', 'small muted', m.reason));
+  }
+
   function startSend(id, overrideBytes, overrideName) {
     stopSend();
     // The delta path sends bytes that are in no vault record, and calls this
@@ -2632,6 +3178,20 @@
       var name = overrideName || (row ? row.name : 'artifact.bin');
       var hash = overrideBytes ? core.sha256Hex(bytes) : row.sha256;
 
+      // Asked before a frame is built, and awaited, because the answer is about
+      // what the frames carry. It costs one encode per available codec — none
+      // at all on a platform with no CompressionStream — and the panel it fills
+      // is the only place the operator can see what was decided for them.
+      return decideCompression(bytes, name).then(function (decided) {
+        renderCompression(decided);
+        return stageFrames(bytes, name, hash);
+      });
+    });
+  }
+
+  /** Builds and plays the frames, once the compression question has an answer. */
+  function stageFrames(bytes, name, hash) {
+    return Promise.resolve().then(function () {
       send.wire = sendFormat();
       if (send.wire === core.FORMAT_V2) {
         startSendV2(bytes, name, hash);
@@ -4303,7 +4863,11 @@
       // rather than silently reused.
       lastReceiver = null;
       if (e.target.value) startSend(e.target.value);
-      else { stopSend(); $('sendStageCard').hidden = true; }
+      else {
+        stopSend();
+        $('sendStageCard').hidden = true;
+        $('compressCard').hidden = true;
+      }
     });
     $('playBtn').addEventListener('click', function () { play(!send.playing); });
     $('restartBtn').addEventListener('click', function () { drawFrame(0); play(true); });

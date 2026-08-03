@@ -999,6 +999,28 @@
       <input type="range" id="scrub" min="0" max="0" value="0">
     </div>
 
+    <!--
+      What crosses the wire, and why it is not smaller.
+
+      A plain card rather than a <details>, and expanded whenever there is an
+      answer, because the answer that matters most is a REFUSAL: on
+      incompressible input the envelope grows by five bytes and compression is
+      declined, and a refusal folded behind a summary the operator never opens
+      is indistinguishable from a module that never ran. The delta controls
+      above are collapsed because they are a thing you go and do; this is a
+      thing that was already decided for you.
+
+      Two figures, never one. The codec's number and the transport's number
+      differ — 63.86% against 63.69% on the WASM demo — because the 28-byte
+      frame header and the manifest frame do not compress, and the gate reads
+      the second. app.js renders both side by side on every outcome.
+    -->
+    <div class="card" id="compressCard" hidden>
+      <h2 class="flush">Compression</h2>
+      <p class="small muted">Decided before the frames were built, on the bytes above. ADR-003 gates on the envelope — what the receiver actually waits through — and not on the ratio the codec reports.</p>
+      <div id="compressResult" style="margin-top:.7rem"></div>
+    </div>
+
     <details class="card tight" id="deltaSendCard">
       <summary>Send only what they are missing</summary>
       <div class="details-body">
@@ -1466,6 +1488,19 @@
   in the standalone build, whose script list is derived from this document.
 -->
 <script src="./planner.js" defer></script>
+<!--
+  compress.js reads RVQRCore at load time — for the artifact ceiling, the
+  artifact sniff and the SHA-256 a dictionary is checked against — so it follows
+  core.js, one of the eager scripts above. Deferred with the other optional
+  modules: nothing on the first paint needs it, and it is consulted once per
+  send, before a frame exists, because whether to compress is a question about
+  what the frames carry. Without it the send panel says nobody decided rather
+  than implying the artifact was measured and found incompressible — a missing
+  decision and a decision to decline are different facts. Loading it here is
+  also what puts it in the standalone build, whose script list is derived from
+  this document.
+-->
+<script src="./compress.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>
