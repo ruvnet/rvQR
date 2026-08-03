@@ -152,6 +152,26 @@ percentage points, not a factor. A browser also has no level to raise: the
 stream's output is byte-identical to `deflateRawSync` at level 6 on 7 of 7
 artifacts.
 
+**14. rvQR does not attest devices, and the gate that would decide if it could is
+correct in all fourteen cells and costs 0.90 µs.** The first half is not a caveat
+on the second. ADR-021 §2.1 names DICE, TPM 2.0, Secure Enclave and Android
+hardware-backed keys, and `attest.describeRoots()` reports **all four
+`unexercised`** — none is implemented, none has run against hardware, and on this
+platform the `attested` state is *unreachable* without a chain verifier the
+repository does not contain. Every chain check measured is an injected stub. What
+is MEASURED is the verdict-and-gate logic, and it holds: across the seven
+attestation states crossed with a requiring and a permitting policy, **no cell
+admits a non-attested state under a requiring policy**, and `malformed` is refused
+under the *permitting* policy where `unattested` is admitted — so a device cannot
+downgrade itself to the widest permission in the system by corrupting its own
+evidence. Across 42 (state × policy × grant) combinations **3 admit and 39
+refuse**; **none of the 4 carrying a valid attestation with no covering grant is
+admitted**, all four refusing with `capability-refused`, and the control admits
+2 of 2 once the grant is restored. Of 51 malformed inputs **50 refuse, 0 throw and
+1 is admitted** — a verdict object a caller fabricated, which is the boundary of
+the structural barrier rather than a hole in it, and is reported in full rather
+than left inside a percentage.
+
 ---
 
 ## Reproducing this
@@ -174,6 +194,7 @@ node bench/index.mjs --suite closures    # progressive activation (a model)
 node bench/index.mjs --suite memory      # working memory and payload copies
 node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
 node bench/index.mjs --suite planner     # strategy choice, the hard rules, inventory granularity
+node bench/index.mjs --suite attest      # the attestation state matrix, fail-closed coverage, decision cost
 
 # The memory suite spawns its own child process; to run that probe directly:
 node --expose-gc bench/lib/memprobe.mjs
@@ -251,6 +272,7 @@ used:
 | QR encoder and decoder | **Real.** `artifacts/vendor/qrcode.js` and `artifacts/vendor/qrdecode.js`. |
 | Zstd and Brotli | **Real,** from `node:zlib`. Not the same builds a browser runs — see §2. |
 | Reference codecs (`lt`, `rlf`, `rlf-sys`) | **Harness-owned**, in `bench/lib/fountain-ref.mjs`. Reference points to score the shipped codec against. |
+| Device attestation | **The logic is real; the hardware does not exist.** `artifacts/attest.js` is driven end to end — verifier, gate and receipt. But none of ADR-021's four roots of trust is implemented, `describeRoots()` reports all four `unexercised`, and every chain check is an **injected stub**. rvQR does not attest devices. See §10, after the planner. |
 | Fleet peer exchange | **Modelled.** No such system exists in this repository. See §11. |
 | Progressive activation | **Modelled.** Nothing here signs or activates a closure. See §12. |
 | Camera, screen, optics | **Not modelled at all.** See "Threats to validity". |
@@ -1461,6 +1483,206 @@ The peer link's 32 KB/s default and the energy weights are modelled inputs, so
 the rows where the radio wins are as good as those two numbers and no better. And
 passing the hard rules means a strategy is *permitted*, never that it will work.
 
+### Device attestation: the gate that decides, and the hardware it has never touched
+
+`node bench/index.mjs --suite attest`
+
+**Read this paragraph before any number below it.** ADR-021 §2.1 names four roots
+of trust — **DICE**, **TPM 2.0**, **Secure Enclave** and **Android
+hardware-backed keys**. `attest.describeRoots()` reports **4 of 4 as
+`unexercised`**, and this suite exercises none of them either, because nothing in
+this repository implements any of them and nothing here has ever run against the
+hardware that provides them. Every chain check in every table below is an
+**injected stub** returning a fixed answer, marked as such in the table itself.
+
+So what follows measures the **verdict-and-gate logic** and nothing whatsoever
+about real hardware attestation. **rvQR does not attest devices.** What it has is
+a decision procedure over evidence it currently has no way to obtain, and on this
+platform, today, the `attested` state is *unreachable* without a verifier the
+repository does not contain. The signing identity has not moved either:
+`describeKeyCustody()` reports the key still in `localStorage` under
+`rvqr.identity.v1`, readable by page script, so
+[ADR-035](adr/ADR-035-rvqr-signature-admission.md) is **not** superseded.
+
+That leaves a real question worth measuring. `attest.js` is a decision procedure,
+not a codec, so throughput is a category error for it; what matters is whether it
+decides correctly in every state it defines, whether anything can talk it into a
+wrong yes, and whether it is cheap enough to run per transfer.
+
+This suite was run on the machine recorded above but at
+**2026-08-03T21:47:10Z**, later than the run the rest of this document reports.
+Every state, decision code, admit flag, count and fraction below is deterministic
+and reproduces anywhere; only the microsecond columns are of that particular run,
+and they move a few tens of percent between runs on this machine.
+
+**The state matrix, which is the result rather than a preamble to one.** Every
+state the module defines, against a policy that requires attestation and one that
+does not, with the capability grant covering both identities in both columns — so
+the only thing varying along a row is the evidence bar. Every verdict was
+produced by handing real evidence to the real `verifyAttestation`; none was
+written by hand.
+
+| state | how it was reached | stub verifier | facts published | requiring policy | permitting policy |
+|---|---|---|---|---|---|
+| `attested` | well-formed, bound evidence; stub verifier returns true | yes, returns true | **yes** | **admit** `attested-and-approved` | **admit** `attested-and-approved` |
+| `unattested` | no evidence offered at all | none | no | refuse `unattested-refused` | **admit** `unattested-permitted` |
+| `malformed` | measurement `'m-approved'`, not lowercase hex | yes, returns true | no | refuse `malformed-evidence` | refuse `malformed-evidence` |
+| `unbound` | well-formed evidence naming another session | yes, returns true | no | refuse `unbound-evidence` | refuse `unbound-evidence` |
+| `replayed` | bound evidence answering a spent challenge | yes, returns true | no | refuse `replayed-evidence` | refuse `replayed-evidence` |
+| `unverified` | bound evidence and **no chain verifier** — this platform | none | no | refuse `unverified-evidence` | refuse `unverified-evidence` |
+| `forged` | bound evidence; stub verifier returns false | yes, returns false | no | refuse `forged-evidence` | refuse `forged-evidence` |
+
+**No cell admits a non-attested state under a policy that requires attestation**,
+which is the property the matrix exists to test, and all seven recipes reached the
+state they were built to reach. Two cells carry more weight than the other twelve.
+`unattested` under a permitting policy **must** admit — ADR-021 §2.3, unattested
+is a state and not a failure — and `malformed` under that *same* policy **must
+not**, or a device could reach the widest permission in the system by making its
+evidence worse. It does not: malformed refuses with `malformed-evidence` under
+both policies. **Unreadable evidence is refused rather than treated as absent.**
+
+The `attested` row is also the only one that publishes the measured facts, and
+that is the information barrier rather than a convention. `measurement`,
+`policyEpoch`, `signerSetId` and `storageClasses` are `null` on every other state,
+so no ordering mistake inside the gate can approve on a measurement lifted out of
+unverified bytes — there is no such field on the object to compare.
+
+**The separation, counted rather than asserted.** ADR-021 §2.2's load-bearing
+sentence is that attestation is evidence and never authorization. Every state was
+crossed with every policy and three grant shapes — `full` grants both identities
+for the requested class, `other-class` grants both for a different class, `none`
+grants nothing:
+
+| | admits | refuses | throws |
+|---|---|---|---|
+| all 42 (state × policy × grant) combinations | **3** | 39 | 0 |
+| the 4 carrying a valid attestation with no covering grant | **0** | 4 | 0 |
+| the control: the same attested verdict, grant restored | **2 of 2** | 0 | 0 |
+
+**Not one combination carrying a valid attestation without a covering grant is
+admitted**, and all four refuse with `capability-refused` — the capability code
+specifically, not a measurement or epoch code, so the refusal is the capability
+rule rather than another rule reaching the same answer first. The control row is
+not decoration: without it the refusals could have been caused by a typo in a
+fixture and would prove nothing. The three admitting combinations in full are
+`attested` + requires + full, `attested` + permits + full, and `unattested` +
+permits + full. Two states admit and no others, and **both reach admission through
+the capability check** — `unattested` included, because a sender that does not
+require attestation has relaxed its evidence bar and not its authority model.
+
+Which identity the grant was matched against is read back off the decision, since
+ADR-021 §2.3 is explicit that the two are not equivalent:
+
+| admitting path | subject matched | identity source | receipt: sender required attestation |
+|---|---|---|---|
+| `attested`, policy requires | `seed-0042` | **attestation** | `true` |
+| `attested`, policy permits | `seed-0042` | **attestation** | `false` |
+| `unattested`, policy permits | `peer-key-9f3c` | **peer** | `false` |
+
+The receipt keeps the two apart in words as well as fields — *"Attested: the
+device presented TCG DICE layered measurement measuring aaaaaaaaaaaaaaaa…, and it
+verified; the transfer proceeded"* against *"Nobody asked: this sender does not
+require attestation and none was offered; the transfer proceeded"* — which is the
+distinction an auditor has to make later and a single `ok` would have destroyed
+forever.
+
+**Fail-closed coverage.** 51 malformed or under-specified inputs: absent fields,
+wrong types, every `LIMITS` ceiling over-run at least once, states that do not
+exist, verdicts a caller fabricated, and policies that declared nothing. Three
+outcomes are counted and not two, because a security path that throws is as broken
+as one that admits, just louder.
+
+| group | cases | refused under both policies | admitted | threw |
+|---|---|---|---|---|
+| malformed evidence | 26 | 26 (100%) | 0 | 0 |
+| fabricated verdict | 10 | 9 (90%) | **1** | 0 |
+| policy or request shape | 15 | 15 (100%) | 0 | 0 |
+| **total** | **51** | **50 (98.0%)** | **1** | **0** |
+
+`parseEvidence` is documented never to throw on hostile input, and over these
+cases it never did and accepted none of them. Every malformed blob landed on
+`malformed` rather than on `unattested`. A chain verifier that *throws* yields
+`unverified` — a refusing state, never the feature's off state — and one returning
+anything that is neither `true` nor `false` (`"maybe"`, `null`, `undefined`, `1`,
+`{}`) yields `unverified` in all five cases.
+
+**The single admission is the most interesting result in this section**, and it is
+reported here rather than left inside a percentage. A verdict object written by
+hand — `state: "attested"` with every measured fact filled in and
+`chainVerified: null` — is **admitted** with `attested-and-approved`. The same
+fabrication *without* the facts is refused with `untrusted-signers`, which is
+where the structural barrier does its work: the preconditions read facts that are
+not there and report them unmet.
+
+That pair is the exact boundary of the claim `attest.js` makes for itself, and the
+claim survives it. The gate cannot be fed raw **claims** — the verifier publishes a
+measurement only on `attested`, which the state matrix above confirms. What the
+gate cannot do is tell a verdict its verifier produced from an object someone
+constructed: nothing on a verdict is authenticated and no field on it could be.
+`chainVerified: null` beside `state: "attested"` is a pair the real verifier can
+never emit — it sets `chainVerified: true` on exactly that state — and the gate
+does not check the pairing. **The receipt does record the inconsistency**:
+`chainVerified` comes through as `null` on an admitted transfer, so an auditor can
+see that nothing verified a chain even though the decision reads
+attested-and-approved. This is a property of the trust boundary rather than a
+defect inside it, and it is the reason the verifier and the gate have to be reached
+through one code path rather than two.
+
+Two further behaviours are worth stating because both are easy to mistake for
+bugs and neither is one. **An undeclared policy is refused by design** — ADR-021
+§2.3 makes whether an unattested device is acceptable the sender's decision "not a
+default", so `{}`, `null`, `requireAttestation: 'yes'`, `requireAttestation: 1`
+and `requireAttestation: undefined` all refuse with `policy-undeclared`; the two
+truthy-but-not-`true` spellings are the shape a policy loaded from JSON or a form
+field arrives in. And a **falsy** verdict state — `''`, or no state field at all —
+refuses as `pending` rather than `unknown-attestation-state`, because the gate's
+first test is `!verdict.state`. Both refuse, but they mean opposite things to a
+caller acting on the code: `pending` invites a retry and `unknown-attestation-state`
+is final.
+
+One thing the suite found that the module does not document: **the consumed-nonce
+ceiling is a correctness boundary and not only a cost one.** The list is capped at
+4,096 entries and sliced, so the same challenge yields `attested` when it sits past
+the ceiling and `replayed` when it sits inside it. A sender that lets its consumed
+list grow past the cap stops detecting replays of anything it consumed early. That
+is a property of the bound rather than a defect in it, but it is one a caller has
+to know.
+
+**What deciding costs.** Per-call figures are the mean within a batch of 2,000
+calls and the median across 25 batches — batched deliberately, because these run
+in fractions of a microsecond and a clock read costs tens of nanoseconds, so
+timing one call at a time would fold timer overhead into every figure.
+
+| function | p50 | p95 |
+|---|---|---|
+| `parseEvidence` (well-formed) | 0.181 µs | 0.221 µs |
+| `verifyAttestation` → attested (stub verifier) | 0.208 µs | 0.736 µs |
+| `verifyAttestation` → unattested (no evidence) | 0.032 µs | 0.065 µs |
+| `admitTransfer` (attested, four preconditions, grant table) | 0.366 µs | 0.807 µs |
+| `attestationReceipt` | 0.323 µs | 0.544 µs |
+
+A transfer pays verify, gate and receipt once each: **0.90 µs**, or 223,100
+decisions inside a single 200 ms frame period at the app's default 5 fps. The
+optical transfers §6 measures run from 0.4 s to 16.4 s, so against those the gate
+is **five to seven orders of magnitude cheaper than the transfer it gates** — and
+those are the *fast* cases, since §13 models transfers running into hours.
+So yes, negligible; but the word is worth replacing with the ratio, because
+"negligible" is what a per-transfer check is always assumed to be right up until
+it is not. The 5 fps is a configured constant of this application rather than a
+measurement; the microseconds are of this machine and this run, and `--quick`
+moves them by a factor of three.
+
+**What this section does not establish.** It says nothing about DICE, TPM 2.0,
+Secure Enclave or Android hardware-backed keys, because it runs none of them and
+neither does anything else here. It says nothing about whether a real device would
+produce evidence this format can carry. Binding is checked as a field comparison,
+exactly as the module checks it — in a real root of trust the nonce sits inside the
+signed quote, so binding and chain verification are one check rather than two, and
+that is precisely the unexercised part. What the tables do establish is narrower
+and worth having on its own: the decision procedure refuses in every state it
+should, no evidence buys an ungranted transfer, and the whole thing costs under a
+microsecond.
+
 ---
 
 # Part II — MODELLED
@@ -1878,6 +2100,9 @@ store and the camera buffers are not.
 | Signature verification cost | **Not measured.** There is no signing path in this repository to time. |
 | Energy, in joules | **Not measurable here at all.** No power measurement of any kind exists in this repository, which is why the planner's E term (§10, the planner subsection) is a relative proxy in arbitrary units against one optical slot, and why it is the only one of J's four terms whose weight buys a number nobody has checked against a battery. |
 | Whether a plan was the *right* plan | **Not measured.** The planner subsection measures what is decided, what the alternatives would have cost in the same model, and what deciding costs. Whether the model ranks real transfers correctly needs the two devices in the first row of this table. |
+| **Any root of trust — DICE, TPM 2.0, Secure Enclave, Android hardware-backed keys** | **Not measurable, because none is implemented.** ADR-021 §2.1 names all four; `attest.describeRoots()` reports all four `unexercised`, and nothing in this repository has produced or checked an attestation on hardware or otherwise. The attestation subsection (§10, after the planner) uses an **injected stub verifier** wherever a chain check is needed, and so measures the verdict-and-gate logic only. On this platform the `attested` state is unreachable without a verifier that does not exist here. **rvQR does not attest devices**, and no figure in that subsection should be read as evidence that it does. |
+| A hardware-held signing key | **Not measured, and not present.** `describeKeyCustody()` reports the key still in plaintext `localStorage`, readable by page script. Nothing here has signed anything with a key held outside the page, so ADR-035 is **not** superseded. `hardwareKeyAvailability()` reports whether an environment exposes WebAuthn — presence, never a demonstration — and no decision reads it. |
+| Whether an attested device id and a pinned peer id are the same party | **Not measured, and not a rule the module states.** A peer that signs the session and a device that attests to its boot could be two different things. §10's identity table records which of the two a grant was matched against; nothing checks that they agree. |
 | Resume-after-termination behaviour | **Not measured.** `artifacts/resume.js` is not covered by this harness. |
 | COBRA's published throughput | **Could not verify.** Paywalled; secondary sources disagree. |
 

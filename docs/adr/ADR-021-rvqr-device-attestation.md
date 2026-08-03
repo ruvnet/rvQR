@@ -158,11 +158,11 @@ superseded rather than amended when the key leaves `localStorage`.
 > |---|---|---|
 > | 1 | **met** | A valid attestation for an ungranted device returns `admit: false`, `capability-refused`; restoring the grant admits the identical verdict, so the refusal is the capability rule and not another one. |
 > | 2 | **met** | A state that does not exist yet returns `unknown-attestation-state` and fails closed. |
-> | 3 | **half met** | The RECEIPT distinguishes the two cases — `senderRequiredAttestation` separates "nobody asked" from "asked and got none". The UI half is NOT met: nothing is wired to the page yet, and until it is, a criterion reading "in the UI and in the receipt" is not satisfied. |
+> | 3 | **met** | Both halves. The receipt's `senderRequiredAttestation` separates "nobody asked" from "asked and got none", and the three states render distinctly on screen: "Attested, and separately granted" (good), "Unattested, and permitted because nobody asked" (deliberately neither good nor bad, because nobody asking is not an endorsement), and "Refused: the capability policy refuses this transfer" (bad). |
 > | 4 | **not met** | No root of trust is exercised. |
-> | 5 | **met** | A replayed nonce returns `replayed`; evidence bound to another session returns `unbound`. |
+> | 5 | **met** | A replayed nonce returns `replayed`; evidence bound to another session returns `unbound`. Strengthened after the benchmark found that the consumed-nonce list was silently TRUNCATED at 4,096 and then searched, so the identical challenge returned `replayed` inside the cap and `attested` past it — a sender losing replay detection for everything it consumed early. An unsearchable list is now refused, on the ground that a check which did not happen is not a pass. |
 > | 6 | **not met** | The hardware-key path is not demonstrated, so ADR-035 is NOT superseded and the localStorage identity stands. |
-> | 7 | **not met** | The privacy trade is not yet stated anywhere a user can see it. |
+> | 7 | **met** | The disclosure is on screen above every control that could enable attestation: "Attestation evidence identifies a device, often durably. A protocol that avoids associating devices on a network now has a mechanism that identifies them cryptographically, and that is a trade a user should see before it is enabled." |
 5. **Replay of a recorded attestation is refused** — the evidence is bound to the
    session id and a fresh nonce, the same rule
    [ADR-007](./ADR-007-rvqr-ultrasonic-control-channel.md) §2.4 applies to

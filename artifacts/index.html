@@ -1066,6 +1066,77 @@
       </div>
     </details>
 
+    <!--
+      Who this may go to, and the two different answers that question has.
+
+      ADR-035 lets a receiver say which signer it will accept. ADR-021 is the
+      other direction: it lets the SENDER say which receiver it will send to.
+      This card is that, and it sits under the pairing step because the receiver
+      it talks about is the device you paired with up there — an unpaired QR
+      stream is painted at whoever points a camera and has no receiver to refuse.
+
+      A plain card, never a <details>, for the same reason the compression card
+      is one: the outcome that matters most here is a REFUSAL — an undeclared
+      policy is refused BY DESIGN, and a refusal folded behind a summary nobody
+      opens is indistinguishable from a module that never ran.
+
+      TWO BLOCKS BELOW, NEVER ONE. ADR-021 §2.2 is the load-bearing sentence:
+      attestation is evidence, not authorization. So the panel renders what the
+      device showed and what this sender decided as separate things, because a
+      device can be measured, approved and current and still be the wrong device
+      to send a credential to.
+
+      The privacy notice is FIRST, above every control, and app.js disables the
+      policy picker unless that notice actually rendered — ADR-021 §4.7 wants the
+      trade visible before attestation is enabled, and ordering it in the markup
+      is only a promise, whereas refusing to enable without it is a rule.
+    -->
+    <div class="card" id="attestCard">
+      <h2 class="flush">Device attestation</h2>
+      <p class="small muted">What the receiving device measured about itself at boot is <em>evidence</em>. Whether it may have this artifact is a separate decision, and the capability policy is the authoritative one. This panel never merges them.</p>
+
+      <div id="attestPrivacy" style="margin-top:.7rem"></div>
+
+      <label class="field" for="attestPolicyPick">Does this sender require attestation?</label>
+      <select id="attestPolicyPick">
+        <option value="undeclared" selected>Not stated — this sender has not decided</option>
+        <option value="require">Required — refuse a device that shows none</option>
+        <option value="permit">Not required — an unattested device may still receive</option>
+      </select>
+      <p class="small muted" id="attestPolicyNote" style="margin:.4rem 0 .8rem"></p>
+
+      <label class="field" for="attestClassPick">Class of artifact being sent</label>
+      <select id="attestClassPick">
+        <option value="generic" selected>generic — unclassified bytes</option>
+        <option value="agent">agent</option>
+        <option value="credential">credential</option>
+        <option value="model">model</option>
+        <option value="container">container</option>
+      </select>
+      <p class="small muted" id="attestClassNote" style="margin:.4rem 0 .8rem"></p>
+
+      <!--
+        The capability grant, which is the authoritative check and the only
+        thing here that can end in a transfer. Deliberately its own control and
+        not a consequence of the verdict: this is what ADR-021 §2.2 means by the
+        policy remaining authoritative.
+      -->
+      <label class="row" style="gap:.5rem;margin-bottom:.4rem">
+        <input type="checkbox" id="attestGrant">
+        <span class="small">Grant this receiver artifacts of that class</span>
+      </label>
+      <p class="small muted" id="attestGrantNote" style="margin:0 0 .8rem"></p>
+
+      <label class="field" for="attestEvidence">Evidence this device offered</label>
+      <textarea id="attestEvidence" placeholder="…paste the attestation evidence that device presented, or leave it empty for a device that offered none"></textarea>
+      <div class="row" style="margin-top:.5rem">
+        <button class="btn-sm" id="attestCheckBtn">Check this evidence</button>
+      </div>
+
+      <div id="attestResult" style="margin-top:.9rem"></div>
+      <div id="attestRoots" style="margin-top:.9rem"></div>
+    </div>
+
     <details class="card tight" id="sendSettingsCard">
       <summary>Transfer settings</summary>
       <div class="details-body">
@@ -1501,6 +1572,22 @@
   this document.
 -->
 <script src="./compress.js" defer></script>
+<!--
+  attest.js reads no globals at all — it is pure functions over plain data, with
+  no DOM, no storage, no network and no clock — so it needs nothing above it. It
+  is placed after core.js with the other optional modules anyway, because that is
+  where the page keeps everything app.js reaches through a getter, and deferred
+  because nothing on the first paint asks what a receiving device measured about
+  itself at boot.
+
+  Without it the attestation panel says the module did not load AND REFUSES TO
+  LET THE POLICY BE DECLARED, rather than showing a control that would silently
+  decide nothing: ADR-021 §2.3 makes requiring attestation the sender's decision,
+  and a control that records a decision nothing enforces is worse than no
+  control. Loading it here is also what puts it in the standalone build, whose
+  script list is derived from this document.
+-->
+<script src="./attest.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

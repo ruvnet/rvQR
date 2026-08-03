@@ -1032,6 +1032,420 @@
   };
 });
 
+/*
+ * The attestation view model.
+ *
+ * attest.js answers TWO questions and refuses to merge them, and this model's
+ * whole job is to carry that refusal onto the screen.
+ *
+ *   verifyAttestation() -> a VERDICT: what the device measured about itself,
+ *       whether that evidence was readable, bound to this session and this
+ *       challenge, and whether a root of trust stood behind it. A fact.
+ *
+ *   admitTransfer()     -> a DECISION: whether this artifact may go to this
+ *       device. The capability policy is authoritative and every admission
+ *       passes through it, attested or not.
+ *
+ * ADR-021 §2.2 names the failure this exists to forbid: treating a valid
+ * attestation as a pass. A panel that printed one combined verdict would commit
+ * that failure in the only place a user ever looks, so `verdict` and `decision`
+ * are separate objects here, rendered as separate blocks, with the module's own
+ * sentence about the separation between them. A device can be measured,
+ * approved and current and still be refused, and the panel has to make that
+ * legible rather than surprising.
+ *
+ * THREE OUTCOMES, THREE RENDERINGS, ADR-021 §4.3. The criterion is that
+ * unattested is never conflated with attested-and-approved, and the third state
+ * — refused — is the one both of those must be told apart from:
+ *
+ *   attested-approved      tone 'good'  — evidence verified AND a grant covers it
+ *   unattested-permitted   tone ''      — nobody asked, and a grant covers it
+ *   refused                tone 'bad'   — anything else, named by its own code
+ *
+ * The tone is three different border colours, the badge is three different
+ * words and the headline is three different sentences, so the three are
+ * distinguishable by class, by label and by prose rather than by any one of
+ * them. `unattested-permitted` deliberately does NOT wear the good tone: a
+ * transfer nobody checked is news, not good news, which is the same rule the
+ * compression model applies to a codec that cannot cross the wire.
+ *
+ * ROOT STATUS TRAVELS WITH EVERY ROOT NAME. describeRoots() reports all four —
+ * DICE, TPM 2.0, Secure Enclave, Android hardware-backed keys — as
+ * `unexercised`, and this model never emits a root's name without the status
+ * beside it. There is no picker of roots anywhere, because offering a TPM this
+ * build cannot use would be the UI claiming a capability the code disclaims two
+ * files away.
+ *
+ * NO REASON IS RE-WORDED. `verdict.reason`, `decision.reason`, every
+ * `unmet[].reason`, every root's `note`, the receipt's `summary` and each of
+ * describeLimits()'s sentences are rendered verbatim. This model writes labels,
+ * headlines and ordering; it does not restate a rule, because a restated rule
+ * drifts away from the rule enforcing it.
+ *
+ * Pure, and asserted through the real module, for the reason the three models
+ * above it are: the failure mode is a plausible-looking screen, and a
+ * plausible-looking screen is only catchable by asserting on the text that
+ * reaches it.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    // Hangs off the provenance view model's export like the three above it, so
+    // tests.js requires this file once and reaches all five.
+    module.exports.attestation = api;
+  } else {
+    root.RVQRAttestationView = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /**
+   * What each verdict state is, in a few words. A LABEL and not a reason: the
+   * module's own sentence is rendered underneath every one of these, and this
+   * is only what the block is called.
+   *
+   * Every state in attest.STATES has an entry. One that does not is rendered as
+   * the state string itself rather than as a blank heading — a vocabulary this
+   * build does not know must still reach the screen, which is the UI half of
+   * the rule that an unrecognised state fails closed.
+   */
+  var VERDICT_LABELS = {
+    'attested': 'Attested',
+    'unattested': 'Unattested — no evidence was offered',
+    'malformed': 'Malformed — evidence was offered and could not be read',
+    'unbound': 'Unbound — not tied to this transfer',
+    'replayed': 'Replayed — this challenge was already answered',
+    'unverified': 'Unverified — no root of trust checked it',
+    'forged': 'Forged — the chain verifier said no'
+  };
+
+  /**
+   * What each decision code is called.
+   *
+   * `policy-undeclared` and `malformed-evidence` are here for the same reason
+   * the states above are: ADR-021 §2.3 makes an undeclared policy a refusal BY
+   * DESIGN rather than an error, and unreadable evidence a refusal rather than
+   * an absence. Both have to arrive on screen as themselves. A generic "could
+   * not attest" would erase the difference between a sender who has not decided,
+   * a device that tried and failed, and a device that never tried.
+   */
+  var DECISION_LABELS = {
+    'pending': 'No verdict yet',
+    'policy-undeclared': 'This sender has not declared a policy',
+    'unknown-attestation-state': 'An attestation state this build does not know',
+    'unattested-refused': 'Attestation required, and none was offered',
+    'malformed-evidence': 'Evidence was offered and could not be read',
+    'unbound-evidence': 'Evidence is not bound to this transfer',
+    'replayed-evidence': 'Evidence answers a spent challenge',
+    'unverified-evidence': 'The root of trust was never checked',
+    'forged-evidence': 'The chain verifier rejected this evidence',
+    'untrusted-signers': 'The receiver’s signer set is not trusted',
+    'stale-policy-epoch': 'The receiver’s policy epoch is not current',
+    'unapproved-measurement': 'The receiver’s RVM measurement is not approved',
+    'storage-refused': 'The receiver’s storage policy refuses this class',
+    'capability-refused': 'The capability policy refuses this transfer',
+    'attested-and-approved': 'Attested, and granted',
+    'unattested-permitted': 'Unattested, and granted anyway'
+  };
+
+  /** The four preconditions and the authoritative fifth, as headings. */
+  var RULE_LABELS = {
+    'signer-set': 'Signer set',
+    'policy-epoch': 'Policy epoch',
+    'rvm-measurement': 'RVM measurement',
+    'storage-policy': 'Storage policy',
+    'capability': 'Capability grant'
+  };
+
+  function labelFor(table, key, fallback) {
+    if (typeof key !== 'string') return fallback;
+    return table[key] || (fallback === undefined ? key : fallback);
+  }
+
+  /**
+   * The sentence in describeLimits() that names a given fact, verbatim.
+   *
+   * Selected by what it says rather than by its position, because a limit list
+   * that grows a tenth entry must not silently move the privacy disclosure out
+   * from under the control it gates. Returns null when nothing matches, and the
+   * caller treats null as "this cannot be enabled" rather than as "carry on
+   * without it".
+   */
+  function limitNaming(limits, phrase) {
+    var list = Array.isArray(limits) ? limits : [];
+    for (var i = 0; i < list.length; i++) {
+      if (typeof list[i] === 'string' && list[i].indexOf(phrase) >= 0) return list[i];
+    }
+    return null;
+  }
+
+  /**
+   * ADR-021 §4.7's disclosure: attestation evidence identifies a device, often
+   * durably, and a protocol whose selling point includes not associating devices
+   * on a network now has a mechanism that identifies them cryptographically.
+   *
+   * Taken from the module rather than written here, so the wording a user sees
+   * is the wording the code is prepared to defend.
+   */
+  function privacyDisclosure(limits) {
+    return limitNaming(limits, 'identifies a device');
+  }
+
+  /** ADR-021 §2.2, the invariant, in the module's own words. */
+  function separationNote(limits) {
+    return limitNaming(limits, 'evidence, never authorization');
+  }
+
+  /** ADR-021 §2.1's four roots, and what has been done with them: nothing. */
+  function rootsNote(limits) {
+    return limitNaming(limits, 'None of the four roots of trust');
+  }
+
+  /** Why `attested` cannot be reached on this platform, in the module's words. */
+  function reachabilityNote(limits) {
+    return limitNaming(limits, 'injected and absent by default');
+  }
+
+  /**
+   * One row per root of trust, and NEVER a name without its status.
+   *
+   * `available` is derived from the status rather than assumed: only a root
+   * describeRoots() reports as exercised could be offered, and it reports none.
+   * The module's own note is the row's text, so a reader is told what
+   * "unexercised" means here — the name is recognised in a format and the
+   * protocol behind it is not implemented.
+   */
+  function rootRows(roots) {
+    return (Array.isArray(roots) ? roots : []).map(function (r) {
+      var status = typeof r.status === 'string' ? r.status : 'unknown';
+      return {
+        id: r.id,
+        // The label and the status are one string on purpose: a list that put
+        // the status in a column could be read down its first column alone.
+        label: r.label + ' — ' + status,
+        status: status,
+        available: status === 'exercised',
+        text: r.note
+      };
+    });
+  }
+
+  /**
+   * The verdict block: what the device showed, and nothing that resembles a
+   * permission.
+   *
+   * `facts` are published by the verifier only on `attested`, so on every other
+   * state this block is a label and a reason and no measurement at all — which
+   * is the point of the verifier publishing them conditionally, carried through
+   * to the screen.
+   */
+  function verdictBlock(verdict) {
+    if (!verdict || typeof verdict.state !== 'string') {
+      return {
+        title: 'What the device showed',
+        state: null,
+        label: 'Nothing yet — no verdict has been reached',
+        text: 'No evidence has been put through the verifier for this transfer.',
+        facts: [],
+        evidencePresented: false
+      };
+    }
+    // `replayed` covers two different facts: a challenge this sender KNOWS it
+    // already answered, and a replay check that could not be performed at all
+    // because the spent list outgrew what the module will search. Both refuse,
+    // and they are not the same news — one is a recording, the other is a
+    // sender that has lost the ability to tell. `binding.consumedOverflow` is
+    // what separates them, so the heading does too.
+    var label = labelFor(VERDICT_LABELS, verdict.state, verdict.state);
+    if (verdict.state === 'replayed' && verdict.binding && verdict.binding.consumedOverflow) {
+      label = 'Replayed — the replay check could not be performed at all';
+    }
+
+    var facts = [];
+    if (verdict.state === 'attested') {
+      facts.push({ label: 'Root of trust', text: verdict.root });
+      facts.push({ label: 'Device id', text: verdict.deviceId });
+      facts.push({ label: 'RVM measurement', text: verdict.measurement });
+      facts.push({ label: 'Policy epoch', text: String(verdict.policyEpoch) });
+      facts.push({ label: 'Signer set', text: verdict.signerSetId });
+      facts.push({
+        label: 'Storage policy admits',
+        text: (verdict.storageClasses || []).join(', ') || 'nothing'
+      });
+    }
+    return {
+      title: 'What the device showed',
+      state: verdict.state,
+      label: label,
+      text: verdict.reason,
+      facts: facts,
+      evidencePresented: verdict.evidencePresented === true
+    };
+  }
+
+  /**
+   * The decision block: whether this artifact may go to this device.
+   *
+   * Kept structurally apart from the block above rather than merged into a
+   * single outcome, because the two answer different questions and the whole
+   * module exists to stop them being read as one. Every unmet rule is listed,
+   * not only the first: a device failing three of them should say so, since
+   * fixing one will not be enough.
+   */
+  function decisionBlock(decision) {
+    if (!decision || typeof decision.admit !== 'boolean') {
+      return {
+        title: 'What this sender decided',
+        code: null,
+        label: 'Nothing yet — no decision has been taken',
+        text: 'No transfer has been put to the capability policy.',
+        admit: false,
+        unmet: [],
+        subject: null,
+        identitySource: null
+      };
+    }
+    return {
+      title: 'What this sender decided',
+      code: decision.code,
+      label: labelFor(DECISION_LABELS, decision.code, decision.code),
+      text: decision.reason,
+      admit: decision.admit === true,
+      unmet: (decision.unmet || []).map(function (u) {
+        return { label: labelFor(RULE_LABELS, u.rule, u.rule), text: u.reason };
+      }),
+      subject: decision.subject === undefined ? null : decision.subject,
+      identitySource: decision.identitySource === undefined ? null : decision.identitySource
+    };
+  }
+
+  /**
+   * Which identity a grant was matched against, said out loud.
+   *
+   * An attested device id and a pinned peer key are not the same strength of
+   * claim, and attest.js records which was used rather than letting them read
+   * alike. A panel that dropped that would let a grant matched against a key
+   * still sitting in localStorage look like one matched against measured boot
+   * state.
+   */
+  function identityNote(decision) {
+    if (!decision || !decision.subject) return null;
+    if (decision.identitySource === 'attestation') {
+      return 'Matched against the attested device id ' + decision.subject +
+        ', which is the stronger of the two identities available here.';
+    }
+    if (decision.identitySource === 'peer') {
+      return 'Matched against the pinned peer key ' + decision.subject +
+        ' — ADR-035’s identity, not an attested one. It is a materially weaker binding, ' +
+        'and it is what makes a transfer to an unattested device possible at all.';
+    }
+    return null;
+  }
+
+  /**
+   * @param parts { verdict, decision, receipt, roots, limits, custody }
+   *              — exactly what attest.js returned, unedited
+   * @param opts  { challenge } — the session id and challenge this transfer
+   *              issued, so the panel can say what evidence had to be bound to
+   */
+  function model(parts, opts) {
+    parts = parts || {};
+    opts = opts || {};
+    var limits = Array.isArray(parts.limits) ? parts.limits : [];
+    var privacy = privacyDisclosure(limits);
+
+    var v = verdictBlock(parts.verdict);
+    var d = decisionBlock(parts.decision);
+
+    // The three outcomes of ADR-021 §4.3, told apart by the DECISION's code and
+    // the VERDICT's state together — never by `admit` alone, which is the field
+    // that conflates them.
+    var outcome, tone, badge, headline;
+    if (d.admit && v.state === 'attested') {
+      outcome = 'attested-approved';
+      tone = 'good';
+      badge = 'Attested and approved';
+      headline = 'Attested, and separately granted.';
+    } else if (d.admit) {
+      outcome = 'unattested-permitted';
+      tone = '';
+      badge = 'Unattested — nobody asked';
+      headline = 'Unattested, and permitted because nobody asked.';
+    } else {
+      outcome = 'refused';
+      tone = 'bad';
+      badge = 'Refused';
+      headline = 'Refused: ' + d.label.charAt(0).toLowerCase() + d.label.slice(1) + '.';
+    }
+
+    var summary;
+    if (outcome === 'attested-approved') {
+      summary = 'Two answers, not one: the evidence verified, and the capability policy ' +
+        'grants this artifact to this device. The second is what permitted the transfer.';
+    } else if (outcome === 'unattested-permitted') {
+      summary = 'No evidence was offered and this sender does not require any, so nothing ' +
+        'was verified about this device. The capability grant alone permitted the transfer.';
+    } else {
+      summary = 'Nothing goes to this device on this policy. The verdict and the decision ' +
+        'below say which of the two refused, and why.';
+    }
+
+    var challenge = opts.challenge || null;
+    var challengeNote;
+    if (!challenge || !challenge.sessionId) {
+      challengeNote = 'There is no paired session, so there is nothing for evidence to be ' +
+        'bound to: any evidence presented now names a session this transfer is not, and is ' +
+        'reported as unbound rather than accepted.';
+    } else {
+      challengeNote = 'Evidence has to name session ' + challenge.sessionId +
+        ' and echo challenge ' + challenge.nonce +
+        '. A recording of a genuine attestation is a genuine attestation, so the binding is ' +
+        'the check that matters — and a challenge already answered is refused a second time.';
+    }
+
+    return {
+      outcome: outcome,
+      tone: tone,
+      badge: badge,
+      headline: headline,
+      summary: summary,
+      // The two blocks, separate, in the order they run.
+      verdict: v,
+      decision: d,
+      separationNote: separationNote(limits),
+      identityNote: identityNote(parts.decision),
+      challengeNote: challengeNote,
+      // ADR-021 §4.7: the trade, before the control. A model with no disclosure
+      // cannot enable attestation — see `canDeclare`.
+      privacy: privacy,
+      canDeclare: privacy !== null,
+      roots: rootRows(parts.roots),
+      rootsNote: rootsNote(limits),
+      reachabilityNote: reachabilityNote(limits),
+      custodyNote: parts.custody ? parts.custody.note : null,
+      receiptLine: parts.receipt ? parts.receipt.summary : null,
+      limits: limits
+    };
+  }
+
+  return {
+    VERDICT_LABELS: VERDICT_LABELS,
+    DECISION_LABELS: DECISION_LABELS,
+    RULE_LABELS: RULE_LABELS,
+    limitNaming: limitNaming,
+    privacyDisclosure: privacyDisclosure,
+    separationNote: separationNote,
+    rootsNote: rootsNote,
+    reachabilityNote: reachabilityNote,
+    rootRows: rootRows,
+    verdictBlock: verdictBlock,
+    decisionBlock: decisionBlock,
+    identityNote: identityNote,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
 
@@ -1062,6 +1476,7 @@
   function provenanceLib() { return window.RVQRProvenance || null; }
   function plannerLib() { return window.RVQRPlanner || null; }
   function compressLib() { return window.RVQRCompress || null; }
+  function attestLib() { return window.RVQRAttest || null; }
 
   // The view model above, which this file also defines. Read through a getter
   // for the same reason as the rest: a missing panel is better than a broken
@@ -1070,6 +1485,7 @@
   function deltaChoiceView() { return window.RVQRDeltaChoiceView || null; }
   function transferPlanView() { return window.RVQRTransferPlanView || null; }
   function compressionView() { return window.RVQRCompressionView || null; }
+  function attestationView() { return window.RVQRAttestationView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -2164,6 +2580,12 @@
       pairing.session = r.session;
       pairing.state = null;
       box.appendChild(el('div', 'notice good', pairingNote(r.session)));
+      // A session is the only thing evidence can be bound to, and the peer
+      // fingerprint is the only identity a grant can name, so the attestation
+      // panel was describing a different world one line ago. Re-asked rather
+      // than left stale — and pairing grants nothing on its own, which is what
+      // the re-rendered panel now says.
+      renderAttestation();
     }, function (e) {
       box.textContent = '';
       box.appendChild(el('div', 'notice bad', 'Pairing failed: ' + e.message));
@@ -3162,6 +3584,380 @@
     }
     if (m.sampleNote) box.appendChild(el('p', 'small muted', m.sampleNote));
     box.appendChild(el('p', 'small muted', m.reason));
+  }
+
+  // --- Device attestation ----------------------------------------------------
+  //
+  // ADR-035 lets a receiver say which signer it will accept. ADR-021 is the
+  // other direction — the sender saying which receiver it will send to — and
+  // this is where the page asks it.
+  //
+  // TWO ANSWERS, RENDERED APART. verifyAttestation() returns a verdict about
+  // what the device measured; admitTransfer() decides whether the artifact may
+  // go there. The panel keeps them in separate blocks because ADR-021 §2.2 is
+  // the whole point of the module: a device can be measured, approved and
+  // current and still be the wrong device to send a credential to, and a UI
+  // that printed one merged outcome would commit exactly the error the code is
+  // built to prevent.
+  //
+  // NO CHAIN VERIFIER IS SUPPLIED HERE, AND NONE CAN BE. attest.js takes
+  // `opts.verifyChain` by injection precisely so a caller that HAS a root of
+  // trust can supply one; this repository has none — describeRoots() reports all
+  // four as unexercised — so this call site passes no options at all and every
+  // presented evidence lands on `unverified`, which the gate refuses. Writing a
+  // verifier that returned true would be manufacturing a root of trust in the
+  // one place nobody would look for it. The consequence is stated on screen
+  // rather than left to be discovered: on this platform `attested` is
+  // unreachable, so the attested-and-approved rendering exists, is tested, and
+  // will not appear here.
+  //
+  // WHAT THE OPERATOR ACTUALLY CONTROLS is three things and no more: whether
+  // this sender requires attestation, what class of artifact is being sent, and
+  // whether the paired device holds a grant for that class. The last is the
+  // authoritative one — attestation is an input to it and never a substitute —
+  // and it is a separate control rather than a consequence of the verdict, so
+  // that the authority model is visible in the panel's own shape.
+  //
+  // The policy starts UNDECLARED and an undeclared policy is refused by design.
+  // That is not a broken default: ADR-021 §2.3 says whether unattested is
+  // acceptable is the sender's decision "not a default", so the app declines to
+  // make it on the operator's behalf and says so as its own explained state.
+
+  var attest = {
+    // 'undeclared' | 'require' | 'permit'. Undeclared until someone chooses,
+    // which is the state attest.normalizePolicy refuses rather than resolves.
+    policy: 'undeclared',
+    artifactClass: 'generic',
+    granted: false,
+    // { sessionId, nonce } — the sender's half of the binding. Reissued when the
+    // session changes, because a challenge belongs to a session.
+    challenge: null,
+    // Challenges this sender has already answered. A second presentation of the
+    // same evidence is a recording, ADR-021 §4.5.
+    consumed: []
+  };
+
+  /**
+   * A fresh challenge.
+   *
+   * getRandomValues where the platform has it. The Math.random fallback is
+   * weaker than a nonce should be — a predictable challenge can be answered by
+   * a recording made in advance — and it exists only so a page without
+   * window.crypto degrades to a weak binding rather than to none. It is
+   * unreachable in every browser rvQR supports.
+   */
+  function freshChallenge() {
+    var bytes = new Uint8Array(12);
+    if (window.crypto && window.crypto.getRandomValues) window.crypto.getRandomValues(bytes);
+    else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    return core.toHex(bytes);
+  }
+
+  /**
+   * The session and challenge evidence has to be bound to.
+   *
+   * The session id is the pairing session's, because that is the only session
+   * this app has. WITHOUT A PAIRED SESSION IT IS NULL AND STAYS NULL: inventing
+   * one would give evidence something to match that no handshake established,
+   * and the verifier would report bound where nothing is. Unbound is the honest
+   * answer there, and the panel says why.
+   */
+  function attestChallenge() {
+    var sessionId = pairing.session ? pairing.session.sessionId : null;
+    if (!attest.challenge || attest.challenge.sessionId !== sessionId) {
+      attest.challenge = { sessionId: sessionId, nonce: freshChallenge() };
+    }
+    return attest.challenge;
+  }
+
+  /** The identity a grant is made to when there is no attested device id. */
+  function attestPeerId() {
+    return pairing.session ? pairing.session.peerFingerprint : null;
+  }
+
+  /**
+   * The sender's policy, in attest.js's own shape.
+   *
+   * `requireAttestation` is left OFF THE OBJECT ENTIRELY while undeclared —
+   * `undefined` is what normalizePolicy reads as "this sender has not said",
+   * and writing `false` there would be the app quietly answering a question
+   * ADR-021 §2.3 reserves for the operator.
+   *
+   * The other three fields are empty and honest: this build trusts no signer
+   * set, states no current epoch and approves no measurement, so even with a
+   * root of trust in hand the four preconditions would refuse. They are sent
+   * empty rather than omitted so the refusal comes from the module's own rules
+   * and reaches the screen in the module's own words.
+   */
+  function attestPolicyObject() {
+    var peer = attestPeerId();
+    var policy = {
+      trustedSignerSets: [],
+      minPolicyEpoch: null,
+      approvedMeasurements: [],
+      grants: (attest.granted && peer) ? [{ device: peer, classes: [attest.artifactClass] }] : []
+    };
+    if (attest.policy === 'require') policy.requireAttestation = true;
+    else if (attest.policy === 'permit') policy.requireAttestation = false;
+    return policy;
+  }
+
+  function attestRequest() {
+    return {
+      artifactClass: attest.artifactClass,
+      peerId: attestPeerId(),
+      name: send.record ? send.record.name : null
+    };
+  }
+
+  /**
+   * Whatever the other device offered, as it arrived.
+   *
+   * Empty means no evidence, which is `unattested` — a state and not a failure.
+   * Text that is not JSON is NOT treated as empty: it is evidence that was
+   * offered and could not be read, so the raw string goes to the verifier and
+   * comes back malformed. A device that tried and failed is not a device that
+   * never tried, and collapsing the two would lose the distinction ADR-021 §2.3
+   * exists to keep.
+   */
+  function attestEvidenceValue() {
+    var text = $('attestEvidence').value.trim();
+    if (!text) return null;
+    try { return JSON.parse(text); } catch (e) { return text; }
+  }
+
+  /**
+   * What the reader made of the pasted text, at the input where it can be fixed.
+   *
+   * parseEvidence() names the field that stopped it — a measurement that is not
+   * even-length lowercase hex says so, rather than the operator being told
+   * "malformed" and guessing. Deliberately echoes NONE of the device's claims:
+   * readable is not verified, and printing a device id here would put an
+   * unchecked claim on screen in the shape of a fact.
+   */
+  function attestEvidenceNote() {
+    var A = attestLib();
+    var raw = attestEvidenceValue();
+    if (!A) return 'The attestation module did not load, so nothing can read this.';
+    if (raw === null) {
+      return 'Nothing pasted. A device that offers no evidence is unattested, which is a ' +
+        'state and not a failure — whether it is acceptable is the policy above.';
+    }
+    var parsed = A.parseEvidence(raw);
+    if (parsed.ok) {
+      return 'Readable as evidence. Readable is not verified: nothing in this build checks ' +
+        'the root of trust behind it, so the verdict below will say so.';
+    }
+    return 'Not readable as evidence — ' + parsed.reason + '. That is refused as malformed ' +
+      'rather than treated as absent.';
+  }
+
+  /**
+   * The verdict, the decision and the receipt, from the real module.
+   *
+   * `consume` spends the challenge when evidence actually answered it, so a
+   * second presentation of the same recording comes back `replayed`. Only the
+   * explicit check spends one; re-rendering after a settings change must not
+   * burn a challenge nobody presented evidence against.
+   */
+  function runAttestation(consume) {
+    var A = attestLib();
+    if (!A) return null;
+    var challenge = attestChallenge();
+    var evidence = attestEvidenceValue();
+
+    // No third argument. See the section note: injecting a verifier this
+    // repository does not have is the one thing this call site must not do.
+    var verdict = A.verifyAttestation(evidence, {
+      sessionId: challenge.sessionId,
+      nonce: challenge.nonce,
+      consumedNonces: attest.consumed
+    });
+
+    if (consume && verdict.binding && verdict.binding.nonceMatched && !verdict.binding.consumed) {
+      attest.consumed.push(challenge.nonce);
+    }
+
+    var policy = attestPolicyObject();
+    var decision = A.admitTransfer(policy, verdict, attestRequest());
+    return {
+      verdict: verdict,
+      decision: decision,
+      receipt: A.attestationReceipt(verdict, decision, policy),
+      roots: A.describeRoots(),
+      limits: A.describeLimits(),
+      custody: A.describeKeyCustody()
+    };
+  }
+
+  /** What the policy setting means, including that undeclared refuses. */
+  function renderAttestPolicyNote() {
+    var note = $('attestPolicyNote');
+    if (!attestLib()) {
+      note.textContent = 'The attestation module did not load, so this sender cannot declare ' +
+        'a policy at all — and a policy recorded here that nothing enforces would be worse ' +
+        'than none.';
+      return;
+    }
+    if (attest.policy === 'require') {
+      note.textContent = 'A device that offers no evidence is refused. Nothing in this build ' +
+        'can produce evidence that verifies, so this setting refuses every transfer — which ' +
+        'is what requiring attestation on a platform with no root of trust actually means.';
+      return;
+    }
+    if (attest.policy === 'permit') {
+      note.textContent = 'An unattested device may receive — if the capability policy grants ' +
+        'it. Relaxing the evidence bar is not relaxing the authority model, so the grant below ' +
+        'is still checked.';
+      return;
+    }
+    note.textContent = 'Not stated, and nothing decides it for you. Every transfer is refused ' +
+      'as policy-undeclared until this sender chooses, because ADR-021 makes this the sender’s ' +
+      'decision rather than a default.';
+  }
+
+  function renderAttestClassNote() {
+    $('attestClassNote').textContent = 'A grant is made for a class, and the receiver’s own ' +
+      'storage policy is asked about the same class. An artifact of no class is refused by ' +
+      'both, so “generic” is a class and not the absence of one.';
+  }
+
+  /** Who a grant would be made to, and why there may be nobody. */
+  function renderAttestGrantNote() {
+    var note = $('attestGrantNote');
+    var box = $('attestGrant');
+    var peer = attestPeerId();
+    box.disabled = !peer || !attestLib();
+    if (!attestLib()) {
+      note.textContent = 'The attestation module did not load, so no capability decision is made here.';
+      return;
+    }
+    if (!peer) {
+      note.textContent = 'No paired device, so there is no identity to grant to. A grant is ' +
+        'made to an identity rather than to a link — pair in the step above, or leave this ' +
+        'transfer the broadcast it is.';
+      return;
+    }
+    note.textContent = attest.granted
+      ? 'Granted to ' + peer + ', the pinned peer key from the pairing above. That key still ' +
+        'lives in localStorage, so it is a weaker binding than an attested device id would be.'
+      : 'Not granted. ' + peer + ' is paired, and pairing is not permission: the capability ' +
+        'policy is the authoritative check and it refuses by default.';
+  }
+
+  /**
+   * The panel: the three outcomes, the two blocks, the four unexercised roots.
+   *
+   * Rendered on every change, including the ones that produce a refusal, and
+   * never folded away — a refusal nobody sees is the same as a module nobody
+   * called, which is the state this whole increment exists to leave.
+   */
+  function renderAttestation(consume) {
+    var privacyBox = $('attestPrivacy');
+    var box = $('attestResult');
+    var rootsBox = $('attestRoots');
+    privacyBox.textContent = '';
+    box.textContent = '';
+    rootsBox.textContent = '';
+
+    renderAttestPolicyNote();
+    renderAttestClassNote();
+    renderAttestGrantNote();
+
+    var view = attestationView();
+    var parts = runAttestation(consume === true);
+    var m = (view && parts) ? view.model(parts, { challenge: attestChallenge() }) : null;
+
+    if (!m) {
+      // No module, no panel, and NO CONTROL EITHER. A policy picker that
+      // recorded a decision nothing enforces would be the app claiming a
+      // sender's say it cannot exercise.
+      privacyBox.className = 'notice bad';
+      privacyBox.textContent = 'The attestation module did not load, so nothing here can ask ' +
+        'what the receiving device measured about itself — and attestation cannot be enabled. ' +
+        'Every transfer is the broadcast it has always been.';
+      $('attestPolicyPick').disabled = true;
+      $('attestClassPick').disabled = true;
+      $('attestEvidence').disabled = true;
+      $('attestCheckBtn').disabled = true;
+      return;
+    }
+
+    // ADR-021 §4.7. Rendered BEFORE the controls in the document, and the
+    // controls are enabled only because it rendered: the disclosure gates the
+    // feature rather than merely preceding it.
+    privacyBox.className = 'notice';
+    privacyBox.appendChild(el('strong', '', 'Before you turn this on. '));
+    privacyBox.appendChild(document.createTextNode(m.privacy));
+    $('attestPolicyPick').disabled = !m.canDeclare;
+    $('attestClassPick').disabled = !m.canDeclare;
+    $('attestEvidence').disabled = !m.canDeclare;
+    $('attestCheckBtn').disabled = !m.canDeclare;
+
+    // The outcome, in three visually distinct forms: a green notice, a plain
+    // amber one and a red one, each with its own badge and its own sentence.
+    var n = el('div', m.tone ? 'notice ' + m.tone : 'notice');
+    n.appendChild(el('strong', '', m.badge + ' — '));
+    n.appendChild(document.createTextNode(m.headline + ' ' + m.summary));
+    box.appendChild(n);
+
+    // What the reader made of the pasted text, directly under the box it was
+    // pasted into, naming the field that stopped it rather than leaving the
+    // operator to guess at "malformed".
+    box.appendChild(el('p', 'small muted', attestEvidenceNote()));
+
+    // Block one: what the device showed. A fact about a device.
+    box.appendChild(el('p', 'small', m.verdict.title));
+    var vl = el('dl', 'kv');
+    vl.appendChild(el('dt', '', m.verdict.label));
+    vl.appendChild(el('dd', '', m.verdict.text));
+    m.verdict.facts.forEach(function (f) {
+      vl.appendChild(el('dt', '', f.label));
+      vl.appendChild(el('dd', 'muted', f.text));
+    });
+    box.appendChild(vl);
+
+    // The invariant, between the two blocks, where the eye crosses from one to
+    // the other. attest.js's own sentence, verbatim.
+    if (m.separationNote) box.appendChild(el('p', 'small muted', m.separationNote));
+
+    // Block two: what this sender decided. A decision about a transfer.
+    box.appendChild(el('p', 'small', m.decision.title));
+    var dl = el('dl', 'kv');
+    dl.appendChild(el('dt', '', m.decision.label));
+    dl.appendChild(el('dd', '', m.decision.text));
+    box.appendChild(dl);
+
+    // Every unmet rule, not only the first: fixing one will not be enough.
+    if (m.decision.unmet.length) {
+      box.appendChild(el('p', 'small', 'What was not met'));
+      var ul = el('dl', 'kv');
+      m.decision.unmet.forEach(function (row) {
+        ul.appendChild(el('dt', '', row.label));
+        ul.appendChild(el('dd', 'muted', row.text));
+      });
+      box.appendChild(ul);
+    }
+
+    if (m.identityNote) box.appendChild(el('p', 'small muted', m.identityNote));
+    box.appendChild(el('p', 'small muted', m.challengeNote));
+    if (m.receiptLine) {
+      box.appendChild(el('p', 'small muted', 'For the receipt: ' + m.receiptLine));
+    }
+
+    // The four roots, each with its status attached to its name. There is no
+    // picker of roots anywhere on this page, because every one of them is
+    // unexercised and offering one would be a claim the code disclaims.
+    rootsBox.appendChild(el('p', 'small', 'Roots of trust'));
+    if (m.rootsNote) rootsBox.appendChild(el('p', 'small muted', m.rootsNote));
+    var rl = el('dl', 'kv');
+    m.roots.forEach(function (row) {
+      rl.appendChild(el('dt', '', row.label));
+      rl.appendChild(el('dd', 'muted', row.text));
+    });
+    rootsBox.appendChild(rl);
+    if (m.reachabilityNote) rootsBox.appendChild(el('p', 'small muted', m.reachabilityNote));
+    if (m.custodyNote) rootsBox.appendChild(el('p', 'small muted', m.custodyNote));
   }
 
   function startSend(id, overrideBytes, overrideName) {
@@ -4868,6 +5664,11 @@
         $('sendStageCard').hidden = true;
         $('compressCard').hidden = true;
       }
+      // The attestation decision names the artifact it is about, so a different
+      // artifact is a different decision. The card itself is never hidden: the
+      // privacy disclosure and the four unexercised roots are facts about this
+      // build rather than about whatever is in the picker.
+      renderAttestation();
     });
     $('playBtn').addEventListener('click', function () { play(!send.playing); });
     $('restartBtn').addEventListener('click', function () { drawFrame(0); play(true); });
@@ -4929,6 +5730,35 @@
       send.sign = !!e.target.checked;
       renderSignNote();
       if (send.record) startSend(send.record.id);
+    });
+
+    // --- attestation ---
+    // Every one of these changes the question, so every one re-asks it. None of
+    // them spends the challenge: only presenting evidence does that, and a
+    // challenge burned by a settings change would report a recording where
+    // nobody recorded anything.
+    $('attestPolicyPick').addEventListener('change', function (e) {
+      attest.policy = e.target.value === 'require' ? 'require'
+        : e.target.value === 'permit' ? 'permit' : 'undeclared';
+      renderAttestation();
+    });
+    $('attestClassPick').addEventListener('change', function (e) {
+      var A = attestLib();
+      var classes = A ? A.ARTIFACT_CLASSES : ['generic'];
+      // A class the module does not know is refused where it is read, so it is
+      // never carried as an opaque string that later compares equal to
+      // something. The picker offers only the module's own list.
+      attest.artifactClass = classes.indexOf(e.target.value) >= 0 ? e.target.value : 'generic';
+      renderAttestation();
+    });
+    $('attestGrant').addEventListener('change', function (e) {
+      attest.granted = !!e.target.checked;
+      renderAttestation();
+    });
+    $('attestCheckBtn').addEventListener('click', function () {
+      // The one path that consumes a challenge: evidence has been presented
+      // against it, so a second presentation of the same recording is refused.
+      renderAttestation(true);
     });
 
     // --- delta ---
@@ -5096,6 +5926,13 @@
     renderModeNote();
     renderSignNote();
     renderRadioNote();
+    // The attestation panel is painted here, on load, and not lazily when
+    // somebody opens something: ADR-021 §4.7 wants the privacy trade visible
+    // BEFORE attestation is enabled, and a disclosure that appears only once the
+    // operator has started using the feature is a disclosure that came too late.
+    // renderAttestation() is also what disables the controls when attest.js is
+    // absent, so it has to run whether the module arrived or not.
+    renderAttestation();
     offerResume();
     // The radio policy exists to constrain the planner. Without planner.js
     // there is nothing to constrain, so the control is removed rather than left

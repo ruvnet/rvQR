@@ -9,7 +9,7 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory, semdelta, planner.
+ *         fleet, closures, memory, semdelta, planner, attest.
  *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
@@ -49,6 +49,7 @@ import { runClosureSuite, closureProfiles, FIRST_CLOSURE_TARGET_SECONDS } from '
 import { runMemorySuite } from './suites/memory.mjs';
 import { runSemDeltaSuite } from './suites/semdelta.mjs';
 import { runPlannerSuite } from './suites/planner.mjs';
+import { runAttestSuite } from './suites/attest.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -2039,6 +2040,403 @@ function printPlannerSuite(res) {
   say('');
 }
 
+function printAttestSuite(res) {
+  say('### Device attestation: the gate that decides, and the hardware it has never touched');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+
+  // The disclaimer comes first, before any number, because a reader who takes
+  // the tables below for hardware attestation has been misled by this report
+  // and not by the module — `attest.js` says the same thing in its own docblock.
+  const unexercised = res.roots.filter((r) => r.status === 'unexercised');
+  say(
+    `**No root of trust is exercised anywhere in this suite, and none exists in this repository.** ` +
+      `\`describeRoots()\` reports ${unexercised.length} of ${res.roots.length} as \`unexercised\` — ` +
+      res.roots.map((r) => `${r.label} (\`${r.status}\`)`).join(', ') +
+      '. So this section measures the **verdict-and-gate logic** and nothing at all about real ' +
+      'hardware attestation. Wherever a chain verifier is needed below it is an ' +
+      `**${res.chainVerifier}**, and every table built with one says so in the table. ` +
+      'On this platform, today, the `attested` state is unreachable without a verifier nothing here has.'
+  );
+  say('');
+  say(
+    `The signing identity has not moved either: \`describeKeyCustody()\` reports the key in ` +
+      `\`${res.keyCustody.store}\` under \`${res.keyCustody.key}\`, readable by page script ` +
+      `(\`hardwareBacked: ${res.keyCustody.hardwareBacked}\`, \`demonstrated: ${res.keyCustody.demonstrated}\`), ` +
+      `so ADR-035 is **not** superseded. This environment ` +
+      (res.hardwareKeys.webAuthnPresent
+        ? 'does expose WebAuthn, which is an API being present and not a key having signed anything'
+        : 'exposes no WebAuthn at all') +
+      `, and nothing in the module reads that result.`
+  );
+  say('');
+
+  say(
+    `Driving ${path.relative(REPO_ROOT, res.path)} end to end — ${res.exports} exports, ` +
+      `${res.states.length} attestation states, ${res.artifactClasses.length} artifact classes. ` +
+      'Every verdict in the matrix below is produced by handing real evidence to the real ' +
+      '`verifyAttestation`; none is written by hand. Measurements in the fixtures are lowercase hex of ' +
+      'even length, because `parseEvidence` refuses anything else as malformed.'
+  );
+  say('');
+
+  say(
+    '**The state matrix.** Every state the module defines, against a policy that requires attestation ' +
+      'and one that does not. The capability grant covers both identities in both columns, so the only ' +
+      'thing varying across a row is the evidence bar:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['state', 'how it was reached', 'stub verifier', 'facts published', 'requiring policy → code', 'admits?', 'permitting policy → code', 'admits?'],
+      res.verdicts.map((v) => {
+        const strict = v.cells.find((c) => c.policy === 'requires');
+        const lax = v.cells.find((c) => c.policy === 'permits');
+        return [
+          `\`${v.state}\`${v.reachedIntendedState ? '' : ' **(recipe missed)**'}`,
+          v.how,
+          v.stub ? `yes, ${v.stub}` : 'none',
+          v.publishesFacts ? 'yes' : 'no',
+          `\`${strict.code}\``,
+          strict.admit ? '**YES**' : 'no',
+          `\`${lax.code}\``,
+          lax.admit ? '**yes**' : 'no'
+        ];
+      })
+    )
+  );
+  say('');
+  const missed = res.verdicts.filter((v) => !v.reachedIntendedState);
+  say(
+    (missed.length
+      ? `**${missed.length} recipe(s) did not reach the state they were built to reach — ` +
+        `${missed.map((v) => v.state).join(', ')} — so those rows measure something other than what they name.**`
+      : `All ${res.verdicts.length} recipes reached the state they were built to reach, so every row ` +
+        'measures the state it names.') +
+      ' ' +
+      (res.wrongAdmissions.length
+        ? `**${res.wrongAdmissions.length} cell(s) admit a non-attested state under a policy that ` +
+          `requires attestation: ${res.wrongAdmissions.map((w) => `${w.state} → ${w.code}`).join(', ')}. ` +
+          'That is a defect and it is reported here rather than fixed by adjusting the fixture.**'
+        : 'No cell admits a non-attested state under a policy that requires attestation, which is the ' +
+          'property the whole matrix exists to test.')
+  );
+  say('');
+  say(
+    '**The `attested` row is the only one that publishes the measured facts**, and that is the ' +
+      'information barrier rather than a convention: `measurement`, `policyEpoch`, `signerSetId` and ' +
+      '`storageClasses` are null on every other state, so a device\'s own claims cannot reach a policy ' +
+      'comparison through any ordering mistake in the gate — there is no such field on the object to ' +
+      'compare.'
+  );
+  say('');
+  say(
+    (res.downgrade.kept
+      ? '**Malformed evidence is refused rather than treated as absent**, which is the cell that ' +
+        'prevents a downgrade: under the permitting policy `unattested` admits with ' +
+        `\`${res.downgrade.unattestedCode}\` and \`malformed\` refuses with ` +
+        `\`${res.downgrade.malformedCode}\`. A device that could reach the unattested path by sending ` +
+        'garbage would have found the widest permission in the system by making its evidence worse.'
+      : '**Malformed and absent evidence are NOT kept apart under a permitting policy** — malformed ' +
+        `${res.downgrade.malformedAdmitted ? 'admits' : 'refuses'} and unattested ` +
+        `${res.downgrade.unattestedAdmitted ? 'admits' : 'refuses'}, so a device can change its ` +
+        'treatment by corrupting its own evidence.')
+  );
+  say('');
+
+  say(
+    '**The separation, quantified.** ADR-021 §2.2 says attestation is evidence and never ' +
+      'authorization. Here that is counted rather than asserted: every state crossed with every policy ' +
+      'and three grant shapes. `full` grants both identities for the requested class, `other-class` ' +
+      'grants both for a different class, `none` grants nothing:'
+  );
+  say('');
+  const grantIds = ['full', 'other-class', 'none'];
+  say(
+    markdownTable(
+      ['state', 'policy', ...grantIds.map((g) => `grant: ${g}`)],
+      res.verdicts.flatMap((v) =>
+        ['requires', 'permits'].map((p) => [
+          `\`${v.state}\``,
+          p,
+          ...grantIds.map((g) => {
+            const c = res.combos.find((x) => x.state === v.state && x.policy === p && x.grant === g);
+            if (!c) return '—';
+            if (c.outcome === 'threw') return '**THREW**';
+            return c.admit ? `**admit** (\`${c.code}\`)` : `refuse (\`${c.code}\`)`;
+          })
+        ])
+      )
+    )
+  );
+  say('');
+  const s = res.separation;
+  say(
+    `**${s.admitted} of ${s.total} combinations admit and ${s.refused} refuse**` +
+      (s.threw ? `, and ${s.threw} threw` : ', and none threw') +
+      '. ' +
+      (s.attestedUngrantedAdmitted === 0
+        ? `**Not one of the ${s.attestedUngranted} combinations carrying a valid attestation without a ` +
+          `covering grant is admitted**, and every one of them refuses with ` +
+          s.ungrantedCodes.map((c) => `\`${c}\``).join(' or ') +
+          ' — the capability code, not a measurement or an epoch code, so the refusal is the capability ' +
+          'rule and not another rule reaching the same answer first.'
+        : `**${s.attestedUngrantedAdmitted} of ${s.attestedUngranted} combinations carrying a valid ` +
+          'attestation without a covering grant were ADMITTED. That is the exact failure ADR-021 §2.2 ' +
+          'forbids.**') +
+      ` And the control: the same attested verdict with the grant restored is admitted in ` +
+      `${s.controlAdmitted} of ${s.controlTotal} cases. Without that column the refusals above could ` +
+      'have been caused by anything at all.'
+  );
+  say('');
+  say(
+    'The admitting combinations, in full: ' +
+      (s.admittedCombinations.length
+        ? s.admittedCombinations
+            .map((c) => `\`${c.state}\` + ${c.policy} + ${c.grant} → \`${c.code}\``)
+            .join('; ')
+        : 'none') +
+      '. Two states admit and no others, and both of them go through the capability check to get there ' +
+      '— `unattested` included, because a sender that does not require attestation has relaxed its ' +
+      'evidence bar and not its authority model.'
+  );
+  say('');
+  say(
+    '**Which identity the grant was matched against**, read back off the decision rather than assumed. ' +
+      'ADR-021 §2.3 is explicit that the two are not equivalent — an attested device id is a claim the ' +
+      'device made about itself and had checked, a pinned peer id rests on a key that still lives in ' +
+      '`localStorage` — so the decision and the receipt name which was used instead of letting them ' +
+      'read alike:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['admitting path', 'subject matched', 'identity source', 'receipt: sender required attestation', 'receipt summary'],
+      res.identity.map((i) => [
+        `\`${i.state}\` under a policy that ${i.policy === 'requires' ? 'requires' : 'permits'}`,
+        `\`${i.subject}\``,
+        `**${i.identitySource}**`,
+        String(i.receiptSenderRequired),
+        i.receiptSummary
+      ])
+    )
+  );
+  say('');
+  const pi = res.peerIgnoredWhenAttested;
+  say(
+    '**On the attested path the peer id is not read at all**, which is worth stating because it decides ' +
+      'what a malformed-peer test can measure: an attested verdict with `peerId` absent is ' +
+      `${pi.absentAdmitted ? 'admitted' : 'refused'} and one with \`peerId: '../../etc'\` is ` +
+      `${pi.hostileAdmitted ? 'admitted' : 'refused'}, both matched against \`${pi.absentSubject}\` by ` +
+      `**${pi.absentIdentitySource}**. Corrupting a field nobody reads measures nothing, so the two ` +
+      'peer cases in the fail-closed table below run against the *unattested* verdict, where the peer ' +
+      'id is the only identity there is.'
+  );
+  say('');
+
+  const c = res.coverage;
+  say(
+    `**Fail-closed coverage.** ${c.total} malformed or under-specified inputs — absent fields, wrong ` +
+      'types, oversized fields, states that do not exist, verdicts a caller fabricated, and policies ' +
+      'that declared nothing. Three outcomes are counted and not two, because a security path that ' +
+      'throws is as broken as one that admits:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['group', 'cases', 'refused under both policies', 'admitted', 'threw'],
+      ['malformed evidence', 'fabricated verdict', 'policy or request shape'].map((group) => {
+        const rows = res.failClosed.filter((r) => r.group === group);
+        const ref = rows.filter((r) => r.strictOutcome === 'refused' && r.laxOutcome === 'refused');
+        const adm = rows.filter((r) => r.strictOutcome === 'admitted' || r.laxOutcome === 'admitted');
+        const thr = rows.filter((r) => r.strictOutcome === 'threw' || r.laxOutcome === 'threw' || r.parseThrew || r.verifyThrew);
+        return [
+          group,
+          String(rows.length),
+          `${ref.length} (${fmt((ref.length / rows.length) * 100, 1)}%)`,
+          adm.length ? `**${adm.length}**` : '0',
+          thr.length ? `**${thr.length}**` : '0'
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    `**${c.refusedUnderBoth} of ${c.total} malformed inputs — ${fmt(c.fraction * 100, 1)}% — produce a ` +
+      'refusal rather than a throw or an admission.** ' +
+      (c.admitted
+        ? `**${c.admitted} ${c.admitted === 1 ? 'was' : 'were'} admitted: ${c.admittedNames.join(', ')}` +
+          ' — dealt with below rather than left in a percentage.**'
+        : 'None was admitted.') +
+      ' ' +
+      (c.threw ? `**${c.threw} threw: ${c.threwNames.join(', ')}.**` : 'None threw.') +
+      ' `parseEvidence` is documented never to throw on hostile input; over these cases it ' +
+      `${c.parseNeverThrew ? 'never did' : '**did**'}, and it accepted ` +
+      `${c.parseAlwaysRefused ? 'none of them' : '**at least one**'}. Every malformed blob landed on ` +
+      `\`malformed\`${c.allMalformedState ? '' : ' **except at least one, which did not**'} rather than ` +
+      'on `unattested`.'
+  );
+  say('');
+  const fa = res.fabricatedAttested;
+  say(
+    '**The one admission, and it is the most interesting result in this section.** A verdict object a ' +
+      'caller wrote by hand — `state: "attested"` with every measured fact filled in and ' +
+      `\`chainVerified: ${JSON.stringify(fa.chainVerifiedOnAdmittedVerdict)}\` — is ` +
+      (fa.withFactsAdmitted
+        ? `**admitted**, with code \`${fa.withFactsCode}\`. `
+        : `refused with \`${fa.withFactsCode}\`. `) +
+      'The same fabrication *without* the facts is ' +
+      (fa.withoutFactsAdmitted
+        ? 'also admitted, so the barrier does no work at all here.'
+        : `refused with \`${fa.withoutFactsCode}\`, which is where the structural barrier does its ` +
+          'work: the four preconditions read facts that are not there and report them unmet, so a ' +
+          'caller who copied only the state field gets nothing.')
+  );
+  say('');
+  say(
+    'That pair is the exact boundary of the claim `attest.js` makes for itself, and the claim survives ' +
+      'it. The gate cannot be fed raw **claims** — the verifier publishes a measurement only on ' +
+      '`attested`, so no ordering mistake inside `admitTransfer` can reach one, which is what its ' +
+      'docblock says and what the state matrix above confirms. What the gate cannot do is tell a ' +
+      'verdict its verifier produced from an object someone constructed: nothing on a verdict is ' +
+      'authenticated, and there is no field on it that could be. ' +
+      `\`chainVerified: ${JSON.stringify(fa.chainVerifiedOnAdmittedVerdict)}\` beside ` +
+      '`state: "attested"` is a pair the real verifier can never emit — it sets `chainVerified: true` ' +
+      'on exactly that state — and the gate does not check the pairing. ' +
+      (fa.receiptChainVerified === null
+        ? '**And the receipt records the inconsistency rather than hiding it**: `chainVerified` comes ' +
+          'through as `null` on an admitted transfer, so an auditor reading the receipt can see that ' +
+          'nothing verified a chain even though the decision says attested-and-approved.'
+        : '**The receipt does not surface the inconsistency**, so the admission is not detectable after ' +
+          'the fact either.') +
+      ' This is a property of the trust boundary rather than a defect inside it — `admitTransfer` is ' +
+      'documented as taking a verdict and nothing else — but it is the property a caller most needs to ' +
+      'know, and it is the reason the verifier and the gate have to be reached through one code path ' +
+      'rather than two.'
+  );
+  say('');
+  const pendingRows = res.failClosed.filter((r) => r.strictCode === 'pending');
+  say(
+    'One distinction in that group is easy to miss and matters to a caller: a **falsy** state — `\'\'`, ' +
+      `and a verdict with no state field at all — is refused as \`pending\` rather than as ` +
+      `\`unknown-attestation-state\`, because the gate's first test is \`!verdict.state\`. ` +
+      `${pendingRows.length} of the fabricated verdicts land there. Both codes refuse, so nothing is ` +
+      'admitted either way, but they mean opposite things to a caller acting on the code: `pending` ' +
+      'invites a retry when the check completes and `unknown-attestation-state` is final.'
+  );
+  say('');
+  say(
+    '**An undeclared policy is refused by design, and that is the rule most likely to be mistaken for ' +
+      'a bug.** ADR-021 §2.3 makes whether an unattested device is acceptable the sender\'s decision ' +
+      `"not a default", so a policy that has not said is refused with \`policy-undeclared\` — which ` +
+      `happened for ${c.undeclaredRefused.length} of the policy-shape cases here: ` +
+      c.undeclaredRefused.join(', ') +
+      '. Both truthy-but-not-`true` spellings are in that list, which is the shape a policy loaded ' +
+      'from JSON or a form field arrives in.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['group', 'case', 'what it is', 'state reached', 'requiring policy', 'permitting policy'],
+      res.failClosed.map((r) => [
+        r.group,
+        r.name,
+        r.what,
+        r.state ? `\`${r.state}\`` : '—',
+        r.strictOutcome === 'refused' ? `refuse (\`${r.strictCode}\`)` : `**${r.strictOutcome.toUpperCase()}**`,
+        r.laxOutcome === 'refused' ? `refuse (\`${r.laxCode}\`)` : `**${r.laxOutcome.toUpperCase()}**`
+      ])
+    )
+  );
+  say('');
+  say(
+    '**A chain verifier that fails is a check that did not happen.** Injecting one that throws yields ' +
+      `\`${res.verifierFailure.state}\`` +
+      (res.verifierFailure.isRefusingState
+        ? ' — a refusing state, never `unattested` and never a pass. That distinction is the whole of ' +
+          'the difference between an error and a feature being off, and it is the defect ADR-035 §2.2 ' +
+          'records one layer down.'
+        : ' — **which is not the refusing state it should be.**') +
+      ' A verifier returning something that is neither `true` nor `false` is treated the same way: ' +
+      res.oddVerifier.map((o) => `\`${o.answer}\` → \`${o.state}\``).join(', ') +
+      `, ${res.oddVerifier.every((o) => o.refusing) ? 'all of them refusing' : '**not all of them refusing**'}.`
+  );
+  say('');
+  const n = res.oversizedNonceList;
+  say(
+    `**The consumed-nonce ceiling is a correctness boundary, not only a cost one.** The list is capped ` +
+      `at ${n.ceiling.toLocaleString('en-US')} entries and sliced, so a nonce past the cut is a nonce ` +
+      `the replay check never sees: the same challenge yields \`${n.pastTheCutState}\` when it sits past ` +
+      `the ceiling and \`${n.withinTheCutState}\` when it sits inside it. ` +
+      (n.cutIsVisible
+        ? '**A sender that lets its consumed list grow past the ceiling stops detecting replays of ' +
+          'anything it consumed early**, which is a property of the bound rather than a defect in it — ' +
+          'but it is a property a caller has to know, and the module does not say it.'
+        : 'The two agree, so the ceiling is not observable here.')
+  );
+  say('');
+
+  const k = res.cost;
+  say(
+    `**What deciding costs.** Per-call figures are the mean within a batch of ${k.batch.toLocaleString('en-US')} ` +
+      `calls and the median across ${k.reps} batches — batched because these run in single-digit ` +
+      'microseconds and a clock read costs tens of nanoseconds, so timing one call at a time would fold ' +
+      'timer overhead into every figure:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['function', 'p50', 'p95', 'min', 'max'],
+      [
+        ['`parseEvidence` (well-formed)', k.parseEvidence],
+        ['`verifyAttestation` → attested (stub verifier)', k.verifyAttested],
+        ['`verifyAttestation` → unattested (no evidence)', k.verifyUnattested],
+        ['`admitTransfer` (attested, four preconditions, grant table)', k.admitTransfer],
+        ['`attestationReceipt`', k.attestationReceipt]
+      ].map(([label, st]) => [
+        label,
+        `${fmt(st.p50, 3)} µs`,
+        `${fmt(st.p95, 3)} µs`,
+        `${fmt(st.min, 3)} µs`,
+        `${fmt(st.max, 3)} µs`
+      ])
+    )
+  );
+  say('');
+  // One anchor, and a round one, so the claim is checkable by hand. This suite
+  // measures no transfer, so quoting a transfer range from another suite here
+  // would be borrowing a number the harness cannot produce at this point in the
+  // run; the report's own transfer sections supply the range around this anchor.
+  const anchorSeconds = 1;
+  const orders = Math.floor(Math.log10(anchorSeconds / (k.perTransferUs / 1e6)));
+  say(
+    `One transfer pays all three once: **${fmt(k.perTransferUs, 2)} µs**, which is ` +
+      `${Math.round(k.decisionsPerFramePeriod).toLocaleString('en-US')} decisions inside a single ` +
+      `${k.framePeriodMs} ms frame period at the app's default 5 fps. Against a transfer of ` +
+      `${anchorSeconds} second the gate is **${orders} orders of magnitude cheaper than the transfer ` +
+      'it gates**, and every real transfer is longer than that, so the ratio only grows. That is the ' +
+      'claim these numbers support; "negligible" on its own is not. The 5 fps is a configured constant ' +
+      'of this application and not a measurement, and the microseconds are of this machine and this ' +
+      'run — the `--quick` batch size moves them by a factor of three.'
+  );
+  say('');
+  say(
+    '**What this suite does not establish.** It says nothing about DICE, TPM 2.0, Secure Enclave or ' +
+      'Android hardware-backed keys, because it runs none of them and neither does anything else in ' +
+      'this repository. It says nothing about whether a real device would produce evidence this format ' +
+      'can carry. Binding is checked here as a field comparison, exactly as the module checks it — in a ' +
+      'real root of trust the nonce is inside the signed quote, so binding and chain verification are ' +
+      'one check and not two, and that is precisely the part that is unexercised. What the tables above ' +
+      'establish is narrower and worth having on its own: that the decision procedure refuses in every ' +
+      'state it should, that no evidence buys an ungranted transfer, and that it costs microseconds.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 // Asynchronous solely because one measurement is: the browser's own
@@ -2380,6 +2778,19 @@ async function main() {
       reps: args.quick ? 1 : 9
     });
     printPlannerSuite(results.planner);
+  }
+
+  if (want('attest')) {
+    say('---');
+    say('');
+    // Batched rather than trial-counted: these are microsecond-scale pure
+    // functions, so the harness's --trials knob is the wrong dial and --quick
+    // moves the batch instead.
+    results.attest = runAttestSuite({
+      batch: args.quick ? 200 : 2000,
+      reps: args.quick ? 5 : 25
+    });
+    printAttestSuite(results.attest);
   }
 
   if (args.json) {

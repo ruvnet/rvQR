@@ -35,6 +35,12 @@
       try { mods.semdelta = require('./semdelta.js'); } catch (e) { /* optional */ }
       try { mods.planner = require('./planner.js'); } catch (e) { /* optional */ }
       try { mods.compress = require('./compress.js'); } catch (e) { /* optional */ }
+      // The attestation panel is asserted against the REAL verifier and the
+      // REAL gate. The one thing that is injected is `verifyChain`, which
+      // attest.js takes by injection precisely because no root of trust exists
+      // here — the app supplies none, so the attested rendering is reachable
+      // from a test and from nowhere else, and a test says exactly that.
+      try { mods.attest = require('./attest.js'); } catch (e) { /* optional */ }
       // The compression panel is asserted against REAL codec output, not a
       // stub: compress.js takes its codecs by injection precisely so a caller
       // can hand it the platform's own, and node:zlib is this runner's. A
@@ -3113,6 +3119,532 @@
         assertEqual(cmpView.model({ considered: [] }, {}), null, 'a decision with no verdict');
         assertEqual(cmpView.model('compressed', {}), null, 'a string');
         return '5 unusable results, no panel';
+      });
+    }
+
+    // --- Device attestation ----------------------------------------------------
+    //
+    // attest.test.js already asserts that the verifier cannot decide, that the
+    // gate cannot be fed raw claims, and that an unrecognised state fails
+    // closed. These assert what it cannot: that the two answers reach the screen
+    // AS TWO, that the three outcomes of ADR-021 §4.3 are told apart there, that
+    // the privacy trade §4.7 wants is on screen before the feature can be
+    // enabled, and that no root of trust is ever shown as available.
+    //
+    // Every string checked below is a string the panel renders verbatim — the
+    // badge and headline go into the notice, `verdict.label`/`verdict.text` and
+    // `decision.label`/`decision.text` become the two <dl>s, each unmet rule and
+    // each root become another <dt>/<dd> pair, and `privacy`, `separationNote`,
+    // `challengeNote`, `rootsNote`, `reachabilityNote` and `custodyNote` are
+    // each a paragraph. Asserting on those rather than on the objects behind
+    // them is the same choice the compression tests make and for the same
+    // reason: a plausible-looking screen is only catchable at the screen.
+    //
+    // The verdicts are REAL. Nothing below hand-builds a verdict object; each
+    // one comes out of verifyAttestation() over evidence in the module's own
+    // format, and the one attested case reaches that state the only way it can
+    // — through the injected `verifyChain` predicate attest.js exists to take
+    // from a caller that has a root of trust. app.js injects none, which is
+    // itself asserted.
+
+    var ATT = mods.attest ||
+      (typeof window !== 'undefined' ? window.RVQRAttest : null) || null;
+    var attView = (mods.view && mods.view.attestation) ||
+      (typeof window !== 'undefined' ? window.RVQRAttestationView : null) || null;
+
+    if (mods.indexHtml) {
+      test('attestation: the page loads attest.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./attest.js"');
+        assert(tag >= 0, 'index.html does not reference attest.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a tag of any other shape ships a page with no
+        // attestation panel — which is how a module with 37 green tests reaches
+        // nobody, the state this increment exists to leave.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(/<script[^>]*src="\.\/attest\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+        assert(line.indexOf('defer') >= 0, 'attest.js should be deferred with the optional modules');
+
+        var afterCore = html.indexOf('src="./core.js"');
+        assert(afterCore >= 0 && afterCore < tag, 'attest.js is not loaded after core.js');
+        var appTag = html.indexOf('src="./app.js"');
+        assert(appTag >= 0 && tag < appTag, 'attest.js is not loaded before app.js');
+        return 'loaded, deferred, after core.js and before app.js';
+      });
+
+      test('attestation: the send tab shows the decision where it cannot be missed', function () {
+        var html = mods.indexHtml;
+        ['attestCard', 'attestPrivacy', 'attestPolicyPick', 'attestClassPick',
+          'attestGrant', 'attestEvidence', 'attestCheckBtn', 'attestResult',
+          'attestRoots'].forEach(function (id) {
+          assert(html.indexOf('id="' + id + '"') >= 0, 'index.html has no #' + id);
+        });
+        var sendTab = html.indexOf('id="tab-send"');
+        var receiveTab = html.indexOf('id="tab-receive"');
+        var card = html.indexOf('id="attestCard"');
+        assert(sendTab >= 0 && card > sendTab && card < receiveTab,
+          'the attestation card is not inside the send tab');
+        // After the pairing step, because the receiver it talks about is the
+        // device paired up there, and a grant is made to that identity.
+        assert(html.indexOf('id="deltaSendCard"') < card,
+          'the attestation card does not follow the pairing step it names');
+
+        // A plain card and NOT a <details>. An undeclared policy is refused BY
+        // DESIGN, and a refusal folded behind a summary nobody opens is a
+        // refusal nobody sees.
+        var open = html.lastIndexOf('<', card);
+        assertEqual(html.slice(open, card).indexOf('<div'), 0,
+          'the attestation card is not a plain div: ' + html.slice(open, card));
+        return 'a plain card in the send tab, under the pairing step';
+      });
+
+      test('attestation: the privacy notice sits above every control that could enable it', function () {
+        // ADR-021 §4.7 wants the trade documented "before attestation is
+        // enabled". In the document that means above; in the model it means
+        // canDeclare, tested below. Both, because either alone is escapable.
+        var html = mods.indexHtml;
+        var privacy = html.indexOf('id="attestPrivacy"');
+        ['attestPolicyPick', 'attestClassPick', 'attestGrant', 'attestEvidence', 'attestCheckBtn']
+          .forEach(function (id) {
+            var control = html.indexOf('id="' + id + '"');
+            assert(privacy < control,
+              '#' + id + ' comes before the privacy notice, so the trade is disclosed after the fact');
+          });
+        // And above the panel that reports outcomes, so it is not something the
+        // operator scrolls past on the way to a verdict.
+        assert(privacy < html.indexOf('id="attestResult"'), 'the notice follows the results');
+        return 'above all five controls and the result panel';
+      });
+
+      test('attestation: no root of trust is offered as a choice anywhere on the page', function () {
+        // ADR-021 §2.1's four are unexercised, every one of them. A picker
+        // offering "TPM 2.0" would be the UI claiming a capability the module
+        // disclaims in describeRoots() two files away — so there is no such
+        // control, and this is what keeps one from arriving later.
+        var html = mods.indexHtml;
+        var options = html.match(/<option[^>]*>[^<]*<\/option>/g) || [];
+        ['dice', 'tpm2', 'tpm 2.0', 'secure enclave', 'secure-enclave',
+          'android-key', 'android hardware'].forEach(function (name) {
+          options.forEach(function (opt) {
+            assert(opt.toLowerCase().indexOf(name) < 0,
+              'a root of trust is offered as a choice: ' + opt);
+          });
+        });
+        return options.length + ' options on the page, none of them a root of trust';
+      });
+    }
+
+    if (ATT && attView) {
+      // The sender's half of the binding, and the only outside data the
+      // verifier takes. The session id and the challenge are the app's; the
+      // policy is never in this object, by construction.
+      var EXPECT = { sessionId: 'session-1', nonce: 'challenge-1' };
+
+      /**
+       * Evidence in the module's own format. The measurement is a real digest
+       * shape — even-length lowercase hex — because parseEvidence refuses
+       * anything else, and a fixture that could not be read would test the
+       * malformed path while claiming to test the attested one.
+       */
+      function evidence(over) {
+        var ev = {
+          root: ATT.ROOT_DICE,
+          deviceId: 'device-a',
+          sessionId: EXPECT.sessionId,
+          nonce: EXPECT.nonce,
+          measurement: '9f2c4e7a1b0d3856',
+          policyEpoch: 12,
+          signerSetId: 'fleet-signers-2026',
+          storageClasses: ['credential', 'generic']
+        };
+        Object.keys(over || {}).forEach(function (k) { ev[k] = over[k]; });
+        return ev;
+      }
+
+      /** A policy whose four preconditions the evidence above satisfies. */
+      function fullPolicy(over) {
+        var p = {
+          requireAttestation: true,
+          trustedSignerSets: ['fleet-signers-2026'],
+          minPolicyEpoch: 12,
+          approvedMeasurements: ['9f2c4e7a1b0d3856'],
+          grants: [{ device: 'device-a', classes: ['credential'] }]
+        };
+        Object.keys(over || {}).forEach(function (k) { p[k] = over[k]; });
+        return p;
+      }
+
+      /**
+       * The whole pipeline, in the order app.js runs it, and then the model.
+       *
+       * `opts.verifyChain` is passed through because that is the injection
+       * point: a caller with a root of trust supplies one, and this repository
+       * is not such a caller. Everything else is the real module.
+       */
+      function panel(policy, ev, request, opts) {
+        var verdict = ATT.verifyAttestation(ev, EXPECT, opts);
+        var decision = ATT.admitTransfer(policy, verdict, request);
+        var receipt = ATT.attestationReceipt(verdict, decision, policy);
+        return attView.model({
+          verdict: verdict,
+          decision: decision,
+          receipt: receipt,
+          roots: ATT.describeRoots(),
+          limits: ATT.describeLimits(),
+          custody: ATT.describeKeyCustody()
+        }, { challenge: { sessionId: EXPECT.sessionId, nonce: EXPECT.nonce } });
+      }
+
+      /** The only way to reach `attested` anywhere: a verifier that says yes. */
+      var CHAIN_OK = { verifyChain: function () { return true; } };
+
+      test('attestation: the three states of ADR-021 §4.3 are three different renderings', function () {
+        // The criterion is that unattested is never conflated with
+        // attested-and-approved, and both have to be told apart from a refusal.
+        var approved = panel(fullPolicy(), evidence(),
+          { artifactClass: 'credential', peerId: 'peer-9' }, CHAIN_OK);
+        var permitted = panel(
+          { requireAttestation: false, grants: [{ device: 'peer-9', classes: ['credential'] }] },
+          null, { artifactClass: 'credential', peerId: 'peer-9' });
+        var refused = panel(fullPolicy({ grants: [] }), evidence(),
+          { artifactClass: 'credential', peerId: 'peer-9' }, CHAIN_OK);
+
+        assertEqual(approved.outcome, 'attested-approved', 'the attested outcome');
+        assertEqual(permitted.outcome, 'unattested-permitted', 'the unattested outcome');
+        assertEqual(refused.outcome, 'refused', 'the refused outcome');
+
+        // Distinct by class, by badge and by sentence — three signals, so the
+        // panel does not rest on colour alone.
+        [['tone', 'tone'], ['badge', 'badge'], ['headline', 'headline']].forEach(function (f) {
+          var a = approved[f[0]], b = permitted[f[0]], c = refused[f[0]];
+          assert(a !== b && b !== c && a !== c,
+            'two of the three outcomes share a ' + f[1] + ': ' +
+            JSON.stringify([a, b, c]));
+        });
+        assertEqual(approved.tone, 'good', 'the attested tone');
+        assertEqual(refused.tone, 'bad', 'the refused tone');
+        // Deliberately NOT the good tone: a transfer nobody verified is news,
+        // not good news, and a green notice would say it was checked.
+        assertEqual(permitted.tone, '', 'the unattested-permitted tone');
+
+        assertEqual(permitted.badge, 'Unattested — nobody asked', 'the unattested badge');
+        assertEqual(permitted.headline,
+          'Unattested, and permitted because nobody asked.', 'the unattested headline');
+        assertEqual(approved.headline, 'Attested, and separately granted.', 'the attested headline');
+        return approved.badge + ' / ' + permitted.badge + ' / ' + refused.badge;
+      });
+
+      test('attestation: a device measured, approved and current is still refused, and the panel shows both halves', function () {
+        // ADR-021 §2.2 and §4.1, at the screen. The evidence verifies and all
+        // four preconditions pass; only the capability grant is missing. The
+        // verdict block must still read Attested, and the decision block must
+        // still refuse, because they are answers to different questions.
+        var m = panel(fullPolicy({ grants: [] }), evidence(),
+          { artifactClass: 'credential', peerId: 'peer-9' }, CHAIN_OK);
+
+        assertEqual(m.verdict.state, 'attested', 'the verdict state');
+        assertEqual(m.verdict.label, 'Attested', 'the verdict heading');
+        assertEqual(m.decision.code, 'capability-refused', 'the decision code');
+        assertEqual(m.decision.admit, false, 'admitted anyway');
+        assertEqual(m.outcome, 'refused', 'the outcome');
+
+        // The device's measured facts are on screen under the verdict, and the
+        // refusal is under the decision. Neither block borrows the other's
+        // answer.
+        var measured = m.verdict.facts.filter(function (f) {
+          return f.label === 'RVM measurement';
+        })[0];
+        assert(measured && measured.text === '9f2c4e7a1b0d3856', 'the measurement is not shown');
+        assert(m.verdict.text.indexOf('not permission to receive anything') > 0,
+          'the verdict block does not say what a verdict is not: ' + m.verdict.text);
+        assert(m.decision.text.indexOf(
+          'may be measured, approved and current and still be the wrong device') > 0,
+          'the decision block does not say why: ' + m.decision.text);
+        // And the invariant itself, in the module's words, between the two.
+        assert(m.separationNote.indexOf('evidence, never authorization') > 0,
+          'the separation note is not the module\'s own: ' + m.separationNote);
+        return m.decision.label;
+      });
+
+      test('attestation: the verdict block carries no permission, and the decision block carries no claim', function () {
+        // The information barrier, at the screen. Nothing a reader could take
+        // as permission may appear in the verdict block, and the decision block
+        // renders the gate's own sentence rather than a restatement of it.
+        var verdict = ATT.verifyAttestation(evidence(), EXPECT, CHAIN_OK);
+        var decision = ATT.admitTransfer(fullPolicy(), verdict,
+          { artifactClass: 'credential', peerId: 'peer-9' });
+        var block = attView.verdictBlock(verdict);
+        ['admit', 'allow', 'ok', 'trusted', 'granted'].forEach(function (k) {
+          assertEqual(block[k], undefined, 'the verdict block published ' + k);
+        });
+        assertEqual(block.text, verdict.reason, 'the verdict reason was re-worded');
+        assertEqual(attView.decisionBlock(decision).text, decision.reason,
+          'the decision reason was re-worded');
+        assert(block.title !== attView.decisionBlock(decision).title,
+          'the two blocks share a title, so they read as one answer');
+        return block.title + ' / ' + attView.decisionBlock(decision).title;
+      });
+
+      test('attestation: the privacy trade is on screen before attestation is enabled', function () {
+        // Nothing declared, nothing granted, no evidence — the state an
+        // operator meets the panel in. The disclosure has to be there THEN,
+        // because §4.7 is about what is visible before the feature is turned
+        // on rather than after.
+        var m = panel({}, null, { artifactClass: 'generic', peerId: null });
+        assertEqual(m.decision.code, 'policy-undeclared',
+          'the fixture has already enabled something');
+        assert(m.privacy && m.privacy.indexOf('identifies a device') > 0,
+          'no privacy disclosure on the untouched panel: ' + m.privacy);
+        assertEqual(m.privacy, ATT.describeLimits().filter(function (l) {
+          return l.indexOf('identifies a device') >= 0;
+        })[0], 'the disclosure is not the module\'s own sentence');
+
+        // And the rule, rather than the ordering: the controls that declare a
+        // policy are enabled only because the disclosure rendered. A model
+        // whose limits do not carry it cannot enable attestation at all.
+        assertEqual(m.canDeclare, true, 'the disclosure is present and yet nothing can be declared');
+        var stripped = attView.model({
+          verdict: null, decision: null, roots: ATT.describeRoots(),
+          limits: ATT.describeLimits().filter(function (l) {
+            return l.indexOf('identifies a device') < 0;
+          })
+        }, {});
+        assertEqual(stripped.privacy, null, 'a disclosure appeared from nowhere');
+        assertEqual(stripped.canDeclare, false,
+          'attestation can be enabled with no privacy disclosure on screen');
+        return 'disclosed, and the control is gated on the disclosure';
+      });
+
+      test('attestation: an unexercised root is never displayed as available', function () {
+        var m = panel({}, null, { artifactClass: 'generic', peerId: null });
+        assertEqual(m.roots.length, 4, 'not all four roots are on screen');
+        m.roots.forEach(function (row) {
+          assertEqual(row.status, 'unexercised', row.id + ' claims a status');
+          assertEqual(row.available, false, row.id + ' is shown as available');
+          // The status travels with the NAME, so a list read down its headings
+          // alone still says so.
+          assert(row.label.indexOf('unexercised') > 0,
+            row.id + '’s heading does not carry its status: ' + row.label);
+          assert(row.text.indexOf('implements none of the protocol behind it') > 0,
+            row.id + '’s note is not the module’s own: ' + row.text);
+        });
+        assert(m.rootsNote.indexOf('None of the four roots of trust') === 0,
+          'the roots note is not the module’s own: ' + m.rootsNote);
+        // And why no evidence can reach `attested` here, said in the same place.
+        assert(m.reachabilityNote.indexOf('the attested state is unreachable') > 0,
+          'the panel does not say the attested state is out of reach: ' + m.reachabilityNote);
+        assert(m.custodyNote.indexOf('ADR-035 is not superseded') > 0,
+          'the panel does not say the signing key is still in localStorage');
+        return '4 roots, all unexercised, none offered';
+      });
+
+      test('attestation: an undeclared policy is its own explained state, not an error', function () {
+        // ADR-021 §2.3: whether unattested is acceptable is the sender's
+        // decision "not a default". The app declines to make it, and the panel
+        // has to say which decision is missing rather than reporting a failure.
+        var m = panel({ grants: [{ device: 'peer-9', classes: ['generic'] }] }, null,
+          { artifactClass: 'generic', peerId: 'peer-9' });
+        assertEqual(m.decision.code, 'policy-undeclared', 'the code');
+        assertEqual(m.decision.label, 'This sender has not declared a policy', 'the heading');
+        assertEqual(m.headline, 'Refused: this sender has not declared a policy.', 'the headline');
+        assert(m.decision.text.indexOf('there is no default to fall back on') > 0,
+          'the panel does not say why: ' + m.decision.text);
+        // The evidence bar was never even reached: the verdict is `unattested`,
+        // which is a state and not a failure, and the panel shows it as one.
+        assertEqual(m.verdict.state, 'unattested', 'the verdict state');
+        assertEqual(m.verdict.label, 'Unattested — no evidence was offered', 'the verdict heading');
+        // And it is a different state from a device that tried and failed.
+        var bad = panel({ requireAttestation: false }, evidence({ measurement: 'm-approved' }),
+          { artifactClass: 'generic', peerId: 'peer-9' });
+        assert(bad.headline !== m.headline, 'undeclared and malformed share a headline');
+        assert(bad.decision.label !== m.decision.label, 'undeclared and malformed share a heading');
+        return m.decision.label;
+      });
+
+      test('attestation: malformed evidence is refused as malformed, never as absent', function () {
+        // 'm-approved' is not a digest. parseEvidence names the field that
+        // stopped it, verifyAttestation carries that sentence into the verdict,
+        // and the panel renders it — so an operator is told what to fix rather
+        // than told "malformed".
+        var raw = evidence({ measurement: 'm-approved' });
+        var why = ATT.parseEvidence(raw);
+        assertEqual(why.ok, false, 'the fixture parses after all');
+        assert(why.reason.indexOf('even-length run of lowercase hex') > 0,
+          'parseEvidence blamed something else: ' + why.reason);
+
+        var m = panel({ requireAttestation: false, grants: [{ device: 'peer-9', classes: ['generic'] }] },
+          raw, { artifactClass: 'generic', peerId: 'peer-9' });
+        assertEqual(m.verdict.state, 'malformed', 'the verdict state');
+        assertEqual(m.decision.code, 'malformed-evidence', 'the decision code');
+        assertEqual(m.outcome, 'refused', 'the outcome');
+        // The field-level reason reaches the screen inside the verdict block.
+        assert(m.verdict.text.indexOf(why.reason) > 0,
+          'the reason parseEvidence gave is not on screen: ' + m.verdict.text);
+        assert(m.decision.text.indexOf('a device that tried and failed is not a device that never tried') > 0,
+          'the decision does not distinguish malformed from absent: ' + m.decision.text);
+        // The grant would have covered an unattested device — so this refusal
+        // is the evidence bar, not the capability one, and the two must not
+        // look alike.
+        var absent = panel({ requireAttestation: false, grants: [{ device: 'peer-9', classes: ['generic'] }] },
+          null, { artifactClass: 'generic', peerId: 'peer-9' });
+        assertEqual(absent.outcome, 'unattested-permitted',
+          'the same policy refused an absent-evidence device too');
+        assert(absent.verdict.label !== m.verdict.label, 'absent and malformed share a heading');
+        return m.verdict.label;
+      });
+
+      test('attestation: a state this build does not know fails closed on screen', function () {
+        // ADR-021 §4.2, at the screen. A verdict-shaped object carrying a state
+        // from a future build must not fall through into a rendering that looks
+        // like any kind of pass.
+        var future = ATT.verifyAttestation(evidence(), EXPECT, CHAIN_OK);
+        future.state = 'attested-with-quantum-witness';
+        var decision = ATT.admitTransfer(fullPolicy(), future,
+          { artifactClass: 'credential', peerId: 'peer-9' });
+        var m = attView.model({
+          verdict: future, decision: decision, roots: ATT.describeRoots(),
+          limits: ATT.describeLimits()
+        }, {});
+        assertEqual(m.outcome, 'refused', 'an unknown state was not refused');
+        assertEqual(m.decision.code, 'unknown-attestation-state', 'the code');
+        assertEqual(m.decision.label, 'An attestation state this build does not know', 'the heading');
+        // The unknown state is named rather than blanked, so the operator can
+        // report what arrived.
+        assertEqual(m.verdict.label, 'attested-with-quantum-witness',
+          'the unknown state was not named on screen');
+        return m.verdict.label + ' → ' + m.decision.code;
+      });
+
+      test('attestation: every unmet precondition reaches the screen, not only the first', function () {
+        // A device failing three of the four should say so: fixing one will not
+        // be enough, and a panel showing the first would send its operator round
+        // the loop three times.
+        var m = panel(fullPolicy({
+          trustedSignerSets: ['someone-else'],
+          minPolicyEpoch: 99,
+          approvedMeasurements: ['00ff']
+        }), evidence(), { artifactClass: 'credential', peerId: 'peer-9' }, CHAIN_OK);
+        assertEqual(m.outcome, 'refused', 'the outcome');
+        var rules = m.decision.unmet.map(function (u) { return u.label; });
+        ['Signer set', 'Policy epoch', 'RVM measurement'].forEach(function (label) {
+          assert(rules.indexOf(label) >= 0, label + ' is not on screen: ' + rules.join(', '));
+        });
+        // Each row is the module's own sentence about that rule.
+        var epoch = m.decision.unmet.filter(function (u) { return u.label === 'Policy epoch'; })[0];
+        assert(epoch.text.indexOf('policy epoch 12 and this sender requires at least 99') > 0,
+          'the epoch row is not the module’s own: ' + epoch.text);
+        return rules.join(', ');
+      });
+
+      test('attestation: which identity a grant was matched against is never left to look alike', function () {
+        // An attested device id and a pinned peer key are not the same claim.
+        // The panel names which one carried the grant, because ADR-035's key is
+        // still in localStorage and a grant resting on it is a weaker binding.
+        var attested = panel(fullPolicy(), evidence(),
+          { artifactClass: 'credential', peerId: 'peer-9' }, CHAIN_OK);
+        assertEqual(attested.decision.identitySource, 'attestation', 'the attested identity source');
+        assert(attested.identityNote.indexOf('attested device id device-a') > 0,
+          'the attested identity is not named: ' + attested.identityNote);
+
+        var peer = panel({ requireAttestation: false, grants: [{ device: 'peer-9', classes: ['generic'] }] },
+          null, { artifactClass: 'generic', peerId: 'peer-9' });
+        assertEqual(peer.decision.identitySource, 'peer', 'the peer identity source');
+        assert(peer.identityNote.indexOf('materially weaker binding') > 0,
+          'the weaker binding is not named: ' + peer.identityNote);
+        assert(attested.identityNote !== peer.identityNote, 'the two identities read alike');
+        return attested.decision.identitySource + ' / ' + peer.decision.identitySource;
+      });
+
+      test('attestation: with no verifier injected the panel reports unverified, and says the attested state is out of reach', function () {
+        // This is app.js's call shape: no third argument, because this
+        // repository has no root of trust to put there. A test that passed one
+        // here would be testing a caller that does not exist.
+        var m = panel({ requireAttestation: false, grants: [{ device: 'peer-9', classes: ['generic'] }] },
+          evidence(), { artifactClass: 'generic', peerId: 'peer-9' });
+        assertEqual(m.verdict.state, 'unverified', 'the verdict state');
+        assertEqual(m.decision.code, 'unverified-evidence', 'the decision code');
+        assertEqual(m.outcome, 'refused', 'evidence nobody checked was not refused');
+        // Not published, because the verifier established nothing: a device's
+        // own claims never reach the screen as facts on this path.
+        assertEqual(m.verdict.facts.length, 0, 'unverified claims reached the panel as facts');
+        assert(m.reachabilityNote.indexOf('never degrades into a pass') > 0,
+          'the panel does not say a check that cannot run is not a pass');
+        return m.verdict.label;
+      });
+
+      test('attestation: evidence bound to another session, and a spent challenge, are told apart', function () {
+        // ADR-021 §4.5. A recording is a genuine attestation, so the binding is
+        // the check that matters — and the two ways it fails are different
+        // facts with different fixes.
+        var elsewhere = panel({ requireAttestation: false, grants: [] },
+          evidence({ sessionId: 'session-2' }), { artifactClass: 'generic', peerId: 'peer-9' }, CHAIN_OK);
+        assertEqual(elsewhere.verdict.state, 'unbound', 'the unbound state');
+        assertEqual(elsewhere.decision.code, 'unbound-evidence', 'the unbound code');
+
+        var spent = ATT.verifyAttestation(evidence(), {
+          sessionId: EXPECT.sessionId, nonce: EXPECT.nonce,
+          consumedNonces: [EXPECT.nonce]
+        }, CHAIN_OK);
+        var replayed = attView.model({
+          verdict: spent,
+          decision: ATT.admitTransfer({ requireAttestation: false }, spent,
+            { artifactClass: 'generic', peerId: 'peer-9' }),
+          roots: ATT.describeRoots(), limits: ATT.describeLimits()
+        }, { challenge: { sessionId: EXPECT.sessionId, nonce: EXPECT.nonce } });
+        assertEqual(replayed.verdict.state, 'replayed', 'the replayed state');
+        assert(replayed.verdict.label !== elsewhere.verdict.label,
+          'a recording and a stray session share a heading');
+        assert(replayed.headline !== elsewhere.headline,
+          'a recording and a stray session share a headline');
+        // And the panel says what evidence had to be bound to, so the operator
+        // can see the challenge that was issued.
+        assert(replayed.challengeNote.indexOf('challenge-1') > 0,
+          'the challenge is not on screen: ' + replayed.challengeNote);
+        return elsewhere.verdict.label + ' / ' + replayed.verdict.label;
+      });
+
+      test('attestation: a recording and a replay check that could not run do not read alike', function () {
+        // attest.js refuses both as `replayed`, and they are different news: one
+        // is a challenge this sender knows it answered, the other is a sender
+        // that has lost the ability to tell. A single heading would erase that.
+        var known = ATT.verifyAttestation(evidence(), {
+          sessionId: EXPECT.sessionId, nonce: EXPECT.nonce, consumedNonces: [EXPECT.nonce]
+        }, CHAIN_OK);
+        var spent = [];
+        for (var i = 0; i <= ATT.LIMITS.consumedNonces; i++) spent.push('spent-' + i);
+        var undetermined = ATT.verifyAttestation(evidence(), {
+          sessionId: EXPECT.sessionId, nonce: EXPECT.nonce, consumedNonces: spent
+        }, CHAIN_OK);
+
+        assertEqual(known.state, 'replayed', 'the known-recording state');
+        assertEqual(undetermined.state, 'replayed', 'the undetermined state');
+        var a = attView.verdictBlock(known).label;
+        var b = attView.verdictBlock(undetermined).label;
+        assert(a !== b, 'both replayed cases share a heading: ' + a);
+        assert(b.indexOf('could not be performed') > 0, 'the undetermined heading: ' + b);
+        // And the module's own sentence, which says which one this is, is what
+        // the panel renders underneath.
+        assert(attView.verdictBlock(undetermined).text.indexOf('CANNOT BE DETERMINED') > 0,
+          'the undetermined reason is not on screen');
+        return a + ' / ' + b;
+      });
+
+      test('attestation: a panel with no verdict and no decision refuses rather than reassures', function () {
+        // The panel is fed by a module that may not have loaded and by a
+        // handshake that may never have happened. Nothing missing may render as
+        // anything a reader could take for a pass.
+        var m = attView.model({ roots: ATT.describeRoots(), limits: ATT.describeLimits() }, {});
+        assertEqual(m.outcome, 'refused', 'an empty panel was not refused');
+        assertEqual(m.decision.admit, false, 'an empty panel admitted');
+        assertEqual(m.verdict.state, null, 'a state appeared from nowhere');
+        assert(m.verdict.label.indexOf('Nothing yet') === 0, 'the verdict block: ' + m.verdict.label);
+        assert(m.decision.label.indexOf('Nothing yet') === 0, 'the decision block: ' + m.decision.label);
+        // With no session there is nothing for evidence to be bound to, and the
+        // panel says that rather than printing a challenge nobody issued.
+        assert(m.challengeNote.indexOf('no paired session') > 0,
+          'the panel invented a binding: ' + m.challengeNote);
+        return m.badge;
       });
     }
 
