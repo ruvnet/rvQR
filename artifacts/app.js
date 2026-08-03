@@ -4,8 +4,425 @@
  *
  * MIT License. Copyright (c) 2026 rUv.
  */
+
+/*
+ * The provenance view model.
+ *
+ * This sits above the app IIFE, and above the DOM, deliberately. Whether a
+ * claim reads as a verified fact or as somebody's word is the whole point of
+ * ADR-020, and it is far too easy to get wrong inside a render loop where the
+ * mistake shows up as a colour rather than as a wrong value. So the decision —
+ * which claim goes in which list, which of the three verdict states it carries,
+ * and whether the panel is a pass, a failure, an absence or an unreadable
+ * document — is a pure function of what provenance.js returned, testable
+ * without a browser and asserted in tests.js.
+ *
+ * Two rules this module exists to enforce:
+ *
+ *   1. Nothing on the asserted list is ever given a verdict. `verify()` already
+ *      separates checkable from asserted; this keeps them separate all the way
+ *      to the screen, in different shapes, so a builder's word about a
+ *      reproducible build cannot borrow the tick a recomputed hash earned.
+ *   2. A failed hash is the loudest thing in the panel. A component that is not
+ *      the component the SBOM describes is a substitution, and a substitution
+ *      reported as a warning is a substitution accepted.
+ *
+ * It reads nothing global and throws nothing: every input arrived, ultimately,
+ * in a file from an unknown sender.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) module.exports = api;
+  else root.RVQRProvenanceView = api;
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  // The four states this panel can be in. They are four rather than two because
+  // "no provenance segment", "a provenance segment that will not decode" and
+  // "provenance that decoded and failed a check" are three different pieces of
+  // news, and collapsing any pair of them loses the one a reader needs.
+  var ABSENT = 'absent';       // walked cleanly, no provenance segment present
+  var UNREADABLE = 'error';    // the container or its provenance could not be read
+  var PRESENT = 'present';     // decoded; see counts and tone for the verdict
+
+  // A checkable claim carries one of these. They are the same three the
+  // signature panel uses, plus the honest fourth for a check that could not be
+  // made — never folded into a pass.
+  var PASS = 'pass', WARN = 'warn', FAIL = 'fail', UNAVAILABLE = 'unavailable';
+
+  // An assertion carries this instead, and it is not one of the four above.
+  // Anything that renders a claim has to reach for a different branch, which is
+  // the point: there is no code path on which an assertion can pick up a tick.
+  var ASSERTED = 'asserted';
+
+  var MARKS = {};
+  MARKS[PASS] = '✓';          // ✓
+  MARKS[WARN] = '!';
+  MARKS[FAIL] = '✗';          // ✗
+  MARKS[UNAVAILABLE] = '–';   // –
+  // Assertions get a quotation dash rather than any of the marks above: it says
+  // "someone said this" and cannot be mistaken for a verdict at a glance.
+  MARKS[ASSERTED] = '“';      // “
+
+  var COMPONENT_PREFIX = 'Component hash: ';
+
+  /** A claim's value as text, without ever turning a boolean into a verdict. */
+  function claimText(value) {
+    if (value === null || value === undefined || value === '') return 'not stated';
+    if (value === true) return 'claimed';
+    if (value === false) return 'claimed not';
+    return String(value);
+  }
+
+  /** The label verify() uses for a component, so its check can be found again. */
+  function componentLabel(component) {
+    if (!component || typeof component !== 'object') return '';
+    return String(component.name) + (component.version ? ' ' + component.version : '');
+  }
+
+  /**
+   * The component-hash checks from a report, indexed by the component they
+   * name. Built from the report rather than recomputed, so the table and the
+   * check list can never disagree about the same hash.
+   */
+  function componentChecks(report) {
+    var index = {};
+    var list = (report && report.checkable) || [];
+    for (var i = 0; i < list.length; i++) {
+      var name = String(list[i].name || '');
+      if (name.indexOf(COMPONENT_PREFIX) === 0) {
+        index[name.slice(COMPONENT_PREFIX.length)] = list[i];
+      }
+    }
+    return index;
+  }
+
+  function normalizeStatus(status) {
+    return status === PASS || status === WARN || status === FAIL ? status : UNAVAILABLE;
+  }
+
+  /** Checkable entries, in render order, each with its mark. */
+  function checkRows(report) {
+    var list = (report && report.checkable) || [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var status = normalizeStatus(list[i].status);
+      out.push({
+        name: String(list[i].name),
+        status: status,
+        mark: MARKS[status],
+        detail: String(list[i].detail || ''),
+        checkable: true
+      });
+    }
+    return out;
+  }
+
+  /**
+   * Asserted entries. `status` is ASSERTED for every one of them, with no
+   * branch that can produce anything else — an assertion has no verdict to
+   * carry, and the absence of that branch is what guarantees it.
+   */
+  function claimRows(report) {
+    var list = (report && report.asserted) || [];
+    var out = [];
+    for (var i = 0; i < list.length; i++) {
+      var a = list[i];
+      out.push({
+        name: String(a.name),
+        status: ASSERTED,
+        mark: MARKS[ASSERTED],
+        value: claimText(a.value),
+        stated: !(a.value === null || a.value === undefined || a.value === ''),
+        vouchedBy: a.vouchedBy ? String(a.vouchedBy) : null,
+        attribution: a.vouchedBy
+          ? 'Claimed by ' + String(a.vouchedBy) + '. Nothing in this container tests it.'
+          : 'Claimed by the artifact itself, with nothing behind it but the artifact.',
+        detail: String(a.detail || ''),
+        checkable: false
+      });
+    }
+    return out;
+  }
+
+  /** The SBOM as table rows, each carrying the verdict its own hash earned. */
+  function componentRows(provenance, report) {
+    var sbom = provenance && provenance.sbom;
+    if (!sbom || !sbom.present) return [];
+    var index = componentChecks(report);
+    var rows = [];
+    var components = sbom.components || [];
+    for (var i = 0; i < components.length; i++) {
+      var c = components[i];
+      var label = componentLabel(c);
+      var check = index[label] || null;
+      // A component that names no segment was never checkable here; that is
+      // reported as unavailable, which is what verify() would have said.
+      var status = check ? normalizeStatus(check.status) : UNAVAILABLE;
+      rows.push({
+        name: String(c.name),
+        version: c.version ? String(c.version) : null,
+        purpose: c.purpose ? String(c.purpose) : null,
+        licences: (c.licences || []).slice(),
+        segment: (c.segment === null || c.segment === undefined) ? null : c.segment,
+        sha256: (c.digest && c.digest.sha256) ? String(c.digest.sha256) : null,
+        status: status,
+        mark: MARKS[status],
+        detail: check ? String(check.detail || '') :
+          'This component names no segment in this container, so its digest describes ' +
+          'something no receiver here can hold up against it.'
+      });
+    }
+    return rows;
+  }
+
+  /**
+   * The rest of the document: licences, signer policy, source revision, build
+   * identity and vulnerability assertions. Every one of these is an assertion,
+   * so they are grouped under one heading that says so once, loudly, rather
+   * than repeating a disclaimer per row that a reader would stop seeing.
+   */
+  function factRows(provenance) {
+    var rows = [];
+    if (!provenance) return rows;
+
+    var lic = provenance.licences;
+    if (lic && lic.present) {
+      var declared = (lic.artifact || []).slice();
+      if (lic.expression) declared.push(lic.expression);
+      rows.push({ label: 'Licences', value: declared.join(', ') || 'none listed', mono: false });
+    } else {
+      rows.push({ label: 'Licences', value: 'none declared', mono: false, absent: true });
+    }
+
+    var policy = provenance.signerPolicy;
+    if (policy && policy.present) {
+      rows.push({
+        label: 'Signer policy',
+        value: policy.requiredSigners + ' of ' + (policy.keys || []).length + ' listed keys',
+        mono: false
+      });
+      var keys = policy.keys || [];
+      for (var k = 0; k < keys.length; k++) {
+        var key = keys[k];
+        var scopes = (key.maySign || []).join(', ');
+        rows.push({
+          label: 'Key ' + String(key.id),
+          value: String(key.algorithm) +
+            (scopes ? ' · may sign ' + scopes : ' · scope unstated') +
+            (key.publicKey ? ' · ' + key.publicKey : ' · no key material carried'),
+          mono: true
+        });
+      }
+    } else {
+      rows.push({ label: 'Signer policy', value: 'none declared', mono: false, absent: true });
+    }
+
+    var src = provenance.source;
+    if (src && src.present) {
+      rows.push({
+        label: 'Source revision',
+        value: String(src.repository) + '@' + String(src.commit) + (src.ref ? ' (' + src.ref + ')' : ''),
+        mono: true
+      });
+    } else {
+      rows.push({ label: 'Source revision', value: 'not stated', mono: false, absent: true });
+    }
+
+    var build = provenance.build;
+    if (build && build.present) {
+      rows.push({ label: 'Builder', value: String(build.builder), mono: true });
+      rows.push({ label: 'Build type', value: String(build.buildType), mono: true });
+      if (build.invocationId) rows.push({ label: 'Invocation', value: String(build.invocationId), mono: true });
+      if (build.startedOn || build.finishedOn) {
+        rows.push({
+          label: 'Build window',
+          value: (build.startedOn || '?') + ' → ' + (build.finishedOn || '?'),
+          mono: true
+        });
+      }
+      if (build.reproducible !== null && build.reproducible !== undefined) {
+        rows.push({
+          label: 'Reproducible',
+          // Never "yes". The builder claims it; a receiver on the far side of an
+          // air gap cannot rerun the build, so the wording keeps the author in
+          // the sentence.
+          value: build.reproducible ? 'the builder claims so' : 'the builder claims not',
+          mono: false
+        });
+      }
+    } else {
+      rows.push({
+        label: 'Build identity',
+        value: 'not stated — this artifact does not say what produced it',
+        mono: false,
+        absent: true
+      });
+    }
+
+    var vulns = provenance.vulnerabilities;
+    if (vulns && vulns.present) {
+      var list = vulns.assertions || [];
+      for (var v = 0; v < list.length; v++) {
+        var a = list[v];
+        rows.push({
+          label: String(a.advisory),
+          value: String(a.status) +
+            (a.justification ? ' (' + a.justification + ')' : '') +
+            (a.component ? ' — ' + a.component : ''),
+          mono: false
+        });
+      }
+    } else {
+      rows.push({
+        label: 'Vulnerability assertions',
+        value: 'none present — that is silence, not an all-clear',
+        mono: false,
+        absent: true
+      });
+    }
+
+    return rows;
+  }
+
+  function counts(report) {
+    return {
+      passed: (report && report.checksPassed) || 0,
+      failed: (report && report.checksFailed) || 0,
+      unavailable: (report && report.checksUnavailable) || 0
+    };
+  }
+
+  /**
+   * The panel's overall tone. A single failure outranks any number of passes:
+   * there is no arithmetic in which a substituted component is offset by a
+   * component that was what it said it was.
+   */
+  function toneFor(c) {
+    if (c.failed > 0) return FAIL;
+    if (c.passed > 0) return PASS;
+    return UNAVAILABLE;
+  }
+
+  function summaryLine(c) {
+    var parts = [];
+    parts.push(c.passed + ' checked');
+    if (c.failed) parts.push(c.failed + ' failed');
+    parts.push(c.unavailable + ' not checkable here');
+    return parts.join(' · ');
+  }
+
+  /**
+   * Reader output plus verification report to everything the panel needs.
+   * `read` is provenance.js's readContainer(); `report` is its verify().
+   * Neither is trusted to be well formed — a caller that caught a throw can
+   * hand this a synthesised failure and still get a renderable model back.
+   */
+  function model(read, report) {
+    if (!read || typeof read !== 'object') {
+      return {
+        state: UNREADABLE,
+        tone: FAIL,
+        headline: 'Provenance could not be read',
+        detail: 'The provenance reader returned nothing for this container.',
+        counts: counts(null),
+        checks: [], claims: [], components: [], facts: []
+      };
+    }
+
+    if (!read.ok) {
+      // Two ways to get here, and they are different news: a provenance segment
+      // that will not decode, versus a container whose segment chain could not
+      // be walked at all. Neither is an absence, and neither is a pass.
+      return {
+        state: UNREADABLE,
+        tone: FAIL,
+        headline: read.provenanced
+          ? 'This container carries provenance that could not be read'
+          : 'This container’s segments could not be walked',
+        detail: (read.reason ? String(read.reason) : 'no reason was given') +
+          '. Nothing is claimed and nothing is confirmed; a document this app ' +
+          'cannot parse is not evidence of anything.',
+        counts: counts(null),
+        checks: [], claims: [], components: [], facts: []
+      };
+    }
+
+    if (!read.provenanced) {
+      return {
+        state: ABSENT,
+        tone: UNAVAILABLE,
+        headline: 'No provenance',
+        detail: 'This container carries no provenance segment. Nothing says what built it, ' +
+          'what is inside it, or under what licence — and that is a fact about the file, ' +
+          'not a gap in this page. Unprovenanced is a state, never a pass.',
+        segments: (read.segments || []).length,
+        counts: counts(null),
+        checks: [], claims: [], components: [], facts: []
+      };
+    }
+
+    var c = counts(report);
+    var tone = toneFor(c);
+    return {
+      state: PRESENT,
+      tone: tone,
+      headline: tone === FAIL
+        ? 'A claim in this container’s provenance is false'
+        : 'Provenance present',
+      // The loud part. A failed hash is not a caveat appended to a summary; it
+      // is the headline, and the model says so rather than leaving it to
+      // whichever renderer happens to read `counts`.
+      banner: c.failed > 0
+        ? {
+          tone: FAIL,
+          text: c.failed + (c.failed === 1 ? ' claim was checked here and failed.' : ' claims were checked here and failed.') +
+            ' A component in this container is not the component its provenance describes. ' +
+            'Treat the rest of this document as unreliable: a document that is wrong about ' +
+            'something checkable is not more trustworthy about the things that are not.'
+        }
+        : null,
+      detail: summaryLine(c),
+      canonical: read.canonical === true,
+      // Reported rather than corrected: a document that does not re-encode to
+      // the bytes it arrived as cannot be covered by a hash over those bytes.
+      canonicalNote: read.canonical === true
+        ? null
+        : 'The document does not re-encode to the bytes it arrived as, so a hash over ' +
+          'this provenance is not reproducible from what it says.',
+      segment: read.segment || null,
+      counts: c,
+      checks: checkRows(report),
+      claims: claimRows(report),
+      components: componentRows(read.provenance, report),
+      facts: factRows(read.provenance)
+    };
+  }
+
+  return {
+    ABSENT: ABSENT, UNREADABLE: UNREADABLE, PRESENT: PRESENT,
+    PASS: PASS, WARN: WARN, FAIL: FAIL, UNAVAILABLE: UNAVAILABLE, ASSERTED: ASSERTED,
+    MARKS: MARKS,
+    COMPONENT_PREFIX: COMPONENT_PREFIX,
+    claimText: claimText,
+    componentLabel: componentLabel,
+    checkRows: checkRows,
+    claimRows: claimRows,
+    componentRows: componentRows,
+    factRows: factRows,
+    toneFor: toneFor,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
+
+  // Everything below this line is the user interface, and a user interface needs
+  // a document. Under Node — where tests.js requires this file to reach the
+  // view model above — there is none, so none of it runs.
+  if (typeof document === 'undefined') return;
 
   var core = window.RVQRCore;
   var qrlib = window.RVQRCode;
@@ -25,6 +442,12 @@
   function deltaLib() { return window.RVQRDelta || null; }
   function resumeLib() { return window.RVQRResume || null; }
   function proto2Lib() { return window.RVQRProto2 || null; }
+  function provenanceLib() { return window.RVQRProvenance || null; }
+
+  // The view model above, which this file also defines. Read through a getter
+  // for the same reason as the rest: a missing panel is better than a broken
+  // one, and the vault must render either way.
+  function provenanceView() { return window.RVQRProvenanceView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -386,6 +809,18 @@
         rvfBox.appendChild(rvfStatus);
         body.appendChild(rvfBox);
         renderRvf(rvfBox, rvfStatus, bytes);
+
+        // Its own card, and rendered synchronously, because provenance is not
+        // downstream of the microkernel: provenance.js walks the segment chain
+        // itself precisely so that a container's account of itself can be read
+        // on a machine where the WASM kernel never loads. Wiring it inside
+        // renderRvf's promise would have quietly made the one dependent on the
+        // other.
+        var provBox = el('div', 'card tight');
+        provBox.style.marginTop = '1rem';
+        provBox.appendChild(el('h3', '', 'Provenance'));
+        body.appendChild(provBox);
+        renderProvenance(provBox, bytes);
       }
 
       if (row.kind === 'wasm') {
@@ -665,6 +1100,198 @@
           ? ' (opening the page over http rather than from disk will fix this)'
           : '');
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Embedded provenance
+  //
+  // Per ADR-020. The panel's job is to keep two kinds of statement apart on
+  // screen: a hash this device recomputed against bytes it holds, and a claim
+  // that arrived in the same file as the thing it describes. The first gets a
+  // verdict. The second gets an author and never a tick — see the view model at
+  // the top of this file, which makes that split before any node is created.
+  // ---------------------------------------------------------------------------
+
+  function renderProvenance(box, bytes) {
+    var lib = provenanceLib();
+    var view = provenanceView();
+    if (!lib || !view) {
+      // A missing reader is a missing tool, not an unprovenanced container, and
+      // saying "no provenance" here would be a lie about the file.
+      box.appendChild(el('p', 'small muted',
+        'The provenance reader is not loaded, so this container’s provenance was not ' +
+        'examined. That is a tool this page is missing, not something known about the file.'));
+      return;
+    }
+
+    var read, report;
+    try {
+      read = lib.readContainer(bytes);
+      report = lib.verify(read.provenance, bytes, {
+        sha256: function (b) { return core.sha256Hex(b); }
+      });
+    } catch (err) {
+      // readContainer and decode are documented not to throw, and verify is
+      // meant to be reachable with hostile input too. This catch is here
+      // because the input is a file from an unknown sender and the cost of
+      // being wrong about that promise is a detail sheet that renders nothing
+      // at all.
+      read = null;
+      report = null;
+      var m0 = view.model(null, null);
+      m0.detail = 'The provenance reader threw: ' +
+        (err && err.message ? err.message : String(err)) + '.';
+      paintProvenance(box, m0, lib.describeLimits());
+      return;
+    }
+
+    paintProvenance(box, view.model(read, report), lib.describeLimits());
+  }
+
+  /** One row of the checked list: a verdict, a mark, and what was compared. */
+  function checkRow(entry) {
+    var row = el('div', 'check ' + entry.status);
+    row.appendChild(el('div', 'mark', entry.mark));
+    var b = el('div', 'body');
+    b.appendChild(el('strong', '', entry.name));
+    b.appendChild(el('span', '', entry.detail));
+    row.appendChild(b);
+    return row;
+  }
+
+  /**
+   * One row of the asserted list. A different element, a different class and a
+   * different mark from checkRow above — an assertion that merely looked like a
+   * check would be the failure this whole panel exists to avoid.
+   */
+  function claimRow(entry) {
+    var row = el('div', 'claim');
+    row.appendChild(el('div', 'mark', entry.mark));
+    var b = el('div', 'body');
+    var head = el('strong', '');
+    head.textContent = entry.name;
+    b.appendChild(head);
+    var val = el('span', 'value' + (entry.stated ? '' : ' none'), entry.value);
+    b.appendChild(val);
+    b.appendChild(el('span', 'who', entry.attribution));
+    b.appendChild(el('span', '', entry.detail));
+    row.appendChild(b);
+    return row;
+  }
+
+  function subhead(text) {
+    return el('p', 'subhead', text);
+  }
+
+  function paintProvenance(box, m, limits) {
+    var view = provenanceView();
+
+    if (m.state === view.ABSENT) {
+      var absent = el('div', 'notice prov-note');
+      absent.appendChild(el('strong', '', m.headline));
+      absent.appendChild(el('p', 'small muted', m.detail));
+      box.appendChild(absent);
+      if (typeof m.segments === 'number') {
+        box.appendChild(el('p', 'small muted',
+          m.segments + ' segments were walked, and none of them was a provenance segment.'));
+      }
+      appendLimits(box, limits);
+      return;
+    }
+
+    if (m.state === view.UNREADABLE) {
+      var bad = el('div', 'notice bad prov-note');
+      bad.appendChild(el('strong', '', m.headline));
+      bad.appendChild(el('p', 'small muted', m.detail));
+      box.appendChild(bad);
+      appendLimits(box, limits);
+      return;
+    }
+
+    // A failed check leads, before the summary and before anything the document
+    // says about itself.
+    if (m.banner) {
+      var banner = el('div', 'notice bad prov-note');
+      banner.appendChild(el('strong', '', m.headline));
+      banner.appendChild(el('p', 'small muted', m.banner.text));
+      box.appendChild(banner);
+    }
+
+    var summary = el('p', 'small muted');
+    summary.textContent = m.detail +
+      (m.segment ? ' · provenance in segment ' + m.segment.index : '');
+    box.appendChild(summary);
+
+    if (m.canonicalNote) {
+      var canon = el('div', 'notice prov-note');
+      canon.appendChild(el('p', 'small muted', m.canonicalNote));
+      box.appendChild(canon);
+    }
+
+    if (m.checks.length) {
+      box.appendChild(subhead('Checked here, against these bytes'));
+      var checks = el('div');
+      m.checks.forEach(function (c) { checks.appendChild(checkRow(c)); });
+      box.appendChild(checks);
+    }
+
+    if (m.components.length) {
+      box.appendChild(subhead('Components'));
+      var wrap = el('div', 'scroll-x');
+      var table = el('table', 'seg prov');
+      var head = el('tr');
+      ['', 'Component', 'Licences', 'Segment', 'SHA-256'].forEach(function (h) {
+        head.appendChild(el('th', '', h));
+      });
+      table.appendChild(head);
+      m.components.forEach(function (c) {
+        var tr = el('tr', 'comp ' + c.status);
+        tr.appendChild(el('td', 'mark', c.mark));
+        var nameCell = el('td', '');
+        nameCell.appendChild(el('span', '', c.name + (c.version ? ' ' + c.version : '')));
+        if (c.purpose) nameCell.appendChild(el('span', 'small muted', ' · ' + c.purpose));
+        tr.appendChild(nameCell);
+        tr.appendChild(el('td', 'small', c.licences.length ? c.licences.join(', ') : '—'));
+        tr.appendChild(el('td', 'num', c.segment === null ? '—' : String(c.segment)));
+        tr.appendChild(el('td', 'mono', c.sha256 ? c.sha256.slice(0, 16) + '…' : '—'));
+        table.appendChild(tr);
+      });
+      wrap.appendChild(table);
+      box.appendChild(wrap);
+    }
+
+    if (m.claims.length) {
+      box.appendChild(subhead('Asserted by the artifact — not checked'));
+      box.appendChild(el('p', 'small muted',
+        'Everything below arrived in the same file as the thing it describes. A signature ' +
+        'over it would prove who wrote it, never that it is true.'));
+      var claims = el('div');
+      m.claims.forEach(function (c) { claims.appendChild(claimRow(c)); });
+      box.appendChild(claims);
+    }
+
+    if (m.facts.length) {
+      box.appendChild(subhead('What the document says'));
+      var dl = el('dl', 'kv small');
+      m.facts.forEach(function (f) {
+        dl.appendChild(el('dt', '', f.label));
+        dl.appendChild(el('dd', (f.mono ? 'mono' : '') + (f.absent ? ' muted' : ''), f.value));
+      });
+      box.appendChild(dl);
+    }
+
+    appendLimits(box, limits);
+  }
+
+  /** provenance.js owns this wording so the panel cannot overclaim past it. */
+  function appendLimits(box, limits) {
+    if (!limits || !limits.length) return;
+    var details = el('details', 'prov-limits');
+    details.appendChild(el('summary', '', 'What this can and cannot prove'));
+    var ul = el('ul', 'limits');
+    limits.forEach(function (line) { ul.appendChild(el('li', '', line)); });
+    details.appendChild(ul);
+    box.appendChild(details);
   }
 
   /** Live nearest-neighbour search over the vectors in the container. */

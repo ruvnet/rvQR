@@ -29,6 +29,14 @@
       var mods = {};
       try { mods.fountain = require('./fountain.js'); } catch (e) { /* optional */ }
       try { mods.proto2 = require('./proto2.js'); } catch (e) { /* optional */ }
+      try { mods.provenance = require('./provenance.js'); } catch (e) { /* optional */ }
+      // app.js exports its provenance view model and nothing else outside a
+      // browser: the UI half of that file returns early without a document.
+      try { mods.view = require('./app.js'); } catch (e) { /* optional */ }
+      // The page itself, so the tests can assert that the module is actually
+      // loaded rather than merely present on disk. An unreferenced module is
+      // dead code, and the standalone build derives its script list from here.
+      try { mods.indexHtml = fs.readFileSync(path.join(__dirname, 'index.html'), 'utf8'); } catch (e) { /* optional */ }
       var results = api.runAll(core, qrlib, qrdec, mods);
       results.forEach(print);
 
@@ -1704,6 +1712,386 @@
         var out = proto2.parseFrame(padded);
         assertEqual(out.ok, false, 'a longer manifest body was accepted');
         return 'body is ' + proto2.MANIFEST_FIXED_BYTES + ' bytes plus the name, exactly';
+      });
+    }
+
+    // -- embedded provenance, as the detail sheet presents it -----------------
+    //
+    // provenance.test.js already asserts what verify() decides. These assert
+    // what the app does with that decision: which of the two lists a claim is
+    // rendered from, which of the three verdict states it carries, and that the
+    // three states the panel can be in other than "checked and passed" —
+    // absent, unreadable, failed — are each reported as themselves.
+    //
+    // They run against the view model at the top of app.js, which is pure and
+    // takes provenance.js's output directly, so a failure here points at a
+    // presentation decision rather than at a widget.
+
+    var P = mods.provenance ||
+      (typeof window !== 'undefined' ? window.RVQRProvenance : null) || null;
+    var view = mods.view ||
+      (typeof window !== 'undefined' ? window.RVQRProvenanceView : null) || null;
+
+    if (mods.indexHtml) {
+      test('provenance: the page loads provenance.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./provenance.js"');
+        assert(tag >= 0, 'index.html does not reference provenance.js at all');
+        // The standalone build derives its script list from this document, so
+        // an unreferenced module is a module that never reaches a user.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(line.indexOf('defer') >= 0, 'provenance.js should be deferred with the optional modules');
+        // app.js reads it through a getter, so it may load either side of this
+        // tag — but it must be in the document, or the panel has no renderer.
+        assert(html.indexOf('src="./app.js"') >= 0, 'index.html does not load app.js');
+        return 'loaded, deferred, and therefore bundled';
+      });
+
+      test('provenance: no stylesheet rule can give an assertion the pass colour', function () {
+        // The view model refuses to put a verdict on an assertion; this refuses
+        // to let the stylesheet put one back. --ok is the variable that means
+        // "this was checked and it held", in both themes, and no rule in the
+        // asserted register may reach for it.
+        var html = mods.indexHtml;
+        var rules = html.match(/\.claim[^{}]*\{[^}]*\}/g) || [];
+        assert(rules.length >= 3, 'the asserted register has almost no styles: ' + rules.length);
+        for (var i = 0; i < rules.length; i++) {
+          assert(rules[i].indexOf('--ok') < 0,
+            'a .claim rule reaches for the pass colour: ' + rules[i].replace(/\s+/g, ' '));
+        }
+        // And the checked register does use it, so the two really do differ
+        // rather than both being colourless.
+        assert(/\.check\.pass[^{}]*\{[^}]*--ok/.test(html),
+          '.check.pass does not use the pass colour, so nothing distinguishes the two');
+        return rules.length + ' rules in the asserted register, none of them green';
+      });
+    }
+
+    if (P && view) {
+      // A container is a chain of RVF v1 segment headers. Built here rather
+      // than read from disk so these tests need no fixture and no kernel.
+      var SEG_HEADER = 64;
+      function segment(type, id, payload) {
+        var out = new Uint8Array(SEG_HEADER + payload.length);
+        out.set([0x53, 0x46, 0x56, 0x52], 0); // 'SFVR'
+        out[4] = 1;
+        out[5] = type;
+        var dv = new DataView(out.buffer);
+        dv.setUint32(8, id >>> 0, true);
+        dv.setUint32(16, payload.length, true);
+        out.set(payload, SEG_HEADER);
+        return out;
+      }
+      function joinBytes(list) {
+        var n = 0, i;
+        for (i = 0; i < list.length; i++) n += list[i].length;
+        var out = new Uint8Array(n), k = 0;
+        for (i = 0; i < list.length; i++) { out.set(list[i], k); k += list[i].length; }
+        return out;
+      }
+      var sha256 = function (b) { return core.sha256Hex(b); };
+
+      // One data segment and one provenance segment describing it. The digest
+      // is the real hash of the real bytes, so this container's SBOM is true.
+      var dataPayload = rndBytes(512);
+      function populated(digestHex) {
+        var p = P.emptyProvenance();
+        p.sbom = {
+          present: true,
+          components: [{
+            name: 'payload', version: '1', purpose: 'data',
+            digest: { sha256: digestHex }, licences: ['MIT'], segment: 0
+          }]
+        };
+        p.licences = { present: true, artifact: ['MIT'], expression: null };
+        p.source = {
+          present: true, repository: 'git+https://github.com/ruvnet/rvQR',
+          commit: '0'.repeat(40), ref: 'refs/heads/main'
+        };
+        p.signerPolicy = {
+          present: true, requiredSigners: 1,
+          keys: [{ id: 'release@ruv.net', algorithm: 'ed25519', publicKey: 'AAECAw==', maySign: ['provenance'] }]
+        };
+        p.build = {
+          present: true, builder: 'https://ci.example/rvqr',
+          buildType: 'https://slsa.dev/container-based-build/v0.1',
+          invocationId: 'run-7', startedOn: '2026-08-03T09:00:00Z',
+          finishedOn: '2026-08-03T09:04:00Z', reproducible: true
+        };
+        p.vulnerabilities = {
+          present: true,
+          assertions: [{
+            advisory: 'CVE-2026-0001', component: 'payload',
+            status: 'not_affected', justification: 'vulnerable_code_not_present'
+          }]
+        };
+        return p;
+      }
+      function build(digestHex) {
+        var container = joinBytes([
+          segment(0x01, 1, dataPayload),
+          segment(P.PROVENANCE_SEGMENT_TYPE, 2, P.encode(populated(digestHex)))
+        ]);
+        var read = P.readContainer(container);
+        return {
+          container: container,
+          read: read,
+          model: view.model(read, P.verify(read.provenance, container, { sha256: sha256 }))
+        };
+      }
+
+      test('provenance: a checkable hash and an asserted claim get different visual states', function () {
+        var m = build(sha256(dataPayload)).model;
+        assertEqual(m.state, view.PRESENT, 'state');
+        assert(m.checks.length, 'nothing was checked');
+        assert(m.claims.length, 'nothing was asserted');
+
+        // Checks carry one of the verdict states and are marked as checkable.
+        var verdicts = [view.PASS, view.WARN, view.FAIL, view.UNAVAILABLE];
+        for (var i = 0; i < m.checks.length; i++) {
+          assert(verdicts.indexOf(m.checks[i].status) >= 0,
+            'check "' + m.checks[i].name + '" carries ' + m.checks[i].status);
+          assertEqual(m.checks[i].checkable, true, 'check ' + i + ' is not marked checkable');
+          assertEqual(m.checks[i].mark, view.MARKS[m.checks[i].status], 'check ' + i + ' mark');
+        }
+
+        // Assertions carry none of them, ever. The builder's word about a
+        // reproducible build must not be able to pick up the tick a recomputed
+        // hash earned two rows above it.
+        for (var j = 0; j < m.claims.length; j++) {
+          assertEqual(m.claims[j].status, view.ASSERTED, 'claim "' + m.claims[j].name + '" status');
+          assertEqual(m.claims[j].checkable, false, 'claim ' + j + ' is marked checkable');
+          assert(verdicts.indexOf(m.claims[j].status) < 0, 'claim ' + j + ' carries a verdict');
+          assert(m.claims[j].mark !== view.MARKS[view.PASS], 'claim ' + j + ' wears the pass mark');
+          assert(m.claims[j].attribution, 'claim ' + j + ' names no author');
+        }
+
+        // The reproducibility claim keeps its author in the sentence rather
+        // than reading as a property of the bytes.
+        var repro = null;
+        m.claims.forEach(function (c) { if (c.name === 'Reproducible') repro = c; });
+        assert(repro, 'the reproducible claim is not on the asserted list');
+        assertEqual(repro.value, 'claimed', 'a boolean assertion rendered as a verdict');
+        assertEqual(view.claimText(true), 'claimed', 'claimText(true)');
+
+        // And a passing hash really is a pass, so the distinction is not
+        // achieved by refusing to tick anything.
+        assertEqual(m.tone, view.PASS, 'tone');
+        assert(m.counts.passed >= 1, 'no check passed');
+        assertEqual(m.components[0].status, view.PASS, 'component verdict');
+        return m.checks.length + ' checked, ' + m.claims.length + ' asserted, no overlap';
+      });
+
+      test('provenance: a failed component hash is a failure, not a warning', function () {
+        var wrong = 'f'.repeat(64);
+        assert(wrong !== sha256(dataPayload), 'the fixture digest is accidentally correct');
+        var m = build(wrong).model;
+
+        assertEqual(m.state, view.PRESENT, 'state');
+        assertEqual(m.components[0].status, view.FAIL, 'component verdict');
+        assertEqual(m.components[0].mark, view.MARKS[view.FAIL], 'component mark');
+        assertEqual(m.tone, view.FAIL, 'panel tone');
+        assert(m.counts.failed >= 1, 'the failure was not counted');
+
+        // Nothing may soften it into a warning on the way to the screen.
+        for (var i = 0; i < m.checks.length; i++) {
+          assert(m.checks[i].status !== view.WARN,
+            '"' + m.checks[i].name + '" was downgraded to a warning');
+        }
+        assert(m.components[0].status !== view.WARN, 'the component row was downgraded to a warning');
+
+        // And it leads: a substitution reported quietly is a substitution
+        // accepted.
+        assert(m.banner, 'a failed hash produced no banner');
+        assertEqual(m.banner.tone, view.FAIL, 'banner tone');
+        assert(/failed/.test(m.banner.text), 'the banner does not say anything failed');
+        assert(/false/.test(m.headline), 'the headline does not say a claim is false: ' + m.headline);
+
+        // A passing check elsewhere must not average the failure away.
+        var passes = m.checks.filter(function (c) { return c.status === view.PASS; });
+        assert(passes.length >= 1, 'expected the segment-chain check to still pass');
+        assertEqual(view.toneFor({ passed: 9, failed: 1, unavailable: 0 }), view.FAIL,
+          'one failure among nine passes');
+        return 'fail state, ' + passes.length + ' passing checks alongside it, banner raised';
+      });
+
+      test('provenance: a container with no provenance segment says so explicitly', function () {
+        var container = joinBytes([segment(0x01, 1, dataPayload)]);
+        var read = P.readContainer(container);
+        assertEqual(read.provenanced, false, 'readContainer.provenanced');
+        var m = view.model(read, P.verify(read.provenance, container, { sha256: sha256 }));
+
+        assertEqual(m.state, view.ABSENT, 'state');
+        assert(m.state !== view.PRESENT, 'absence rendered as presence');
+        assertEqual(m.tone, view.UNAVAILABLE, 'tone');
+        assert(m.tone !== view.PASS, 'an unprovenanced container read as a pass');
+        assert(m.headline, 'the absent state has no headline');
+        assert(m.detail && m.detail.length > 40, 'absence was reported as a blank space');
+        assert(/no provenance segment/i.test(m.detail), 'the detail does not say what is missing');
+        assertEqual(m.segments, 1, 'segment count reported alongside the absence');
+        // Nothing is claimed and nothing is ticked.
+        assertEqual(m.claims.length, 0, 'claims rendered for an absent document');
+        assertEqual(m.counts.passed, 0, 'passes counted for an absent document');
+        return 'absent state, ' + m.segments + ' segments walked, nothing ticked';
+      });
+
+      test('provenance: malformed provenance renders an error state rather than throwing', function () {
+        var good = P.encode(populated(sha256(dataPayload)));
+        var cases = [
+          ['empty payload', new Uint8Array(0)],
+          ['magic cleared', (function () { var b = Uint8Array.from(good); b[0] = 0; return b; })()],
+          ['unknown version', (function () { var b = Uint8Array.from(good); b[4] = 9; return b; })()],
+          ['truncated document', good.subarray(0, good.length - 8)],
+          ['length lies', (function () {
+            var b = Uint8Array.from(good);
+            new DataView(b.buffer).setUint32(8, 0xffff, true);
+            return b;
+          })()],
+          ['not JSON', (function () {
+            var b = Uint8Array.from(good);
+            for (var i = 12; i < b.length; i++) b[i] = 0x7b; // '{'
+            return b;
+          })()],
+          ['trailing bytes', joinBytes([good, new Uint8Array([0, 0, 0, 0])])]
+        ];
+        for (var i = 0; i < cases.length; i++) {
+          var container = joinBytes([
+            segment(0x01, 1, dataPayload),
+            segment(P.PROVENANCE_SEGMENT_TYPE, 2, cases[i][1])
+          ]);
+          var read = P.readContainer(container);
+          var report = null;
+          try {
+            report = P.verify(read.provenance, container, { sha256: sha256 });
+          } catch (e) {
+            throw new Error(cases[i][0] + ': verify threw — ' + e.message);
+          }
+          var m;
+          try {
+            m = view.model(read, report);
+          } catch (e) {
+            throw new Error(cases[i][0] + ': the view model threw — ' + e.message);
+          }
+          assertEqual(m.state, view.UNREADABLE, cases[i][0] + ' state');
+          assert(m.state !== view.ABSENT, cases[i][0] + ' was reported as an absence');
+          assert(m.state !== view.PRESENT, cases[i][0] + ' was reported as readable');
+          assert(m.detail && m.detail.length, cases[i][0] + ' gave no reason');
+          assertEqual(m.counts.passed, 0, cases[i][0] + ' counted a pass');
+          assertEqual(m.claims.length, 0, cases[i][0] + ' rendered claims');
+        }
+        // A reader that returns nothing at all is the same kind of news.
+        assertEqual(view.model(null, null).state, view.UNREADABLE, 'a null read');
+        assertEqual(view.model(undefined, undefined).state, view.UNREADABLE, 'an undefined read');
+        return cases.length + ' malformed documents, each an error state, none thrown';
+      });
+
+      test('provenance: a container that cannot be walked is an error, not an absence', function () {
+        // Truncated mid-payload: the chain runs off the end, so this app cannot
+        // say whether provenance is present. Saying "no provenance" here would
+        // be a claim about a file it failed to read.
+        var container = joinBytes([segment(0x01, 1, dataPayload)]).subarray(0, 200);
+        var read = P.readContainer(container);
+        assertEqual(read.ok, false, 'the truncated chain was walked successfully');
+        var m = view.model(read, null);
+        assertEqual(m.state, view.UNREADABLE, 'state');
+        assert(m.state !== view.ABSENT, 'an unreadable container was reported as unprovenanced');
+        assertEqual(m.tone, view.FAIL, 'tone');
+        return 'truncated chain reported as unreadable';
+      });
+
+      test('provenance: every block the document omits is stated, not left blank', function () {
+        // An empty-but-valid provenance document. Each absent block must
+        // produce a row that says it is absent — the same rule the codec
+        // follows, where 0 means "none" because someone wrote it.
+        var empty = P.emptyProvenance();
+        empty.subject = { name: 'thing.bin', digest: { sha256: sha256(dataPayload) } };
+        var container = joinBytes([
+          segment(0x01, 1, dataPayload),
+          segment(P.PROVENANCE_SEGMENT_TYPE, 2, P.encode(empty))
+        ]);
+        var read = P.readContainer(container);
+        assertEqual(read.ok, true, 'decode: ' + read.reason);
+        var m = view.model(read, P.verify(read.provenance, container, { sha256: sha256 }));
+        assertEqual(m.state, view.PRESENT, 'state');
+        assertEqual(m.components.length, 0, 'components listed for an empty SBOM');
+
+        var labels = {};
+        m.facts.forEach(function (f) { labels[f.label] = f; });
+        ['Licences', 'Signer policy', 'Source revision', 'Build identity', 'Vulnerability assertions']
+          .forEach(function (label) {
+            assert(labels[label], label + ' is missing from the document summary');
+            assertEqual(labels[label].absent, true, label + ' is not marked absent');
+            assert(labels[label].value && labels[label].value.length,
+              label + ' was rendered as a blank space');
+          });
+        // Silence about vulnerabilities is not an all-clear, and the wording
+        // has to say so where a reader will see it.
+        assert(/not an all-clear/.test(labels['Vulnerability assertions'].value),
+          'an empty VEX list reads as an all-clear');
+
+        // Nothing the document says was ticked, because it says nothing. The
+        // one passing check is the container's own segment chain, which is a
+        // fact about the file rather than about its provenance.
+        var passed = m.checks.filter(function (c) { return c.status === view.PASS; });
+        assertEqual(passed.length, 1, 'passing checks on an empty document');
+        assertEqual(passed[0].name, 'Segment chain', 'the only pass should be the segment walk');
+        assertEqual(m.counts.failed, 0, 'an empty document failed something');
+        return Object.keys(labels).length + ' rows, each absence stated';
+      });
+
+      test('provenance: the panel reports what it could not check, without folding it into a pass', function () {
+        // A component naming a segment this container does not have. The hash
+        // cannot be recomputed, so it is neither a pass nor a silent omission.
+        var p = P.emptyProvenance();
+        p.sbom = {
+          present: true,
+          components: [{ name: 'ghost', version: '1', digest: { sha256: 'a'.repeat(64) }, segment: 99 }]
+        };
+        var container = joinBytes([
+          segment(0x01, 1, dataPayload),
+          segment(P.PROVENANCE_SEGMENT_TYPE, 2, P.encode(p))
+        ]);
+        var read = P.readContainer(container);
+        var m = view.model(read, P.verify(read.provenance, container, { sha256: sha256 }));
+        assertEqual(m.state, view.PRESENT, 'state');
+        assertEqual(m.components.length, 1, 'component count');
+        // verify() calls a component naming a segment outside the container a
+        // failure, not an omission, and the row must carry that verdict rather
+        // than a shrug.
+        assertEqual(m.components[0].status, view.FAIL, 'a component naming a segment 99 that does not exist');
+        assertEqual(m.tone, view.FAIL, 'tone');
+        assert(m.components[0].detail.length, 'the row explains nothing');
+        return 'a component bound to a segment that is not there fails loudly';
+      });
+
+      test('provenance: a document that does not re-encode canonically is reported, not corrected', function () {
+        var canonical = new TextDecoder().decode(
+          P.encode(populated(sha256(dataPayload))).subarray(12)
+        );
+        var doc = JSON.parse(canonical);
+        // Re-serialise with the top-level keys in the opposite order: the same
+        // claims, different bytes, so a hash over this provenance is not
+        // reproducible from what it says.
+        var reordered = {};
+        Object.keys(doc).reverse().forEach(function (k) { reordered[k] = doc[k]; });
+        var text = JSON.stringify(reordered);
+        assert(text !== canonical, 'the fixture did not actually change the encoding');
+        var body = new TextEncoder().encode(text);
+        var payload = new Uint8Array(12 + body.length);
+        payload.set([0x52, 0x56, 0x50, 0x56], 0);
+        payload[4] = 1;
+        new DataView(payload.buffer).setUint32(8, body.length, true);
+        payload.set(body, 12);
+        var container = joinBytes([
+          segment(0x01, 1, dataPayload),
+          segment(P.PROVENANCE_SEGMENT_TYPE, 2, payload)
+        ]);
+        var read = P.readContainer(container);
+        assertEqual(read.ok, true, 'decode: ' + read.reason);
+        var m = view.model(read, P.verify(read.provenance, container, { sha256: sha256 }));
+        assertEqual(m.canonical, false, 'a reordered document was called canonical');
+        assert(m.canonicalNote && m.canonicalNote.length, 'the panel says nothing about it');
+        return 'non-canonical encoding surfaced rather than rewritten';
       });
     }
 

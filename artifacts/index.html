@@ -526,6 +526,70 @@
   .check .body strong { font-size: .88rem; }
   .check .body span { display: block; color: var(--muted); font-size: .8rem; }
 
+  /* --- Provenance ----------------------------------------------------------
+     Two registers, and they are deliberately unlike each other. A check earns a
+     mark in the verdict colours because something was recomputed here. A claim
+     gets a quotation dash, a hairline rule down its left edge and its author on
+     the line beneath — and never touches --ok in any state, because there is no
+     state in which somebody's word has been verified. If these two ever start
+     to look alike, the panel has stopped telling the truth. */
+  .subhead {
+    font-family: var(--font-display);
+    text-transform: uppercase; letter-spacing: .1em;
+    font-size: .62rem; font-weight: 700; color: var(--muted);
+    margin: 1.1rem 0 .35rem;
+  }
+
+  .claim {
+    display: flex; gap: .55rem; align-items: flex-start;
+    padding: .5rem 0 .5rem .55rem;
+    border-left: 2px solid var(--line-2);
+    border-bottom: 1px solid var(--line);
+  }
+  .claim:last-of-type { border-bottom: 0; }
+  .claim .mark {
+    flex: 0 0 auto; width: 1.15rem; text-align: center;
+    font-family: var(--font-mono); font-weight: 700;
+    color: var(--muted);
+  }
+  .claim .body { min-width: 0; }
+  .claim .body strong { font-size: .88rem; }
+  .claim .body span { display: block; color: var(--muted); font-size: .8rem; }
+  .claim .body .value {
+    display: block; font-size: .84rem; color: var(--text);
+    overflow-wrap: anywhere; margin-top: .1rem;
+  }
+  .claim .body .value.none { color: var(--muted); font-style: italic; }
+  .claim .body .who { display: block; font-size: .74rem; color: var(--muted); margin-top: .12rem; }
+
+  /* Wider than the narrowest phone on purpose: the component table scrolls
+     inside .scroll-x rather than crushing five columns into 360px. */
+  table.seg.prov { min-width: 26rem; }
+  table.seg td.mark {
+    width: 1.2rem; text-align: center;
+    font-family: var(--font-mono); font-weight: 700;
+  }
+  tr.comp.pass td.mark { color: var(--ok); }
+  tr.comp.warn td.mark { color: var(--warn); }
+  tr.comp.unavailable td.mark { color: var(--muted); }
+  /* A component that is not the component the SBOM describes is a
+     substitution. It takes the whole row, not a footnote. */
+  tr.comp.fail td { color: var(--danger); }
+  tr.comp.fail { background: color-mix(in srgb, var(--danger) 12%, transparent); }
+
+  .notice.prov-note strong { display: block; margin-bottom: .25rem; }
+  .notice.prov-note p { margin: 0; }
+
+  details.prov-limits { margin-top: 1rem; border-top: 1px solid var(--line); }
+  details.prov-limits > summary {
+    cursor: pointer;
+    font-family: var(--font-display);
+    text-transform: uppercase; letter-spacing: .1em;
+    font-weight: 700; font-size: .62rem; color: var(--muted);
+    min-height: 44px; display: flex; align-items: center;
+  }
+  details.prov-limits > summary::marker { color: var(--accent); }
+
   .rank { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; font-size: .88rem; }
   .rank .bar2 { flex: 1 1 auto; height: 5px; border-radius: 1px; background: var(--surface-2); overflow: hidden; }
   .rank .bar2 > i { display: block; height: 100%; background: var(--accent); }
@@ -1327,6 +1391,16 @@
   v1 without it, and the receiver names a v2 frame rather than mis-reading one.
 -->
 <script src="./proto2.js" defer></script>
+<!--
+  provenance.js reads no globals and touches no DOM, so it is deferred with the
+  other optional modules. Nothing on the first paint needs it: the panel it
+  feeds appears only inside an RVF artifact's detail sheet, and when the module
+  is absent that panel says so rather than reporting the container as
+  unprovenanced — a missing reader and an unprovenanced file are different
+  facts. Loading it here is also what puts it in the standalone build, whose
+  script list is derived from this document.
+-->
+<script src="./provenance.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>
