@@ -35,7 +35,8 @@
       });
       var summary = api.summarize(results);
       console.log(
-        '\n' + summary.passed + '/' + summary.total + ' passed, ' + summary.failed + ' failed'
+        '\n' + summary.passed + '/' + summary.total + ' passed, ' + summary.failed + ' failed' +
+          (summary.skipped ? ', ' + summary.skipped + ' skipped (run with --expose-gc)' : '')
       );
       if (typeof process !== 'undefined') process.exit(summary.failed ? 1 : 0);
     }
@@ -986,7 +987,13 @@
 
   function summarize(results) {
     var passed = results.filter(function (r) { return r.ok; }).length;
-    return { total: results.length, passed: passed, failed: results.length - passed };
+    // Count skips explicitly. A suite that reports "30/30 passed" while two
+    // tests quietly did nothing is a false green — the reader has to be told
+    // that the GC-dependent checks need --expose-gc to actually run.
+    var skipped = results.filter(function (r) {
+      return typeof r.detail === 'string' && r.detail.indexOf('skipped') === 0;
+    }).length;
+    return { total: results.length, passed: passed, failed: results.length - passed, skipped: skipped };
   }
 
   return { runAll: runAll, summarize: summarize };

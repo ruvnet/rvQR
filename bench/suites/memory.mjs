@@ -55,13 +55,13 @@ export const ALLOCATION_SITES = [
   },
   {
     stage: 'v2 harness: armour every frame, all retained',
-    site: '`toTransport` appends one character at a time, so V8 leaves a cons-string rope',
-    cost: 'nominally ≈1.14× the frame bytes; measured far higher, because an unflattened rope costs a node per concatenation'
+    site: '`toTransport` builds into a preallocated array and joins once',
+    cost: '≈1.03 B retained per output byte. It appended one character at a time until 6374266, which left V8 an unflattened cons-string rope costing 31.6 B per output byte — about 37× the artifact when every frame was held'
   },
   {
     stage: 'v2 receiver: ingest (frames drained)',
-    site: '`proto2.fromTransport` allocates a frame buffer; `payload` is a subarray VIEW of it',
-    cost: '≈1.04× the artifact — the whole 693-byte frame stays alive behind each 665-byte payload view'
+    site: '`proto2.fromTransport` copies the payload out of the frame buffer',
+    cost: 'owned 1.296× against 1.341× for the view it replaced — 29.9 B saved per frame, which is the 28-byte header plus slack. The view pinned a whole 693-byte frame behind each 665-byte payload'
   },
   {
     stage: 'v2 receiver: finalize (assemble + SHA-256)',
