@@ -2343,8 +2343,16 @@
   function openWelcome(opener) {
     welcomeReturnFocus = opener || null;
     welcomeDialog.classList.add('enter');
-    if (welcomeDialog.showModal) welcomeDialog.showModal();
-    else welcomeDialog.setAttribute('open', '');
+    // showModal() is not merely absent on some hosts — inside a sandboxed
+    // iframe without allow-modals it EXISTS and THROWS. Falling back to the
+    // open attribute keeps the sheet usable there instead of leaving a
+    // half-opened dialog nobody can dismiss.
+    try {
+      if (welcomeDialog.showModal) welcomeDialog.showModal();
+      else welcomeDialog.setAttribute('open', '');
+    } catch (e) {
+      welcomeDialog.setAttribute('open', '');
+    }
     startStage();
     // Focus the primary action, not the dialog, so Enter does the useful thing.
     var primary = $('welcomeStart');
@@ -2366,13 +2374,22 @@
     // Native dialogs fire 'close' for every dismissal route — button, Escape,
     // backdrop — so the bookkeeping lives in that one handler. Only the
     // no-showModal fallback has to do it here.
+    // A native close() fires the 'close' event, where the bookkeeping lives, so
+    // prefer it. But it can throw on a host that refused showModal(), and if it
+    // does the sheet must still go away — an intro nobody can dismiss is worse
+    // than one that skips its own bookkeeping.
     if (welcomeDialog.close && welcomeDialog.open) {
-      welcomeDialog.close();
-      return;
+      try {
+        welcomeDialog.close();
+        return;
+      } catch (e) {
+        // fall through to the manual teardown below
+      }
     }
     stopStage();
     core.markWelcomeSeen(safeStorage());
     welcomeDialog.removeAttribute('open');
+    welcomeDialog.classList.remove('enter');
     if (welcomeReturnFocus && welcomeReturnFocus.focus) welcomeReturnFocus.focus();
     welcomeReturnFocus = null;
   }

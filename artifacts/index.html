@@ -559,6 +559,11 @@
        is bottom-anchored on a phone, so reclaiming that strip is the
        difference between the actions sitting on screen and below it. */
     max-height: min(88vh, 94dvh);
+  }
+  /* Scoped to [open]. A bare `dialog { display: flex }` beats the UA sheet's
+     `dialog:not([open]) { display: none }` — author styles win over UA styles
+     whatever the specificity — so a closed dialog would stay on screen. */
+  dialog[open] {
     display: flex; flex-direction: column;
     border: 1px solid var(--line-2); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
     background: var(--surface); color: var(--text); padding: 0;
