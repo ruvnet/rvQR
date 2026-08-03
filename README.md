@@ -108,7 +108,24 @@ flowchart TD
 
 ## Protocol
 
-The protocol is minimal and deterministic. A frame is one QR code containing one UTF-8 JSON string.
+There are two frame formats. **v1 (JSON) is the default**; v2 (binary) is
+selectable under transfer settings. The manifest states which is in use, so a
+receiver never has to infer it, and the two are separate state machines — fed
+the wrong format each names it (`v1-frame`, `not-a-frame`) rather than
+mis-decoding.
+
+**Why v2 exists, and what it actually buys.** v1 spends 44% of every QR symbol
+on JSON and base64url. v2 uses a 28-byte binary header carrying an explicit
+codec id, dictionary id, original and compressed sizes, and both a transport
+hash and the original content hash. But neither QR decoder this app can reach —
+the browser's `BarcodeDetector` or the bundled one — returns bytes; both return
+a string. So v2 frames are ASCII-armoured at 8/7, and the realised gain is
+**1.30× v1's default chunk** (1.209× against v1's largest) at version 19-L,
+rising to 2.5× at version 40 where v1 is capped. The unarmoured binary frame is
+denser still, and unusable: it does not survive the round trip. Measured in
+[docs/benchmarks.md](./docs/benchmarks.md) §1.
+
+The v1 protocol is minimal and deterministic. A frame is one QR code containing one UTF-8 JSON string.
 
 **Manifest frame (always sequence 0):**
 ```json
