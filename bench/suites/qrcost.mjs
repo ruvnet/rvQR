@@ -292,28 +292,35 @@ export function runDecodeVersionSweep({
   const rows = [];
   for (const version of versions) {
     const capacity = qrcode.byteCapacity(version, level);
-    const payload = randomBytes(rand, capacity);
-    const qr = qrcode.encodeBytes(payload, { ecl: level });
-    if (qr.version !== version) continue; // encoder chose a different version
+    const symbols = [];
+    for (let p = 0; p < payloadsPerVersion; p++) {
+      const qr = qrcode.encodeBytes(randomBytes(rand, capacity), { ecl: level });
+      if (qr.version === version) symbols.push(qr);
+    }
+    if (!symbols.length) continue;
+    const qr = symbols[0];
 
     // Cost on a clean frame at the largest scale that fits.
     const natural = renderSymbol(qr, frame.width, frame.height);
     const naturalOk = D.decodeImage(natural, { all: false }).length > 0;
     const ms = timeIt(() => D.decodeImage(natural, { all: false }), reps);
 
-    // Robustness: smallest pixels-per-module that still decodes, per blur.
+    // Robustness: smallest pixels-per-module at which EVERY sampled payload
+    // still decodes. Reporting the worst case rather than the best keeps the
+    // number usable as a design floor.
     const minScale = {};
+    const perPayload = {};
     for (const radius of blurRadii) {
-      minScale[radius] = null;
-      for (const scale of scales) {
-        const img = renderSymbol(qr, frame.width, frame.height, scale);
-        if (!img) continue;
-        const blurred = boxBlur(img, radius);
-        if (D.decodeImage(blurred, { all: false }).length > 0) {
-          minScale[radius] = scale;
-          break;
+      const mins = symbols.map((sym) => {
+        for (const scale of scales) {
+          const img = renderSymbol(sym, frame.width, frame.height, scale);
+          if (!img) continue;
+          if (D.decodeImage(boxBlur(img, radius), { all: false }).length > 0) return scale;
         }
-      }
+        return null;
+      });
+      perPayload[radius] = mins;
+      minScale[radius] = mins.some((m) => m === null) ? null : Math.max(...mins);
     }
 
     rows.push({
@@ -323,6 +330,8 @@ export function runDecodeVersionSweep({
       modules: qr.size,
       naturalModuleScale: natural.moduleScale,
       naturalDecoded: naturalOk,
+      payloadsSampled: symbols.length,
+      minScalePerPayload: perPayload,
       ms,
       maxFps: 1000 / ms.p50,
       minModuleScale: minScale,

@@ -23,9 +23,26 @@
     --ok: #4ade80;
     --radius: 14px;
     --tabbar: 62px;
+
+    /* Depth layer. The page sits under a teal bloom biased to the top, the
+       direction a QR frame travels from on the Send tab, over a base that
+       cools toward the bottom. Cards are lit from their top edge so they read
+       as raised against it rather than as flat panels on a flat ground. */
+    --bloom: radial-gradient(1100px 620px at 50% -18%, rgba(45, 212, 191, .16), transparent 62%);
+    --ground: linear-gradient(180deg, #0d1218 0%, var(--bg) 46%, #080c11 100%);
+    --card-face: linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--accent) 6%) 0%, var(--surface) 58%);
+    --card-edge: color-mix(in srgb, var(--accent) 26%, transparent);
+    --accent-face: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #ffffff 8%), var(--accent) 70%);
+    --chrome: color-mix(in srgb, var(--bg) 82%, transparent);
+  }
+
+  /* Light theme as its own composition, not an inversion: the bloom warms
+     rather than glows, and the ground lifts toward white at the top. */
+  :root[data-theme="light"], :root:not([data-theme="dark"]) {
+    color-scheme: light dark;
   }
   @media (prefers-color-scheme: light) {
-    :root {
+    :root:not([data-theme="dark"]) {
       --bg: #f6f8fb;
       --surface: #ffffff;
       --surface-2: #eef2f7;
@@ -37,13 +54,58 @@
       --danger: #b91c1c;
       --warn: #92610a;
       --ok: #15803d;
+      --bloom: radial-gradient(1000px 560px at 50% -20%, rgba(13, 148, 136, .10), transparent 60%);
+      --ground: linear-gradient(180deg, #ffffff 0%, var(--bg) 52%, #e9eef5 100%);
+      --card-face: linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--surface) 96%, var(--accent) 4%) 100%);
+      --card-edge: color-mix(in srgb, var(--accent) 20%, transparent);
+      --chrome: color-mix(in srgb, #ffffff 84%, transparent);
     }
+  }
+  /* The viewer's toggle stamps data-theme on the root and must win over the
+     media query in BOTH directions, so each theme is restated explicitly. */
+  :root[data-theme="light"] {
+    --bg: #f6f8fb;
+    --surface: #ffffff;
+    --surface-2: #eef2f7;
+    --line: #dbe3ed;
+    --text: #101720;
+    --muted: #5b6b7f;
+    --accent: #0d9488;
+    --accent-ink: #ffffff;
+    --danger: #b91c1c;
+    --warn: #92610a;
+    --ok: #15803d;
+    --bloom: radial-gradient(1000px 560px at 50% -20%, rgba(13, 148, 136, .10), transparent 60%);
+    --ground: linear-gradient(180deg, #ffffff 0%, var(--bg) 52%, #e9eef5 100%);
+    --card-face: linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--surface) 96%, var(--accent) 4%) 100%);
+    --card-edge: color-mix(in srgb, var(--accent) 20%, transparent);
+    --chrome: color-mix(in srgb, #ffffff 84%, transparent);
+  }
+  :root[data-theme="dark"] {
+    --bg: #0b0f14;
+    --surface: #121821;
+    --surface-2: #1a2230;
+    --line: #24303f;
+    --text: #e6edf6;
+    --muted: #8b9bb0;
+    --accent: #2dd4bf;
+    --accent-ink: #06231f;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --ok: #4ade80;
+    --bloom: radial-gradient(1100px 620px at 50% -18%, rgba(45, 212, 191, .16), transparent 62%);
+    --ground: linear-gradient(180deg, #0d1218 0%, var(--bg) 46%, #080c11 100%);
+    --card-face: linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--accent) 6%) 0%, var(--surface) 58%);
+    --card-edge: color-mix(in srgb, var(--accent) 26%, transparent);
+    --chrome: color-mix(in srgb, var(--bg) 82%, transparent);
   }
 
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    background: var(--bg);
+    background: var(--bloom), var(--ground);
+    background-attachment: fixed, fixed;
+    background-color: var(--bg);
     color: var(--text);
     font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
     -webkit-font-smoothing: antialiased;
@@ -65,8 +127,8 @@
     position: sticky; top: 0; z-index: 20;
     display: flex; align-items: center; gap: .6rem;
     padding: calc(env(safe-area-inset-top) + .7rem) 1rem .7rem;
-    background: color-mix(in srgb, var(--bg) 88%, transparent);
-    backdrop-filter: blur(12px);
+    background: linear-gradient(180deg, var(--chrome), color-mix(in srgb, var(--bg) 58%, transparent));
+    backdrop-filter: blur(14px) saturate(1.2);
     border-bottom: 1px solid var(--line);
   }
   .brand { min-width: 0; }
@@ -90,10 +152,21 @@
   .stack > * + * { margin-top: .9rem; }
 
   .card {
-    background: var(--surface);
+    position: relative;
+    background: var(--card-face);
     border: 1px solid var(--line);
     border-radius: var(--radius);
     padding: 1rem;
+    box-shadow: 0 1px 2px rgba(0,0,0,.16), 0 8px 24px -18px rgba(0,0,0,.5);
+  }
+  /* A hairline of accent along the top edge — the "lit from above" cue that
+     separates a card from the ground without adding a heavier border. */
+  .card::before {
+    content: "";
+    position: absolute; inset: 0 0 auto 0; height: 1px;
+    border-radius: var(--radius) var(--radius) 0 0;
+    background: linear-gradient(90deg, transparent, var(--card-edge) 22%, var(--card-edge) 78%, transparent);
+    pointer-events: none;
   }
   .card.tight { padding: .75rem; }
   .muted { color: var(--muted); }
@@ -112,7 +185,11 @@
   }
   button:active { transform: translateY(1px); }
   button:disabled { opacity: .45; cursor: not-allowed; }
-  .btn-primary { background: var(--accent); color: var(--accent-ink); border-color: transparent; }
+  .btn-primary {
+    background: var(--accent-face); color: var(--accent-ink); border-color: transparent;
+    box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
+                0 6px 18px -10px color-mix(in srgb, var(--accent) 70%, transparent);
+  }
   .btn-danger { color: var(--danger); }
   .btn-sm { min-height: 44px; padding: 0 .8rem; font-size: .85rem; font-weight: 500; }
   .btn-block { width: 100%; }
@@ -207,8 +284,8 @@
   nav.tabbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
     display: grid; grid-template-columns: repeat(5, 1fr);
-    background: color-mix(in srgb, var(--surface) 94%, transparent);
-    backdrop-filter: blur(12px);
+    background: linear-gradient(0deg, var(--chrome), color-mix(in srgb, var(--bg) 62%, transparent));
+    backdrop-filter: blur(14px) saturate(1.2);
     border-top: 1px solid var(--line);
     padding-bottom: env(safe-area-inset-bottom);
   }
@@ -217,7 +294,12 @@
     border: 0; border-radius: 0; background: none; color: var(--muted);
     font-size: .68rem; font-weight: 600; letter-spacing: .01em;
   }
-  nav.tabbar button[aria-selected="true"] { color: var(--accent); }
+  nav.tabbar button[aria-selected="true"] { color: var(--accent); position: relative; }
+  nav.tabbar button[aria-selected="true"]::before {
+    content: ""; position: absolute; top: 0; left: 22%; right: 22%; height: 2px;
+    border-radius: 0 0 2px 2px;
+    background: linear-gradient(90deg, transparent, var(--accent), transparent);
+  }
   nav.tabbar svg { width: 22px; height: 22px; }
 
   table.seg { width: 100%; border-collapse: collapse; font-size: .8rem; }
@@ -367,9 +449,36 @@
       <input type="range" id="scrub" min="0" max="0" value="0">
     </div>
 
+    <details class="card tight" id="deltaSendCard">
+      <summary style="cursor:pointer;font-weight:600">Send only what they are missing</summary>
+      <p class="small muted" style="margin-top:.7rem">If the other device already holds an older copy of this container, it can show you an inventory QR. Scan or paste it here and rvQR will send only the segments they lack.</p>
+      <div class="row">
+        <button class="btn-sm" id="deltaImageBtn">Scan their inventory from a picture</button>
+      </div>
+      <input type="file" id="deltaImageInput" accept="image/*">
+      <textarea id="deltaInventory" placeholder="…or paste the inventory text" style="margin-top:.6rem"></textarea>
+      <div class="row" style="margin-top:.5rem">
+        <button class="btn-sm" id="deltaDiffBtn">Work out the difference</button>
+      </div>
+      <div id="deltaResult" style="margin-top:.7rem"></div>
+    </details>
+
     <details class="card tight">
       <summary style="cursor:pointer;font-weight:600">Transfer settings</summary>
       <div style="margin-top:.8rem">
+        <label class="field" for="modePick">Transfer mode</label>
+        <select id="modePick">
+          <option value="indexed" selected>Indexed frames — numbered chunks, looped</option>
+          <option value="fountain">Erasure-coded — any K symbols rebuild it</option>
+        </select>
+        <p class="small muted" id="modeNote" style="margin:.4rem 0 .8rem"></p>
+
+        <label class="row" style="gap:.5rem;margin-bottom:.6rem">
+          <input type="checkbox" id="signSend" style="width:auto;min-height:0">
+          <span class="small">Sign this transfer</span>
+        </label>
+        <p class="small muted" id="signNote" style="margin:0 0 .8rem"></p>
+
         <label class="field" for="chunkRange">Chunk size — <span id="chunkLabel">512</span> bytes per frame</label>
         <input type="range" id="chunkRange" min="128" max="1024" step="64" value="512">
         <label class="field" for="fpsRange">Speed — <span id="fpsLabel">5</span> frames per second</label>
@@ -389,6 +498,7 @@
     <div class="card">
       <h2>Receive</h2>
       <p class="small muted">Hold this device's camera steady over the sending screen. Frames may arrive in any order; duplicates are free.</p>
+      <div id="resumeBanner"></div>
       <div id="capabilityNotice"></div>
       <div class="row">
         <button class="btn-primary grow" id="scanBtn">Start camera</button>
@@ -423,6 +533,17 @@
       <div class="frameGrid" id="rxGrid"></div>
       <div id="rxResult" style="margin-top:.8rem"></div>
     </div>
+
+    <details class="card tight">
+      <summary style="cursor:pointer;font-weight:600">Verify the sender (optional)</summary>
+      <p class="small muted" style="margin-top:.7rem">If the sender signed the transfer, paste their fingerprint here and rvQR will refuse anything that does not match it. Compare the fingerprint out of band — read it aloud, not over the same camera.</p>
+      <input type="text" id="pinInput" placeholder="21fe-31df-a154-a261" autocomplete="off" spellcheck="false">
+      <div class="row" style="margin-top:.5rem">
+        <button class="btn-sm" id="pinSet">Pin this fingerprint</button>
+        <button class="btn-sm" id="pinClear">Clear</button>
+      </div>
+      <p class="small" id="pinState" style="margin:.6rem 0 0"></p>
+    </details>
 
     <details class="card tight">
       <summary style="cursor:pointer;font-weight:600">Paste a frame by hand</summary>
@@ -632,6 +753,16 @@
 <script src="./vendor/qrdecode.js"></script>
 <script src="./core.js"></script>
 <script src="./rvf.js"></script>
+<!--
+  The roadmap modules are large and none of them is needed to render the vault,
+  so they are deferred: the browser fetches them in parallel but runs them after
+  the document is parsed and after app.js has booted. app.js treats each as
+  optional and enables the matching feature only once its global appears.
+-->
+<script src="./fountain.js" defer></script>
+<script src="./crypto.js" defer></script>
+<script src="./delta.js" defer></script>
+<script src="./resume.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

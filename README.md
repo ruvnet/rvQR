@@ -15,6 +15,17 @@ RVF containers and WASM artifacts — offline, no cables, no accounts, nothing t
 The written walkthrough is [docs/tutorial.md](./docs/tutorial.md); the same
 guide is built into the app under the **Guide** tab.
 
+### Two ways to run it
+
+| | |
+|---|---|
+| **Hosted** | [ruvnet.github.io/rvQR](https://ruvnet.github.io/rvQR/artifacts/) — the normal app. |
+| **One file** | [`standalone.html`](https://ruvnet.github.io/rvQR/standalone.html) — the whole app, both demo artifacts and the RVF microkernel inlined into a single ~450 KB page. Save it and open it from disk: it makes **no network requests at all**, so it keeps working on a machine that has never been online. Handy for the air-gapped side of a transfer. |
+
+Receiving needs a camera, which browsers only grant on `https://` or a local
+file — both of the above qualify. The photo-upload and paste paths work
+anywhere, including inside an embedded frame where camera access is refused.
+
 ## What is rvQR?
 
 rvQR is optical transfer of RVF cognitive containers and WASM artifacts. Open the same app on two devices. On the first device, load a file from your vault and tap Send—the app animates it as a stream of QR codes on your screen. On the second device, tap Receive and point the camera at the first screen. Watch the progress ring fill as the QR codes decode. When the last frame arrives, the file is verified and stored in your vault.

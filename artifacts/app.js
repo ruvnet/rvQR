@@ -12,6 +12,15 @@
   var qrdec = window.RVQRDecode;
   var rvflib = window.RVQRRvf;
 
+  // The roadmap modules load with `defer`, so they are not present while app.js
+  // is evaluating. Everything reads them through these getters and treats
+  // absence as "feature off" rather than as an error — the vault must render
+  // whether or not they ever arrive.
+  function fountainLib() { return window.RVQRFountain || null; }
+  function cryptoLib() { return window.RVQRCrypto || null; }
+  function deltaLib() { return window.RVQRDelta || null; }
+  function resumeLib() { return window.RVQRResume || null; }
+
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
     var n = document.createElement(tag);
@@ -367,6 +376,7 @@
       if (report.vectors && report.vectors.ok) {
         buildQueryPanel(box, kernel, bytes, report);
       }
+      buildInventoryPanel(box, bytes, kernel);
     }, function (err) {
       status.textContent = 'Could not load the RVF microkernel: ' + err.message +
         (window.location.protocol === 'file:'
@@ -466,6 +476,117 @@
     run();
   }
 
+  // ---------------------------------------------------------------------------
+  // Delta transfer
+  //
+  // Needs a reverse channel the optical link does not have, so it borrows one:
+  // the receiver shows an inventory of what it holds as a QR, and the sender
+  // reads that with its own camera. Both devices therefore need a camera for
+  // this flow, which is the honest cost of the feature.
+  // ---------------------------------------------------------------------------
+
+  function buildInventoryPanel(box, bytes, kernel) {
+    var lib = deltaLib();
+    if (!lib) return;
+    var panel = el('div');
+    panel.style.marginTop = '1rem';
+    panel.appendChild(el('h3', '', 'Update from another device'));
+    panel.appendChild(el('p', 'small muted',
+      'Show this code to a device holding a newer copy. It works out which ' +
+      'segments you are missing and sends only those.'));
+    var btn = el('button', 'btn-sm', 'Show my inventory');
+    panel.appendChild(btn);
+    var out = el('div');
+    out.style.marginTop = '.7rem';
+    panel.appendChild(out);
+    box.appendChild(panel);
+
+    btn.addEventListener('click', function () {
+      out.textContent = '';
+      try {
+        var parser = kernel && lib.wasmParser ? lib.wasmParser(kernel.exports) : undefined;
+        var inv = lib.inventory(bytes, parser ? { parser: parser } : undefined);
+        var qrData = lib.inventoryQr(inv);
+        var chunks = qrData.chunks && qrData.chunks.length ? qrData.chunks : [qrData.text];
+        out.appendChild(el('p', 'small muted',
+          qrData.bytes + ' bytes of inventory' +
+          (chunks.length > 1 ? ' across ' + chunks.length + ' codes — scan them all' : '') + '.'));
+        chunks.forEach(function (text, idx) {
+          var holder = el('div');
+          holder.style.background = '#fff';
+          holder.style.padding = '8px';
+          holder.style.borderRadius = '10px';
+          holder.style.marginTop = '.5rem';
+          var canvas = document.createElement('canvas');
+          canvas.style.width = '100%';
+          canvas.style.maxWidth = '300px';
+          canvas.style.display = 'block';
+          canvas.style.imageRendering = 'pixelated';
+          holder.appendChild(canvas);
+          out.appendChild(holder);
+          var qr = qrlib.encodeText(text, { ecl: 'L' });
+          qrlib.drawOnCanvas(qr, canvas, { size: 600 });
+          out.appendChild(el('p', 'small muted',
+            (chunks.length > 1 ? 'part ' + (idx + 1) + ' of ' + chunks.length + ' · ' : '') +
+            'QR version ' + qr.version));
+        });
+      } catch (e) {
+        out.appendChild(el('div', 'notice bad', 'Could not build an inventory: ' + e.message));
+      }
+    });
+  }
+
+  function runDeltaDiff() {
+    var lib = deltaLib();
+    var box = $('deltaResult');
+    box.textContent = '';
+    if (!lib) {
+      box.appendChild(el('div', 'notice bad', 'The delta module did not load.'));
+      return;
+    }
+    if (!send.record) {
+      box.appendChild(el('div', 'notice', 'Choose the artifact you want to send first.'));
+      return;
+    }
+    var text = $('deltaInventory').value.trim();
+    if (!text) {
+      box.appendChild(el('div', 'notice', 'Paste or scan their inventory first.'));
+      return;
+    }
+    try {
+      var receiverInv = lib.decodeInventory(text);
+      var mine = lib.inventory(recordBytes(send.record));
+      var d = lib.diff(mine, receiverInv);
+      var saved = d.bytesSaved || 0;
+      var ratio = d.ratio || (d.bytesToSend ? send.record.size / d.bytesToSend : 0);
+
+      var n = el('div', 'notice good');
+      n.appendChild(el('strong', '',
+        core.formatBytes(d.bytesToSend) + ' instead of ' + core.formatBytes(send.record.size) + '. '));
+      n.appendChild(document.createTextNode(
+        (d.missing ? d.missing.length : 0) + ' segments to send, ' +
+        core.formatBytes(saved) + ' saved' +
+        (ratio ? ' — ' + ratio.toFixed(1) + '× less data' : '') + '.'
+      ));
+      box.appendChild(n);
+
+      var go = el('button', 'btn-primary', 'Send just those segments');
+      go.style.marginTop = '.6rem';
+      go.addEventListener('click', function () {
+        try {
+          var payload = lib.buildDeltaPayload(recordBytes(send.record), d.missing, { base: receiverInv });
+          startSend(null, payload, send.record.name + '.delta');
+          toast('Sending a ' + core.formatBytes(payload.length) + ' delta');
+        } catch (e) {
+          toast('Could not build the delta: ' + e.message);
+        }
+      });
+      box.appendChild(go);
+    } catch (e) {
+      box.appendChild(el('div', 'notice bad', 'That does not look like an inventory: ' + e.message));
+    }
+  }
+
   // Compile-only: WebAssembly.compile validates and reads the module's shape.
   // It never runs code — instantiation is what would run a start function.
   function inspectWasm(bytes) {
@@ -550,7 +671,12 @@
     timer: null,
     fps: 5,
     chunk: core.DEFAULT_CHUNK,
-    ecl: 'L'
+    ecl: 'L',
+    mode: core.MODE_INDEXED,
+    stream: null,   // the erasure-coded symbol source, when in that mode
+    esi: 0,         // next encoding symbol id to emit
+    sign: false,
+    identity: null
   };
 
   function refreshSendPicker() {
@@ -582,34 +708,78 @@
     send.timer = null;
   }
 
-  function startSend(id) {
+  function startSend(id, overrideBytes, overrideName) {
     stopSend();
-    vaultGet(id).then(function (row) {
-      if (!row) return;
-      send.record = row;
-      var bytes = recordBytes(row);
-      var built = core.buildFrames(bytes, {
-        name: row.name,
-        chunk: send.chunk,
-        sha256: row.sha256
-      });
-      send.frames = built.frames;
-      send.index = 0;
-      $('scrub').max = String(built.frames.length - 1);
-      $('scrub').value = '0';
-      $('sendStageCard').hidden = false;
-      $('sendMeta').textContent =
-        row.name + ' · ' + core.formatBytes(row.size) + ' · ' + built.chunk +
-        ' B/frame · transfer ' + built.transferId;
-      drawFrame(0);
-      play(true);
+    return vaultGet(id).then(function (row) {
+      if (!row && !overrideBytes) return;
+      send.record = row || null;
+      var bytes = overrideBytes || recordBytes(row);
+      var name = overrideName || (row ? row.name : 'artifact.bin');
+      var hash = overrideBytes ? core.sha256Hex(bytes) : row.sha256;
+
+      return signIfRequested({ name: name, size: bytes.length, sha256: hash })
+        .then(function (signature) {
+          if (send.mode === core.MODE_FOUNTAIN && fountainLib()) {
+            var encoder = fountainLib().encoder(bytes, send.chunk);
+            send.stream = core.buildFountainStream(encoder, {
+              name: name, sha256: hash, size: bytes.length
+            });
+            if (signature) send.stream.manifest = withSignature(send.stream.manifest, signature);
+            send.frames = null;
+            send.esi = 0;
+            send.index = 0;
+            $('scrub').max = '0';
+            $('sendStageCard').hidden = false;
+            $('sendMeta').textContent =
+              name + ' · ' + core.formatBytes(bytes.length) + ' · erasure-coded, K=' +
+              encoder.K + ' · ' + encoder.symbolSize + ' B/symbol · transfer ' +
+              send.stream.transferId + (signature ? ' · signed' : '');
+            drawFrame(0);
+            play(true);
+            return;
+          }
+
+          send.stream = null;
+          var built = core.buildFrames(bytes, { name: name, chunk: send.chunk, sha256: hash });
+          if (signature) built.frames[0] = withSignature(built.frames[0], signature);
+          send.frames = built.frames;
+          send.index = 0;
+          $('scrub').max = String(built.frames.length - 1);
+          $('scrub').value = '0';
+          $('sendStageCard').hidden = false;
+          $('sendMeta').textContent =
+            name + ' · ' + core.formatBytes(bytes.length) + ' · ' + built.chunk +
+            ' B/frame · transfer ' + built.transferId + (signature ? ' · signed' : '');
+          drawFrame(0);
+          play(true);
+        });
     });
   }
 
+  function withSignature(manifestFrame, signature) {
+    var obj = JSON.parse(manifestFrame);
+    obj.m.sig = signature.sig;
+    obj.m.pub = signature.pub;
+    return JSON.stringify(obj);
+  }
+
   function drawFrame(i) {
-    if (!send.frames.length) return;
-    send.index = ((i % send.frames.length) + send.frames.length) % send.frames.length;
-    var text = send.frames[send.index];
+    var text;
+    if (send.stream) {
+      // An erasure-coded stream has no end: frame 0 is the manifest and every
+      // subsequent tick emits the next encoding symbol, for ever. The receiver
+      // stops when it has enough, which the sender never learns.
+      send.index = Math.max(0, i);
+      if (send.index === 0) {
+        text = send.stream.manifest;
+      } else {
+        text = send.stream.symbolFrame(send.esi++);
+      }
+    } else {
+      if (!send.frames || !send.frames.length) return;
+      send.index = ((i % send.frames.length) + send.frames.length) % send.frames.length;
+      text = send.frames[send.index];
+    }
     var qr;
     try {
       qr = qrlib.encodeText(text, { ecl: send.ecl });
@@ -620,12 +790,25 @@
     }
     qrlib.drawOnCanvas(qr, $('qrCanvas'), { size: 640, quietZone: 4 });
 
+    var circumference = 2 * Math.PI * 33;
+    if (send.stream) {
+      var emitted = send.esi;
+      var k = send.stream.K;
+      $('sendFrameLabel').textContent =
+        'symbol ' + emitted + '  ·  K = ' + k + '  ·  QR version ' + qr.version;
+      // The ring shows progress towards K, then simply keeps going: past K
+      // every extra symbol is insurance, not progress.
+      var frac = Math.min(1, emitted / k);
+      $('ringFill').setAttribute('stroke-dasharray',
+        (circumference * frac).toFixed(1) + ' ' + circumference.toFixed(1));
+      $('ringText').textContent = emitted <= k ? Math.round(frac * 100) + '%' : '+' + (emitted - k);
+      return;
+    }
     var total = send.frames.length;
     var shown = send.index + 1;
     $('sendFrameLabel').textContent =
       'frame ' + shown + ' / ' + total + '  ·  QR version ' + qr.version;
     var pct = Math.round((shown / total) * 100);
-    var circumference = 2 * Math.PI * 33;
     $('ringFill').setAttribute(
       'stroke-dasharray',
       (circumference * shown / total).toFixed(1) + ' ' + circumference.toFixed(1)
@@ -650,6 +833,10 @@
 
   var rx = {
     gate: core.createFrameGate(),
+    verification: null,
+    pin: null,
+    resume: null,
+    pending: [],
     state: core.createReceiver(),
     stream: null,
     detector: null,
@@ -731,6 +918,8 @@
   function resetReceiver() {
     rx.state = core.createReceiver();
     rx.gate = core.createFrameGate();
+    rx.verification = null;
+    rx.pending = [];
     rx.finalizing = false;
     rx.lastText = null;
     $('rxCard').hidden = true;
@@ -844,6 +1033,59 @@
   // Decoding frames out of a still picture
   // ---------------------------------------------------------------------------
 
+  /** Decodes every QR in one image file and resolves with their texts. */
+  function decodeImageToText(file) {
+    return new Promise(function (resolve) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        var texts = [];
+        try {
+          if (!grabCanvas) grabCanvas = document.createElement('canvas');
+          var scale = Math.min(1, 1600 / Math.max(img.width, img.height));
+          grabCanvas.width = Math.round(img.width * scale);
+          grabCanvas.height = Math.round(img.height * scale);
+          var ctx = grabCanvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(img, 0, 0, grabCanvas.width, grabCanvas.height);
+          var data = ctx.getImageData(0, 0, grabCanvas.width, grabCanvas.height);
+          texts = qrdec.decodeImage(data, { all: true }).map(function (r) { return r.text; });
+        } catch (e) { /* resolve with what we have */ }
+        URL.revokeObjectURL(url);
+        resolve(texts);
+      };
+      img.onerror = function () { URL.revokeObjectURL(url); resolve([]); };
+      img.src = url;
+    });
+  }
+
+  function renderModeNote() {
+    var note = $('modeNote');
+    if (send.mode === core.MODE_FOUNTAIN) {
+      note.textContent = fountainLib()
+        ? 'The sender emits encoding symbols for ever; the receiver stops as soon as any K of them have landed, whichever ones those were. A dropped frame costs one extra symbol instead of a whole loop.'
+        : 'The erasure-coding module has not loaded, so this send will use indexed frames.';
+    } else {
+      note.textContent = 'Numbered chunks, looped until the receiver has them all. A missed frame waits for the next pass.';
+    }
+  }
+
+  function renderSignNote() {
+    var note = $('signNote');
+    if (!send.sign) {
+      note.textContent = 'Unsigned. The receiver can verify the bytes arrived intact, but not who sent them.';
+      return;
+    }
+    if (!cryptoLib()) {
+      note.textContent = 'The crypto module has not loaded, so this transfer cannot be signed.';
+      return;
+    }
+    ensureIdentity().then(function (identity) {
+      note.textContent = identity
+        ? 'Signing with this device\u2019s key. Read the fingerprint to the other person out loud so they can pin it: ' + identity.fingerprint
+        : 'A signing key could not be created on this device.';
+    });
+  }
+
   function decodeImageFiles(files) {
     var list = Array.prototype.slice.call(files);
     if (!list.length) return;
@@ -907,7 +1149,17 @@
     if (text === rx.lastText) return; // cheap guard against re-reading one frame
     rx.lastText = text;
     var before = rx.state.status;
+    var beforeManifest = rx.state.manifest;
     core.ingest(rx.state, text, Date.now());
+
+    // The manifest is what says whether this is an erasure-coded transfer, so
+    // the decoder is attached the moment one arrives — before any symbol can
+    // need it, because symbols are replayed from state on attach below.
+    if (!beforeManifest && rx.state.manifest && rx.state.mode === core.MODE_FOUNTAIN) {
+      attachFountainDecoder();
+    }
+    if (rx.state.manifest && !rx.verification) verifyManifestSignature();
+    recordFrameForResume(text);
     if (rx.state.status !== 'IDLE') $('rxCard').hidden = false;
     if (before === 'IDLE' && rx.state.status === 'COLLECTING') {
       toast('Transfer ' + rx.state.transferId + ' detected');
@@ -916,9 +1168,232 @@
     if (core.isComplete(rx.state)) finishReceive();
   }
 
+  // Attaches the erasure decoder and replays any symbols that arrived before
+  // the manifest did — frames can turn up in any order, including this one.
+  function attachFountainDecoder() {
+    var lib = fountainLib();
+    var m = rx.state.manifest;
+    if (!lib || !m || rx.state.codec) return;
+    try {
+      var decoder = lib.decoder(m.k, m.symbolSize, m.k * m.symbolSize);
+      core.useCodec(rx.state, decoder);
+      var seqs = core.receivedSequences(rx.state);
+      for (var i = 0; i < seqs.length; i++) {
+        var payload = rx.state.chunks[seqs[i]];
+        if (payload) rx.state.decodable = decoder.add({ esi: seqs[i], bytes: payload }) === true;
+      }
+    } catch (e) {
+      toast('Could not start the erasure decoder: ' + e.message);
+    }
+  }
+
+  // --- signatures ------------------------------------------------------------
+
+  function verifyManifestSignature() {
+    var lib = cryptoLib();
+    var m = rx.state.manifest;
+    if (!m) return;
+    if (!m.sig || !m.pub) {
+      rx.verification = { state: 'unsigned' };
+      renderVerification();
+      return;
+    }
+    if (!lib) {
+      rx.verification = { state: 'unsigned', note: 'signature present but the crypto module did not load' };
+      renderVerification();
+      return;
+    }
+    Promise.resolve()
+      .then(function () {
+        return lib.verifyManifest(
+          { name: m.name, size: m.size, sha256: m.sha256 },
+          m.sig, m.pub
+        );
+      })
+      .then(function (ok) {
+        var fp = lib.fingerprint(m.pub);
+        if (!ok) {
+          rx.verification = { state: 'bad', fingerprint: fp };
+        } else if (rx.pin) {
+          rx.verification = {
+            state: lib.fingerprintEqual(fp, rx.pin) ? 'pinned' : 'wrong-key',
+            fingerprint: fp
+          };
+        } else {
+          rx.verification = { state: 'signed', fingerprint: fp };
+        }
+        renderVerification();
+      })
+      .catch(function () {
+        rx.verification = { state: 'bad' };
+        renderVerification();
+      });
+  }
+
+  // Three outcomes, none of which may be mistaken for another. A signature
+  // from an unpinned key proves only that one key signed it — not that it is
+  // the key you wanted — so it must never read like a pass.
+  var VERIFY_COPY = {
+    unsigned: ['warn', 'Unsigned', 'The manifest carries no signature. The hash proves the bytes are intact; nothing proves who sent them.'],
+    signed: ['warn', 'Signed, but by an unknown key', 'A signature checks out, but you have not pinned this fingerprint, so it only shows that some key signed the transfer. Compare the fingerprint out of band and pin it.'],
+    pinned: ['pass', 'Signed by the key you pinned', 'The signature matches the fingerprint you pinned.'],
+    'wrong-key': ['fail', 'Signed by a DIFFERENT key', 'A valid signature, but not from the fingerprint you pinned. Treat this transfer as hostile until you know why.'],
+    bad: ['fail', 'Signature does not verify', 'The manifest claims a signature that does not check out against the key it names.']
+  };
+
+  function renderVerification() {
+    var box = $('pinState');
+    if (!box) return;
+    var v = rx.verification;
+    if (!v) { box.textContent = ''; return; }
+    var copy = VERIFY_COPY[v.state] || VERIFY_COPY.unsigned;
+    box.textContent = '';
+    var row = el('div', 'check ' + copy[0]);
+    var marks = { pass: '\u2713', warn: '!', fail: '\u2717' };
+    row.appendChild(el('div', 'mark', marks[copy[0]] || '!'));
+    var body = el('div', 'body');
+    body.appendChild(el('strong', '', copy[1]));
+    body.appendChild(el('span', '', copy[2] + (v.fingerprint ? ' Fingerprint: ' + v.fingerprint : '')));
+    row.appendChild(body);
+    box.appendChild(row);
+  }
+
+  function signIfRequested(manifestFields) {
+    var lib = cryptoLib();
+    if (!send.sign || !lib) return Promise.resolve(null);
+    return ensureIdentity().then(function (identity) {
+      if (!identity) return null;
+      return Promise.resolve(lib.signManifest(manifestFields, identity.secret))
+        .then(function (sig) {
+          return { sig: typeof sig === 'string' ? sig : lib.b64uEncode(sig), pub: identity.pubEncoded };
+        });
+    }).catch(function () { return null; });
+  }
+
+  // One key per browser, kept in local storage. This is a demonstration of the
+  // mechanism, not a key management system: anything that can read the page's
+  // storage can read this key.
+  var IDENTITY_KEY = 'rvqr.identity.v1';
+  function ensureIdentity() {
+    var lib = cryptoLib();
+    if (!lib) return Promise.resolve(null);
+    if (send.identity) return Promise.resolve(send.identity);
+    var store = safeStorage();
+    var saved = null;
+    try { saved = store && store.getItem(IDENTITY_KEY); } catch (e) { saved = null; }
+    if (saved) {
+      try {
+        var parsed = JSON.parse(saved);
+        send.identity = parsed;
+        return Promise.resolve(parsed);
+      } catch (e) { /* regenerate below */ }
+    }
+    return Promise.resolve(lib.generateKeyPair()).then(function (kp) {
+      var secret = kp.secretKey || kp.secret || kp.privateKey;
+      var pub = kp.publicKey || kp.pub;
+      var identity = {
+        secret: typeof secret === 'string' ? secret : lib.toHex(secret),
+        pubEncoded: typeof pub === 'string' ? pub : lib.toHex(pub)
+      };
+      identity.fingerprint = lib.fingerprint(identity.pubEncoded);
+      send.identity = identity;
+      try { if (store) store.setItem(IDENTITY_KEY, JSON.stringify(identity)); } catch (e) { /* ephemeral */ }
+      return identity;
+    }).catch(function () { return null; });
+  }
+
+  // --- resume ----------------------------------------------------------------
+
+  var RESUME_BATCH = 20; // the module's author measured 1290us/frame unbatched vs 63us at 20
+
+  function resumeStore() {
+    var lib = resumeLib();
+    if (!lib || !window.indexedDB) return Promise.resolve(null);
+    if (rx.resume) return Promise.resolve(rx.resume);
+    return Promise.resolve(lib.open({ factory: window.indexedDB }))
+      .then(function (store) { rx.resume = store; return store; })
+      .catch(function () { return null; });
+  }
+
+  function recordFrameForResume(text) {
+    if (!resumeLib() || !rx.state.manifest) return;
+    rx.pending.push(text);
+    if (rx.pending.length < RESUME_BATCH && !core.isComplete(rx.state)) return;
+    var batch = rx.pending.splice(0, rx.pending.length);
+    resumeStore().then(function (store) {
+      if (!store || !store.recordFrame) return;
+      // One transaction for the batch: per-frame writes cost ~20x more, and a
+      // camera delivers frames far faster than IndexedDB likes to commit.
+      return store.recordFrame(rx.state, batch);
+    }).catch(function () { /* resume is a convenience, never a blocker */ });
+  }
+
+  function offerResume() {
+    if (!resumeLib()) return;
+    resumeStore().then(function (store) {
+      if (!store || !store.listResumable) return null;
+      return store.listResumable();
+    }).then(function (list) {
+      var box = $('resumeBanner');
+      if (!box || !list || !list.length) return;
+      box.textContent = '';
+      var n = el('div', 'notice');
+      n.appendChild(el('strong', '', list.length === 1
+        ? '1 transfer in progress. '
+        : list.length + ' transfers in progress. '));
+      n.appendChild(document.createTextNode(
+        'Frames you already scanned are still here — pick up where you left off.'
+      ));
+      box.appendChild(n);
+      var row = el('div', 'row');
+      row.style.marginTop = '.6rem';
+      list.slice(0, 3).forEach(function (entry) {
+        var label = (entry.name || 'transfer') + ' · ' +
+          (entry.received || 0) + ' frames';
+        var b = el('button', 'btn-sm', 'Continue ' + label);
+        b.addEventListener('click', function () { resumeTransfer(entry); });
+        row.appendChild(b);
+      });
+      box.appendChild(row);
+    }).catch(function () { /* nothing to offer */ });
+  }
+
+  function resumeTransfer(entry) {
+    resumeStore().then(function (store) {
+      if (!store || !store.restore) return;
+      return store.restore(entry.id || entry.transferId);
+    }).then(function (state) {
+      if (!state) { toast('That transfer could not be restored'); return; }
+      rx.state = state;
+      rx.finalizing = false;
+      rx.lastText = null;
+      if (state.mode === core.MODE_FOUNTAIN) attachFountainDecoder();
+      $('rxCard').hidden = false;
+      $('resumeBanner').textContent = '';
+      renderReceiveProgress();
+      toast('Resumed at ' + (state.received || 0) + ' frames');
+      if (core.isComplete(rx.state)) finishReceive();
+    }).catch(function (err) {
+      toast('Could not resume: ' + (err && err.message ? err.message : 'unknown error'));
+    });
+  }
+
   function renderReceiveProgress() {
     var s = rx.state;
     if (!s.total) return;
+    if (s.mode === core.MODE_FOUNTAIN) {
+      var k = s.needed || (s.manifest ? s.manifest.k : 0);
+      var got = s.symbols;
+      var fpct = k ? Math.min(100, Math.round((got / k) * 100)) : 0;
+      $('rxBar').style.width = fpct + '%';
+      $('rxTitle').textContent = (s.manifest ? core.sanitizeName(s.manifest.name) + ' — ' : '') +
+        got + ' / ' + k + ' symbols';
+      $('rxMeta').textContent = 'erasure-coded · any ' + k + ' symbols rebuild it · ' +
+        s.duplicates + ' duplicates · ' + s.rejected + ' rejected' +
+        (s.manifest ? ' · ' + core.formatBytes(s.manifest.size) : '');
+      $('rxGrid').textContent = '';
+      return;
+    }
     var need = s.total - 1;
     var have = s.received;
     var pct = need ? Math.round((have / need) * 100) : 100;
@@ -1355,6 +1830,49 @@
       drawFrame(send.index);
     });
 
+    // --- transfer mode ---
+    $('modePick').addEventListener('change', function (e) {
+      send.mode = e.target.value === 'fountain' ? core.MODE_FOUNTAIN : core.MODE_INDEXED;
+      renderModeNote();
+      if (send.record) startSend(send.record.id);
+    });
+    $('signSend').addEventListener('change', function (e) {
+      send.sign = !!e.target.checked;
+      renderSignNote();
+      if (send.record) startSend(send.record.id);
+    });
+
+    // --- delta ---
+    $('deltaDiffBtn').addEventListener('click', runDeltaDiff);
+    $('deltaImageBtn').addEventListener('click', function () { $('deltaImageInput').click(); });
+    $('deltaImageInput').addEventListener('change', function (e) {
+      var files = e.target.files;
+      e.target.value = '';
+      if (!files || !files.length || !qrdec) return;
+      decodeImageToText(files[0]).then(function (texts) {
+        if (!texts.length) { toast('No code found in that picture'); return; }
+        $('deltaInventory').value = texts.join('\n');
+        toast('Read ' + texts.length + ' code' + (texts.length === 1 ? '' : 's'));
+        runDeltaDiff();
+      });
+    });
+
+    // --- signature pinning ---
+    $('pinSet').addEventListener('click', function () {
+      var v = $('pinInput').value.trim();
+      if (!v) { toast('Enter a fingerprint first'); return; }
+      rx.pin = v;
+      toast('Pinned ' + v);
+      if (rx.state.manifest) { rx.verification = null; verifyManifestSignature(); }
+    });
+    $('pinClear').addEventListener('click', function () {
+      rx.pin = null;
+      $('pinInput').value = '';
+      if (rx.state.manifest) { rx.verification = null; verifyManifestSignature(); }
+      else { rx.verification = null; renderVerification(); }
+      toast('Pin cleared');
+    });
+
     $('scanBtn').addEventListener('click', startCamera);
     $('resetRxBtn').addEventListener('click', function () {
       resetReceiver();
@@ -1433,6 +1951,17 @@
   if (core.shouldShowWelcome(safeStorage())) {
     setTimeout(function () { openWelcome(null); }, 0);
   }
+
+  // The optional modules arrive after this script runs, so the notes that
+  // describe them are filled in once the document is ready rather than now.
+  window.addEventListener('load', function () {
+    renderModeNote();
+    renderSignNote();
+    offerResume();
+    if (!fountainLib()) $('modePick').disabled = true;
+    if (!cryptoLib()) $('signSend').disabled = true;
+    if (!deltaLib()) $('deltaSendCard').hidden = true;
+  });
 
   renderVault().then(function () {
     var kind = scannerKind();

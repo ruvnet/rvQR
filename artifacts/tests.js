@@ -26,7 +26,9 @@
           (r.ok ? 'ok   ' : 'FAIL ') + r.name + (r.detail ? '  [' + r.detail + ']' : '')
         );
       };
-      var results = api.runAll(core, qrlib, qrdec);
+      var mods = {};
+      try { mods.fountain = require('./fountain.js'); } catch (e) { /* optional */ }
+      var results = api.runAll(core, qrlib, qrdec, mods);
       results.forEach(print);
 
       var kernelPath = path.join(__dirname, 'demo', 'rvf_wasm_bg.wasm');
@@ -58,7 +60,8 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function runAll(core, qrlib, qrdec) {
+  function runAll(core, qrlib, qrdec, mods) {
+    mods = mods || {};
     var results = [];
     function test(name, fn) {
       try {
@@ -664,6 +667,162 @@
         return 'v10-M capacity ' + cap + ' bytes';
       });
     }
+
+    // -- erasure-coded transfers ---------------------------------------------
+
+    if (mods.fountain) {
+      test('fountain: a lossy stream still reconstructs the object exactly', function () {
+        var bytes = rndBytes(2304); // the demo container's size
+        var hash = core.sha256Hex(bytes);
+        var encoder = mods.fountain.encoder(bytes, 512);
+        var stream = core.buildFountainStream(encoder, {
+          name: 'ruvnet-demo.rvf', sha256: hash, transferId: 'f0f0f0f0', size: bytes.length
+        });
+
+        var rx = core.createReceiver();
+        core.useCodec(rx, mods.fountain.decoder(encoder.K, encoder.symbolSize, encoder.totalBytes));
+        core.ingest(rx, stream.manifest);
+        assertEqual(rx.mode, core.MODE_FOUNTAIN, 'mode adopted from the manifest');
+
+        // Drop one symbol in three. The sender never learns which — it just
+        // keeps emitting, which is the whole point of the scheme.
+        var emitted = 0;
+        for (var esi = 0; esi < encoder.K * 4 && !core.isComplete(rx); esi++) {
+          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+          if ((seed >>> 9) % 3 === 0) continue; // lost in the air
+          core.ingest(rx, stream.symbolFrame(esi));
+          emitted++;
+        }
+        assert(core.isComplete(rx), 'never became decodable after ' + emitted + ' symbols');
+        var res = core.finalize(rx);
+        assert(res.ok, 'finalize rejected: ' + res.reason);
+        assert(bytesEqual(res.bytes, bytes), 'reconstructed bytes differ from the source');
+        return encoder.K + ' symbols needed, ' + emitted + ' delivered through a lossy channel';
+      });
+
+      test('fountain: repair symbols alone rebuild the object', function () {
+        // Nothing systematic arrives at all — every symbol is a repair symbol.
+        var bytes = rndBytes(900);
+        var hash = core.sha256Hex(bytes);
+        var encoder = mods.fountain.encoder(bytes, 256);
+        var stream = core.buildFountainStream(encoder, { name: 'r.bin', sha256: hash, size: bytes.length });
+        var rx = core.createReceiver();
+        core.useCodec(rx, mods.fountain.decoder(encoder.K, encoder.symbolSize, encoder.totalBytes));
+        core.ingest(rx, stream.manifest);
+        for (var esi = encoder.K; esi < encoder.K * 6 && !core.isComplete(rx); esi++) {
+          core.ingest(rx, stream.symbolFrame(esi));
+        }
+        assert(core.isComplete(rx), 'repair-only stream never decoded');
+        var res = core.finalize(rx);
+        assert(res.ok, 'finalize rejected: ' + res.reason);
+        assert(bytesEqual(res.bytes, bytes), 'bytes differ');
+        return 'rebuilt from ' + rx.symbols + ' repair symbols, K=' + encoder.K;
+      });
+
+      test('fountain: a corrupted symbol still cannot forge an accepted file', function () {
+        var bytes = rndBytes(1200);
+        var hash = core.sha256Hex(bytes);
+        var encoder = mods.fountain.encoder(bytes, 300);
+        var stream = core.buildFountainStream(encoder, { name: 'c.bin', sha256: hash, size: bytes.length });
+        var rx = core.createReceiver();
+        core.useCodec(rx, mods.fountain.decoder(encoder.K, encoder.symbolSize, encoder.totalBytes));
+        core.ingest(rx, stream.manifest);
+        for (var esi = 0; esi < encoder.K * 3 && !core.isComplete(rx); esi++) {
+          var frame = stream.symbolFrame(esi);
+          if (esi === 1) {
+            // Flip a byte inside one symbol, keeping the frame well-formed.
+            var obj = JSON.parse(frame);
+            var raw = core.b64uDecode(obj.p);
+            raw[0] ^= 0xff;
+            obj.p = core.b64uEncode(raw);
+            frame = JSON.stringify(obj);
+          }
+          core.ingest(rx, frame);
+        }
+        // Whether it decodes or not, the hash is the gate: nothing wrong is
+        // ever handed back as ok.
+        var res = core.finalize(rx);
+        if (res.ok) {
+          assert(bytesEqual(res.bytes, bytes), 'accepted bytes that differ from the source');
+          return 'corruption absorbed by the code, output still exact';
+        }
+        assert(res.reason === 'hash-mismatch' || res.reason === 'incomplete' ||
+          res.reason === 'assembly-failed', 'unexpected reason ' + res.reason);
+        return 'rejected as ' + res.reason;
+      });
+    }
+
+    test('an unknown transfer mode is refused, not guessed at', function () {
+      var hash = core.sha256Hex(rndBytes(64));
+      function manifest(mode, extra) {
+        var m = { name: 'x.bin', size: 1000, sha256: hash, chunk: 512 };
+        if (mode !== undefined) m.mode = mode;
+        for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) m[k] = extra[k];
+        return JSON.stringify({ v: 1, t: 'aaaaaaaa', h: hash.slice(0, 8), i: 0, n: 3, m: m });
+      }
+      // A future mode this build has never heard of.
+      assertEqual(core.parseFrame(manifest('raptorq-v2')).reason, 'unknown-mode', 'unknown mode');
+      assertEqual(core.parseFrame(manifest(42)).reason, 'unknown-mode', 'non-string mode');
+      // Absent mode still means the original indexed stream.
+      var plain = core.parseFrame(manifest(undefined));
+      assert(plain.ok, 'a manifest without a mode should still parse: ' + plain.reason);
+      assertEqual(plain.frame.mode, core.MODE_INDEXED, 'default mode');
+      return 'unknown modes rejected, absent mode defaults to indexed';
+    });
+
+    test('an erasure-coded manifest must agree with its own arithmetic', function () {
+      var hash = core.sha256Hex(rndBytes(64));
+      function fountainManifest(over) {
+        var m = {
+          name: 'x.bin', size: 1000, sha256: hash, chunk: 250,
+          mode: 'fountain', k: 4, symbolSize: 250
+        };
+        for (var key in over) if (Object.prototype.hasOwnProperty.call(over, key)) m[key] = over[key];
+        return JSON.stringify({
+          v: 1, t: 'aaaaaaaa', h: hash.slice(0, 8), i: 0,
+          n: over && over.n !== undefined ? over.n : m.k, m: m
+        });
+      }
+      assert(core.parseFrame(fountainManifest()).ok, 'a consistent fountain manifest should parse');
+      assertEqual(core.parseFrame(fountainManifest({ k: 9 })).reason, 'symbol-count-mismatch', 'k vs size');
+      assertEqual(core.parseFrame(fountainManifest({ symbolSize: 0 })).reason, 'bad-symbol-size', 'symbol size');
+      assertEqual(core.parseFrame(fountainManifest({ k: 0, n: 3 })).reason, 'bad-symbol-count', 'k floor');
+      return 'inconsistent erasure-coded manifests refused';
+    });
+
+    test('erasure-coded frames may carry ids past K; indexed frames may not', function () {
+      var hash = core.sha256Hex(rndBytes(16));
+      function frame(flag, i, n) {
+        var o = { v: 1, t: 'aaaaaaaa', h: hash.slice(0, 8), i: i, n: n, p: 'AAAA' };
+        if (flag) o.f = 1;
+        return JSON.stringify(o);
+      }
+      // A repair symbol's id is above K by design.
+      var repair = core.parseFrame(frame(true, 40, 10));
+      assert(repair.ok, 'a repair symbol was rejected: ' + repair.reason);
+      assertEqual(repair.frame.mode, core.MODE_FOUNTAIN, 'flagged frames are fountain frames');
+      // The same numbers without the flag are a malformed indexed frame.
+      assertEqual(core.parseFrame(frame(false, 40, 10)).reason, 'bad-total', 'indexed bound still applies');
+      // And the absolute ceiling still binds erasure-coded ids.
+      assertEqual(core.parseFrame(frame(true, core.MAX_FRAMES + 1, 10)).reason, 'too-many-frames', 'ceiling');
+      return 'repair ids allowed past K, ceiling intact';
+    });
+
+    test('a receiver refuses to mix indexed and erasure-coded frames', function () {
+      var bytes = rndBytes(600);
+      var hash = core.sha256Hex(bytes);
+      var indexed = core.buildFrames(bytes, { name: 'm.bin', chunk: 300, sha256: hash, transferId: 'abababab' });
+      var rx = core.createReceiver();
+      core.ingest(rx, indexed.frames[1]);
+      // Same transfer id, but now claiming to be erasure-coded.
+      var sneaky = JSON.stringify({
+        v: 1, t: 'abababab', h: hash.slice(0, 8), f: 1, i: 7, n: 2, p: 'AAAA'
+      });
+      var r = core.ingest(rx, sneaky);
+      assert(!r.accepted, 'a fountain frame was accepted into an indexed transfer');
+      assertEqual(r.reason, 'mode-mismatch', 'reason');
+      return 'mixed-mode frames rejected';
+    });
 
     // -- keyframe gate -------------------------------------------------------
 

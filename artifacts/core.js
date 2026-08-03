@@ -47,6 +47,15 @@
   var MAX_NAME_LENGTH = 255;
   var SAFE_NAME_LENGTH = 120;
 
+  // Transfer modes. INDEXED is v1's original fixed-chunk stream. FOUNTAIN
+  // streams erasure-coded symbols instead: any K of them reconstruct the
+  // object, so the sender never has to learn what the receiver missed.
+  // A receiver that does not recognise a mode must refuse the transfer rather
+  // than guess — mis-decoding silently is the one outcome worse than failing.
+  var MODE_INDEXED = 'indexed';
+  var MODE_FOUNTAIN = 'fountain';
+  var KNOWN_MODES = [MODE_INDEXED, MODE_FOUNTAIN];
+
   // Most cells the receive grid will ever draw, whatever the frame count says.
   var MAX_GRID_CELLS = 4096;
 
@@ -649,6 +658,58 @@
     return { frames: frames, transferId: transferId, sha256: hash, chunk: chunk, total: total };
   }
 
+  /**
+   * Builds the manifest and a symbol-frame factory for an erasure-coded send.
+   *
+   * The stream is unbounded by design: `symbolFrame(esi)` can be called for ever
+   * and the receiver stops as soon as it can decode, so there is no frame list
+   * to loop and no notion of a final frame.
+   */
+  function buildFountainStream(encoder, opts) {
+    opts = opts || {};
+    var name = sanitizeName(opts.name || 'artifact.bin');
+    var hash = opts.sha256;
+    if (!hash) throw new Error('buildFountainStream needs the artifact sha256');
+    var transferId = opts.transferId || randomTransferId();
+    var prefix = hash.slice(0, 8);
+    var size = opts.size === undefined ? encoder.totalBytes : opts.size;
+
+    var manifest = JSON.stringify({
+      v: PROTOCOL_VERSION,
+      t: transferId,
+      h: prefix,
+      i: 0,
+      n: encoder.K,
+      m: {
+        name: name, size: size, sha256: hash,
+        chunk: encoder.symbolSize,
+        mode: MODE_FOUNTAIN,
+        k: encoder.K,
+        symbolSize: encoder.symbolSize
+      }
+    });
+
+    return {
+      manifest: manifest,
+      transferId: transferId,
+      sha256: hash,
+      K: encoder.K,
+      symbolSize: encoder.symbolSize,
+      symbolFrame: function (esi) {
+        var sym = encoder.symbol(esi);
+        return JSON.stringify({
+          v: PROTOCOL_VERSION,
+          t: transferId,
+          h: prefix,
+          f: 1,
+          i: sym.esi === undefined ? esi : sym.esi,
+          n: encoder.K,
+          p: b64uEncode(sym.bytes || sym.data || sym)
+        });
+      }
+    };
+  }
+
   /** Parses one frame string. Never throws; returns { ok:false, reason } instead. */
   function parseFrame(text) {
     if (typeof text !== 'string' || text.length < 2 || text.charAt(0) !== '{') {
@@ -669,9 +730,13 @@
       return { ok: false, reason: 'bad-hash-prefix' };
     }
     if (!Number.isInteger(obj.i) || obj.i < 0) return { ok: false, reason: 'bad-seq' };
-    if (!Number.isInteger(obj.n) || obj.n < 1 || obj.i >= obj.n) {
-      return { ok: false, reason: 'bad-total' };
-    }
+    if (!Number.isInteger(obj.n) || obj.n < 1) return { ok: false, reason: 'bad-total' };
+    // Erasure-coded frames carry an encoding symbol id, and repair symbols are
+    // unbounded above K by design, so the ordinary "sequence below the total"
+    // rule only applies to indexed frames. The absolute ceiling still does.
+    var isFountainFrame = obj.f === 1;
+    if (!isFountainFrame && obj.i >= obj.n) return { ok: false, reason: 'bad-total' };
+    if (isFountainFrame && obj.i > MAX_FRAMES) return { ok: false, reason: 'too-many-frames' };
     // n drives allocations and loops in every receiver, so it is bounded here,
     // before any caller can act on it, rather than at each use site.
     if (obj.n > MAX_FRAMES) return { ok: false, reason: 'too-many-frames' };
@@ -689,8 +754,30 @@
       if (!Number.isInteger(m.chunk) || m.chunk < 1) return { ok: false, reason: 'bad-chunk' };
       if (m.chunk > MAX_RECEIVE_CHUNK) return { ok: false, reason: 'chunk-too-large' };
       if (m.sha256.slice(0, 8) !== obj.h) return { ok: false, reason: 'hash-prefix-mismatch' };
-      if (frameCount(m.size, m.chunk) !== obj.n) return { ok: false, reason: 'frame-count-mismatch' };
-      return { ok: true, frame: { kind: 'manifest', v: obj.v, t: obj.t, h: obj.h, i: 0, n: obj.n, m: m } };
+
+      var mode = m.mode === undefined ? MODE_INDEXED : m.mode;
+      if (KNOWN_MODES.indexOf(mode) < 0) return { ok: false, reason: 'unknown-mode' };
+      if (mode === MODE_FOUNTAIN) {
+        if (!Number.isInteger(m.k) || m.k < 1 || m.k > MAX_FRAMES) {
+          return { ok: false, reason: 'bad-symbol-count' };
+        }
+        if (!Number.isInteger(m.symbolSize) || m.symbolSize < 1 || m.symbolSize > MAX_RECEIVE_CHUNK) {
+          return { ok: false, reason: 'bad-symbol-size' };
+        }
+        // K has to follow from size and symbol size, or the sender and receiver
+        // disagree about the object before a single symbol has arrived.
+        if (Math.ceil(m.size / m.symbolSize) !== m.k) {
+          return { ok: false, reason: 'symbol-count-mismatch' };
+        }
+        if (obj.n !== m.k) return { ok: false, reason: 'frame-count-mismatch' };
+      } else if (frameCount(m.size, m.chunk) !== obj.n) {
+        return { ok: false, reason: 'frame-count-mismatch' };
+      }
+      m.mode = mode;
+      return {
+        ok: true,
+        frame: { kind: 'manifest', v: obj.v, t: obj.t, h: obj.h, i: 0, n: obj.n, mode: mode, m: m }
+      };
     }
 
     if (typeof obj.p !== 'string') return { ok: false, reason: 'missing-payload' };
@@ -702,7 +789,11 @@
     }
     return {
       ok: true,
-      frame: { kind: 'data', v: obj.v, t: obj.t, h: obj.h, i: obj.i, n: obj.n, payload: payload }
+      frame: {
+        kind: 'data', v: obj.v, t: obj.t, h: obj.h, i: obj.i, n: obj.n,
+        mode: isFountainFrame ? MODE_FOUNTAIN : MODE_INDEXED,
+        payload: payload
+      }
     };
   }
 
@@ -722,8 +813,26 @@
       startedAt: null,
       lastProgressAt: null,
       switches: 0,
+      mode: MODE_INDEXED,
+      codec: null,
+      symbols: 0,
+      needed: 0,
       result: null
     };
+  }
+
+  /**
+   * Supplies the erasure-code decoder a fountain transfer needs.
+   *
+   * core.js stays dependency-free: it knows a transfer is erasure-coded and
+   * routes symbols, but the codec itself is injected, so the tests can drive a
+   * stub and the app passes the real one.
+   * The codec must expose add(symbol) -> true when decodable, and
+   * decode() -> Uint8Array | null, returning null until fully decodable.
+   */
+  function useCodec(state, codec) {
+    state.codec = codec || null;
+    return state;
   }
 
   /**
@@ -758,8 +867,11 @@
     state.transferId = frame.t;
     state.hashPrefix = frame.h;
     state.total = frame.n;
+    state.mode = frame.mode || MODE_INDEXED;
     state.manifest = null;
     state.chunks = Object.create(null);
+    state.symbols = 0;
+    state.needed = state.mode === MODE_FOUNTAIN ? frame.n : 0;
     state.received = 0;
     state.duplicates = 0;
     state.rejected = rejected;
@@ -787,6 +899,11 @@
 
   function isComplete(state) {
     if (!state.manifest || !state.total) return false;
+    if (state.mode === MODE_FOUNTAIN) {
+      // Enough symbols, whichever ones they were. Without a codec attached the
+      // receiver cannot know, so it waits rather than claiming completion.
+      return !!state.decodable;
+    }
     for (var i = 1; i < state.total; i++) if (!(i in state.chunks)) return false;
     return true;
   }
@@ -796,6 +913,17 @@
    * Returns { accepted, reason, complete } and mutates state in place.
    */
   function ingest(state, textOrFrame, nowMs, opts) {
+    // A state that predates erasure coding carries no `mode` — notably one
+    // rebuilt by RVQRResume.restore(), which reconstructs the receiver shape
+    // as it stood when only indexed transfers existed. Absent means indexed,
+    // so normalise here rather than letting every frame trip mode-mismatch
+    // against `undefined`.
+    if (!state.mode) {
+      state.mode = MODE_INDEXED;
+      if (typeof state.symbols !== 'number') state.symbols = 0;
+      if (typeof state.needed !== 'number') state.needed = 0;
+      if (state.codec === undefined) state.codec = null;
+    }
     var parsed =
       typeof textOrFrame === 'string'
         ? parseFrame(textOrFrame)
@@ -817,6 +945,12 @@
       }
       adoptTransfer(state, f, nowMs);
       switched = true;
+    } else if (f.mode && f.mode !== state.mode && (state.received > 0 || state.manifest)) {
+      // A frame claiming a different transfer mode is a deeper disagreement
+      // than a differing frame count, so it is reported as itself rather than
+      // as generic inconsistency — the two have very different causes.
+      state.rejected++;
+      return { accepted: false, reason: 'mode-mismatch', complete: isComplete(state) };
     } else if (f.h !== state.hashPrefix || f.n !== state.total) {
       // Same transfer id but inconsistent framing: refuse rather than mix bytes.
       state.rejected++;
@@ -828,7 +962,38 @@
         state.duplicates++;
         return { accepted: false, reason: 'duplicate', complete: isComplete(state) };
       }
+      // The manifest is what settles the mode; a data frame arriving first only
+      // hints at it. Refuse a manifest that contradicts frames already taken.
+      var declared = f.m.mode || MODE_INDEXED;
+      if (state.received && declared !== state.mode) {
+        state.rejected++;
+        return { accepted: false, reason: 'mode-mismatch', complete: false };
+      }
+      state.mode = declared;
+      if (declared === MODE_FOUNTAIN) state.needed = f.m.k;
       state.manifest = f.m;
+    } else if (state.mode === MODE_FOUNTAIN || f.mode === MODE_FOUNTAIN) {
+      if (f.mode !== MODE_FOUNTAIN) {
+        state.rejected++;
+        return { accepted: false, reason: 'mode-mismatch', complete: isComplete(state) };
+      }
+      state.mode = MODE_FOUNTAIN;
+      if (f.i in state.chunks) {
+        state.duplicates++;
+        return { accepted: false, reason: 'duplicate', complete: isComplete(state) };
+      }
+      state.chunks[f.i] = f.payload; // kept so a resumed session can replay them
+      state.symbols++;
+      state.received++;
+      if (!state.needed) state.needed = f.n;
+      if (state.codec) {
+        try {
+          state.decodable = state.codec.add({ esi: f.i, bytes: f.payload }) === true;
+        } catch (e) {
+          state.rejected++;
+          return { accepted: false, reason: 'codec-rejected', complete: false };
+        }
+      }
     } else {
       if (f.i in state.chunks) {
         state.duplicates++;
@@ -846,6 +1011,15 @@
 
   /** Concatenates collected chunks in sequence order. Assumes isComplete(). */
   function assemble(state) {
+    if (state.mode === MODE_FOUNTAIN) {
+      if (!state.codec) throw new Error('no decoder attached for an erasure-coded transfer');
+      var decoded = state.codec.decode();
+      if (!decoded) throw new Error('not enough symbols to decode yet');
+      if (decoded.length < state.manifest.size) throw new Error('decoded object is short');
+      return decoded.length === state.manifest.size
+        ? decoded
+        : decoded.subarray(0, state.manifest.size);
+    }
     var size = state.manifest.size;
     var out = new Uint8Array(size);
     var offset = 0;
@@ -962,6 +1136,11 @@
     frameCount: frameCount,
     randomTransferId: randomTransferId,
     buildFrames: buildFrames,
+    buildFountainStream: buildFountainStream,
+    useCodec: useCodec,
+    MODE_INDEXED: MODE_INDEXED,
+    MODE_FOUNTAIN: MODE_FOUNTAIN,
+    KNOWN_MODES: KNOWN_MODES,
     parseFrame: parseFrame,
     createReceiver: createReceiver,
     ingest: ingest,

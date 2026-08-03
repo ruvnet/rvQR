@@ -41,15 +41,22 @@ sweep over the repaint interval fixes it: at K=5, repainting every 4 slots cuts
 the 60%-loss p95 from 101 slots to 30.
 
 **4. rvQR's throughput is roughly 13× below the best comparable browser tool,
-and our own decode measurements say that gap is a policy choice, not a compute
-limit.** rvQR moves a measured 9.53 KB/s at its ceiling settings. Decimen
-Optical Transfer, the closest direct comparator, reports 128 KB/s phone-to-phone
-in its README. The difference is almost entirely that rvQR caps frames at 1024
-bytes and 10 fps while Decimen uses 2953-byte version-40 symbols at 60 fps.
-Decoding one rvQR frame from a clean 1280×720 image costs 10.7 ms on the test
-machine, which leaves a great deal of headroom at 10 fps.
+and the gap is not compute — but it is not free to close either.** rvQR moves a
+measured 9.53 KB/s at its ceiling settings. Decimen Optical Transfer, the
+closest direct comparator, reports 128 KB/s phone-to-phone in its README. The
+difference is that rvQR caps frames at 1024 bytes and 10 fps while Decimen uses
+2953-byte version-40 symbols at 60 fps. Decode cost is not the obstacle: one
+frame costs 10–15 ms on the test machine at every QR version. Robustness is.
 
-**5. The README's own performance claims check out.** It says the 40 KB demo
+**5. The 512-byte default sits exactly on the blur cliff, and the 1024-byte
+ceiling sits past it.** Decoding by version under a one-pixel blur, versions up
+to 19 read at an achievable scale and version 22 and above fail at every scale
+that fits a 720p frame. rvQR's 512-byte chunk produces version 19; its 1024-byte
+chunk produces version 27. That is a measured reason to keep the default where
+it is, and it corroborates the bundled decoder's author, who puts the practical
+limit at about version 16 blurred and 19 sharp.
+
+**6. The README's own performance claims check out.** It says the 40 KB demo
 takes "about 16 seconds" at 5 fps and that the app moves "2.5 KB/s at the
 defaults and 10 KB/s flat out". Measured: 82 frames, 16.4 seconds, 2.44 KB/s
 goodput at the defaults and 9.53 KB/s at the ceiling. The screenshot caption
@@ -560,6 +567,27 @@ The projection is *optimistic* in one way worth naming: it assumes the edit is
 confined to whole spans and does not change their lengths. A length-changing
 edit shifts every subsequent offset, and none of the numbers above apply to it.
 
+### Cross-check against delta.js's author
+
+`delta.js`'s author measured a **1.65 MB container with 1% of its segments
+rewritten and got 85.1× reduction, a 19,400-byte delta** — a real measurement on
+a real container, where the figures above for a container that size are a
+projection. The two land on the same number from opposite directions: our
+arithmetic said 85× and their measurement said 85.1×.
+
+That agreement is worth one caveat rather than a victory lap. Our 85× came from
+assuming 4 MB spans on a 1 GB container, which is a very different shape from
+1.65 MB, and the reason both land near 85 is that both are dominated by the same
+term — the changed fraction plus rounding — rather than by anything about span
+size. The honest reading is that the ~85–100× family of numbers is robust to the
+details, not that our projection predicted their measurement.
+
+One more figure confirmed independently: the demo container's inventory encodes
+to **134 base64url bytes, which is a version 6-L QR symbol** — 134 bytes is
+exactly that version's capacity at level L. So the receiver's half of a delta
+handshake is a single, low-density, easily-scanned symbol, which is the part of
+the design that has to work on a shaky handheld camera.
+
 ---
 
 ## 6. QR encode and decode cost
@@ -595,6 +623,62 @@ Two observations:
   10.7 ms of it at 720p. Even allowing a phone to be five to ten times slower at
   JavaScript, the ceiling of 10 fps in the app is a policy limit, not a
   computational one.
+
+### Decode cost and robustness by QR version
+
+Cost alone does not decide a chunk size. What decides it is how small a symbol's
+modules can get, in *camera pixels*, before the decoder stops reading it — and
+that is a function of version. Each version below was encoded with five random
+payloads at ECC L, rendered into a 1280×720 frame at a range of scales, blurred,
+and decoded. The reported minimum is the scale at which **every** sampled
+payload still decoded.
+
+| version | capacity | modules | decode p50 | max fps | sharp | blur r=1 | blur r=2 | frame share needed (r=1) |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 106 B | 37² | 10.1 ms | 99 | 1 | 4 px | 5 px | 25% |
+| 10 | 271 B | 57² | 11.2 ms | 89 | 1 | 5 px | 6 px | 45% |
+| 13 | 425 B | 69² | 12.0 ms | 84 | 1 | 6 px | fail | 64% |
+| 16 | 586 B | 81² | 11.5 ms | 87 | 1 | 8 px | fail | 99% |
+| **19** | **792 B** | **93²** | **11.0 ms** | **91** | **1** | **6 px** | **fail** | **84%** |
+| 22 | 1003 B | 105² | 10.8 ms | 92 | 1 | **fail** | fail | — |
+| 25 | 1273 B | 117² | 11.8 ms | 85 | 1 | fail | fail | — |
+| **27** | **1465 B** | **125²** | **12.2 ms** | **82** | **1** | **fail** | **fail** | **—** |
+| 31 | 1840 B | 141² | 10.9 ms | 92 | 1 | fail | fail | — |
+| 35 | 2303 B | 157² | 14.7 ms | 68 | 1 | fail | fail | — |
+| 40 | 2953 B | 177² | 13.7 ms | 73 | 1 | fail | fail | — |
+
+**Decode time barely moves with version — 10 to 15 ms across the whole range —
+because finder-pattern search over the frame dominates and that scales with
+pixels, not modules. Robustness falls off a cliff.** Under a one-pixel blur,
+every version through 19 decodes at some achievable scale and **version 22 and
+above fail at every scale that fits in a 720p frame**. Under a two-pixel blur
+only versions 5–10 survive comfortably.
+
+The two rows in bold are rvQR's own operating points. **The 512-byte default
+produces a version 19 symbol, which is the last one still readable under blur.
+The 1024-byte ceiling produces version 27, which failed at every scale under any
+blur in this test.** That is a measured argument for the default being right and
+the ceiling being fragile — and it means the throughput gap in headline 4 is not
+purely a policy choice after all: raising the chunk size on a *monochrome single
+symbol* costs robustness immediately. The comparators that go faster do it with
+colour, multi-symbol grids and 60 fps capture, not by pushing a single black-and-
+white symbol past version 19.
+
+This independently corroborates the bundled decoder's author, who characterises
+it as reliable to about version 16 on a blurred frame with version 19 and above
+needing a sharp one. Our measurement puts the blur cliff between 19 and 22,
+which is the same statement to within the resolution of either test.
+
+Three caveats, all of which matter:
+
+- **The "sharp" column is useless and is shown only to be honest about that.**
+  A noiseless synthetic render decodes at one pixel per module, which no camera
+  will ever do. Only the blurred columns carry information.
+- **Version 16 needing 8 px where version 19 needs 6 is not a real inversion.**
+  It is mask-pattern and payload luck surviving a five-payload sample. Treat the
+  column as a trend, not as per-version constants.
+- **A box blur is not a lens.** No depth of field, no rolling shutter, no noise,
+  no glare, no motion. Real capture is harder than this in every respect.
 
 **These decode timings are a lower bound, not an estimate.** The images are
 rendered from the encoder's own module grid: perfectly square-on, evenly lit, no
@@ -682,12 +766,15 @@ context on what the research community reports, not as competitors.
   app at 10 fps; Decimen uses 2953-byte version-40 symbols at 60 fps. That is
   2.9× on density and 6× on rate. txqr, from 2018, also beats rvQR by roughly
   2–3× using 1850-byte frames at 12 fps.
-- **The caps look conservative rather than necessary.** Section 6 measures the
-  bundled JS decoder at 10.7 ms per frame at 720p, well inside a 100 ms budget.
-  The binding constraints in practice are display refresh rate, camera capture
-  rate, and how small a module a phone camera can resolve at arm's length —
-  none of which this harness measures, and all of which deserve a real
-  device test before the caps are raised.
+- **The chunk cap is not conservative; the frame-rate cap might be.** Section 6
+  measures decode at 10–15 ms per frame at 720p regardless of version, so
+  compute is not the limit. But it also measures version 22 and above failing
+  under a one-pixel blur at every scale that fits a 720p frame, and rvQR's
+  1024-byte ceiling already produces version 27. Raising bytes per frame on a
+  single monochrome symbol buys throughput by spending robustness, and the
+  measurement says the budget is already spent. The 10 fps cap is the softer
+  one: nothing measured here argues against raising it if the display and camera
+  can keep up, which is a real-device question this harness cannot answer.
 - **rvQR is not first, and it is not novel.** Animated-QR fountain transfer was
   published by txqr in 2018 and is deployed at scale in hardware wallets via
   BC-UR. Browser-based, install-free optical transfer already exists in Decimen.
@@ -770,8 +857,8 @@ differ, and the slot counts would move with it.
 | Wanted | Status |
 |---|---|
 | Real end-to-end phone-to-phone throughput | **Not measured.** Needs two devices, a camera and a human. Every KB/s figure here is derived from frame counts and the nominal frame period. |
-| Optimal chunk size / QR version for a real camera | **Not measurable here.** Requires the density-versus-loss trade-off, which needs optics. |
-| `BarcodeDetector` decode cost | **Not measurable in Node.** It is a browser API. Only the JS fallback decoder was timed. |
+| Optimal chunk size / QR version for a real camera | **Partly measured.** Section 6 gives decode cost and a blur-robustness floor per version on synthetic frames, which bounds the choice and puts the cliff between version 19 and 22. What it cannot give is the real density-versus-loss curve, which needs optics. |
+| `BarcodeDetector` decode cost | **Not measurable in Node.** It is a browser API, and it is the app's primary path. Only the JS fallback decoder was timed; the native one is likely faster and may have a different robustness cliff. |
 | Colour or multi-symbol frames | **Not applicable.** rvQR sends one monochrome symbol per frame. This is the single largest throughput lever the comparators use and rvQR does not. |
 | RaptorQ interoperability | **Not applicable.** `artifacts/fountain.js` states plainly that it is not RFC 6330 conformant and will not interoperate with a conformant codec. Nothing here tests interoperability, and nothing here should be read as claiming it. |
 | Signature verification cost | **Not measured.** `rvf-crypto` signing is roadmap; there is no signing path in this repository to time. |

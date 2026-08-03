@@ -7,16 +7,16 @@
 | platform | Darwin 25.1.0 arm64 |
 | cpu | Apple M4 Pro x12 |
 | memory | 48.0 GB |
-| commit | 0e78fae (dirty) |
+| commit | 59dbd1f (dirty) |
 | seed | 20260802 |
 | trials/cell | 500 |
-| run at | 2026-08-03T00:40:36.176Z |
+| run at | 2026-08-03T00:54:28.635Z |
 
 **Modules under test:**
 
 | file | present | bytes |
 |---|---|---|
-| artifacts/core.js | yes | 31726 |
+| artifacts/core.js | yes | 35787 |
 | artifacts/fountain.js | yes | 23053 |
 | artifacts/delta.js | yes | 36577 |
 | artifacts/resume.js | yes | 26571 |
@@ -57,11 +57,11 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 82 | 0.57 | 0.85 | 0.93 | 0.93 | 0.95 | 1.17 | 1.24 |
-| fountain (shipped) | 81 | 6.27 | 4.60 | 4.55 | 5.15 | 4.64 | 4.92 | 4.52 |
-| fountain (rlf-sys) | 81 | 0.51 | 0.71 | 0.85 | 1.03 | 1.40 | 1.48 | 1.49 |
-| fountain (rlf) | 81 | 2.25 | 2.26 | 1.92 | 1.66 | 1.75 | 1.61 | 2.16 |
-| fountain (lt) | 81 | 1.08 | 1.14 | 1.21 | 1.38 | 1.64 | 1.42 | 1.39 |
+| rvQR v1 (indexed chunks) | 82 | 0.32 | 0.47 | 0.59 | 0.75 | 0.72 | 0.80 | 0.78 |
+| fountain (shipped) | 81 | 3.74 | 3.25 | 3.75 | 4.14 | 3.57 | 3.10 | 3.01 |
+| fountain (rlf-sys) | 81 | 0.35 | 0.49 | 0.60 | 0.70 | 0.80 | 0.89 | 1.44 |
+| fountain (rlf) | 81 | 2.10 | 1.91 | 1.70 | 1.52 | 1.49 | 1.47 | 1.64 |
+| fountain (lt) | 81 | 0.99 | 1.19 | 1.20 | 1.05 | 0.92 | 0.90 | 0.88 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -143,8 +143,8 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 82 | 0.45 | 0.60 | 0.71 | 0.76 | 0.86 | 0.91 | 1.05 |
-| fountain (shipped) | 81 | 3.88 | 3.67 | 3.67 | 3.40 | 3.73 | 3.41 | 3.72 |
+| rvQR v1 (indexed chunks) | 82 | 0.34 | 0.45 | 0.54 | 0.59 | 0.68 | 0.69 | 0.79 |
+| fountain (shipped) | 81 | 3.23 | 3.08 | 3.13 | 3.86 | 3.88 | 3.56 | 3.10 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -226,8 +226,8 @@ Note: for the fountain transports this figure includes symbols that landed while
 
 | transport | needs | 0% | 10% | 20% | 30% | 40% | 50% | 60% |
 |---|---|---|---|---|---|---|---|---|
-| rvQR v1 (indexed chunks) | 6 | 0.03 | 0.03 | 0.03 | 0.04 | 0.04 | 0.04 | 0.04 |
-| fountain (shipped) | 5 | 0.11 | 0.11 | 0.11 | 0.11 | 0.11 | 0.12 | 0.12 |
+| rvQR v1 (indexed chunks) | 6 | 0.02 | 0.02 | 0.02 | 0.03 | 0.03 | 0.03 | 0.03 |
+| fountain (shipped) | 5 | 0.10 | 0.09 | 0.09 | 0.09 | 0.10 | 0.10 | 0.11 |
 
 **Speedup of fountain (shipped) over rvQR v1 (indexed chunks), in slots.**
 
@@ -322,16 +322,16 @@ Cells are mean / p95 slots. The p95 column is the one that matters: it is the ta
 | K | decodes | at exactly K | by K+1 | by K+2 | mean overhead | worst | decode p50 |
 |---|---|---|---|---|---|---|---|
 | 4 | 200 | 94.50% | 100.00% | 100.00% | 0.0550 | 1 | 0.06 ms |
-| 8 | 200 | 98.00% | 100.00% | 100.00% | 0.0200 | 1 | 0.14 ms |
-| 16 | 200 | 97.00% | 100.00% | 100.00% | 0.0300 | 1 | 0.34 ms |
-| 32 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 0.90 ms |
-| 64 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 2.37 ms |
-| 81 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 3.19 ms |
-| 128 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 9.21 ms |
-| 200 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 18.14 ms |
-| 320 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 38.12 ms |
-| 500 | 200 | 99.50% | 100.00% | 100.00% | 0.0050 | 1 | 74.62 ms |
-| 800 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 168.09 ms |
+| 8 | 200 | 98.00% | 100.00% | 100.00% | 0.0200 | 1 | 0.13 ms |
+| 16 | 200 | 97.00% | 100.00% | 100.00% | 0.0300 | 1 | 0.33 ms |
+| 32 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 0.88 ms |
+| 64 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 2.51 ms |
+| 81 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 3.13 ms |
+| 128 | 200 | 99.00% | 100.00% | 100.00% | 0.0100 | 1 | 6.50 ms |
+| 200 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 13.17 ms |
+| 320 | 200 | 98.50% | 100.00% | 100.00% | 0.0150 | 1 | 28.94 ms |
+| 500 | 200 | 99.50% | 100.00% | 100.00% | 0.0050 | 1 | 60.39 ms |
+| 800 | 200 | 100.00% | 100.00% | 100.00% | 0.0000 | 0 | 137.36 ms |
 
 **Aggregate over all 2200 decodes:** 98.45% at exactly K, 100.00% by K+1, 100.00% by K+2. Mean overhead 0.0155 symbols, worst case +1.
 
@@ -339,11 +339,11 @@ Cells are mean / p95 slots. The p95 column is the one that matters: it is the ta
 
 | symbol size | K | encoder setup | decode (systematic) | decode (repair only) |
 |---|---|---|---|---|
-| 1024 B | 41 | 1.04 ms | 2.65 ms | 2.16 ms |
-| 512 B | 81 | 1.72 ms | 3.86 ms | 3.19 ms |
-| 256 B | 161 | 3.01 ms | 6.59 ms | 5.96 ms |
-| 128 B | 321 | 7.76 ms | 15.11 ms | 13.63 ms |
-| 64 B | 641 | 28.64 ms | 51.28 ms | 46.18 ms |
+| 1024 B | 41 | 0.80 ms | 1.95 ms | 1.68 ms |
+| 512 B | 81 | 0.77 ms | 2.43 ms | 2.26 ms |
+| 256 B | 161 | 4.51 ms | 5.10 ms | 4.52 ms |
+| 128 B | 321 | 5.92 ms | 11.01 ms | 12.04 ms |
+| 64 B | 641 | 22.38 ms | 33.44 ms | 30.72 ms |
 
 The systematic column is the clean-channel case, where the receiver got the source symbols verbatim. The repair-only column is the worst case a lossy channel can produce: every source symbol missed, every one reconstructed.
 
@@ -408,26 +408,44 @@ JS decoder found at artifacts/vendor/qrdecode.js; decode timings below are from 
 
 | chunk | ECC | frame bytes | QR ver | modules | encode p50 | decodeMatrix p50 | decodeImage 640x480 p50 | decodeImage 1280x720 p50 |
 |---|---|---|---|---|---|---|---|---|
-| 256 B | L | 400 | 13 | 69² | 3.15 ms | 0.46 ms | 5.4 ms (184.0 fps) | 14.6 ms (68.3 fps) |
-| 256 B | M | 400 | 15 | 77² | 3.43 ms | 0.46 ms | 4.8 ms (209.8 fps) | 13.1 ms (76.2 fps) |
-| 512 B | L | 740 | 19 | 93² | 4.92 ms | 0.26 ms | 4.5 ms (220.9 fps) | 12.9 ms (77.8 fps) |
-| 512 B | M | 740 | 22 | 105² | 6.21 ms | 0.28 ms | 5.8 ms (171.3 fps) | 13.5 ms (73.9 fps) |
-| 768 B | L | 1081 | 23 | 109² | 7.70 ms | 0.44 ms | 6.3 ms (158.7 fps) | 15.3 ms (65.3 fps) |
-| 768 B | M | 1081 | 27 | 125² | 10.50 ms | 0.46 ms | 6.7 ms (150.3 fps) | 15.2 ms (65.8 fps) |
-| 1024 B | L | 1423 | 27 | 125² | 9.51 ms | 0.45 ms | 6.4 ms (156.8 fps) | 14.2 ms (70.3 fps) |
-| 1024 B | M | 1423 | 31 | 141² | 13.55 ms | 0.48 ms | 6.8 ms (147.9 fps) | 14.3 ms (69.7 fps) |
+| 256 B | L | 400 | 13 | 69² | 2.19 ms | 0.32 ms | 4.0 ms (247.0 fps) | 11.5 ms (87.3 fps) |
+| 256 B | M | 400 | 15 | 77² | 2.73 ms | 0.34 ms | 3.9 ms (258.8 fps) | 11.2 ms (89.2 fps) |
+| 512 B | L | 740 | 19 | 93² | 4.32 ms | 0.25 ms | 4.4 ms (229.7 fps) | 12.0 ms (83.6 fps) |
+| 512 B | M | 740 | 22 | 105² | 5.09 ms | 0.22 ms | 4.8 ms (207.1 fps) | 11.6 ms (86.3 fps) |
+| 768 B | L | 1081 | 23 | 109² | 5.71 ms | 0.26 ms | 4.2 ms (240.8 fps) | 10.7 ms (93.9 fps) |
+| 768 B | M | 1081 | 27 | 125² | 7.36 ms | 0.36 ms | 5.3 ms (188.8 fps) | 12.2 ms (82.3 fps) |
+| 1024 B | L | 1423 | 27 | 125² | 7.54 ms | 0.36 ms | 5.3 ms (189.8 fps) | 12.1 ms (82.6 fps) |
+| 1024 B | M | 1423 | 31 | 141² | 9.72 ms | 0.45 ms | 4.6 ms (215.9 fps) | 10.6 ms (94.6 fps) |
 
 **Encode cost by QR version, payload sized to fill the version (ECC M):**
 
 | version | capacity | modules | encode p50 | bytes/s |
 |---|---|---|---|---|
-| 5 | 84 B | 37² | 0.76 ms | 108 KB/s |
-| 10 | 213 B | 57² | 1.85 ms | 113 KB/s |
-| 15 | 412 B | 77² | 3.42 ms | 118 KB/s |
-| 20 | 666 B | 97² | 5.58 ms | 116 KB/s |
-| 25 | 997 B | 117² | 8.22 ms | 118 KB/s |
-| 30 | 1370 B | 137² | 11.45 ms | 117 KB/s |
-| 35 | 1809 B | 157² | 14.94 ms | 118 KB/s |
-| 40 | 2331 B | 177² | 18.91 ms | 120 KB/s |
+| 5 | 84 B | 37² | 0.56 ms | 146 KB/s |
+| 10 | 213 B | 57² | 1.40 ms | 149 KB/s |
+| 15 | 412 B | 77² | 2.63 ms | 153 KB/s |
+| 20 | 666 B | 97² | 4.31 ms | 151 KB/s |
+| 25 | 997 B | 117² | 6.42 ms | 152 KB/s |
+| 30 | 1370 B | 137² | 8.95 ms | 150 KB/s |
+| 35 | 1809 B | 157² | 11.71 ms | 151 KB/s |
+| 40 | 2331 B | 177² | 15.08 ms | 151 KB/s |
+
+**Decode cost and robustness by QR version** (ECC L, 1280x720 synthetic capture):
+
+| version | capacity | modules | decode p50 | max fps | min px/module sharp | blur r=1 | blur r=2 | frame share needed (r=1) |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 106 B | 37² | 10.1 ms | 99 | 1 | 4 | 5 | 25% |
+| 10 | 271 B | 57² | 11.2 ms | 89 | 1 | 5 | 6 | 45% |
+| 13 | 425 B | 69² | 12.0 ms | 84 | 1 | 6 | fail | 64% |
+| 16 | 586 B | 81² | 11.5 ms | 87 | 1 | 8 | fail | 99% |
+| 19 | 792 B | 93² | 11.0 ms | 91 | 1 | 6 | fail | 84% |
+| 22 | 1003 B | 105² | 10.8 ms | 92 | 1 | fail | fail | — |
+| 25 | 1273 B | 117² | 11.8 ms | 85 | 1 | fail | fail | — |
+| 27 | 1465 B | 125² | 12.2 ms | 82 | 1 | fail | fail | — |
+| 31 | 1840 B | 141² | 10.9 ms | 92 | 1 | fail | fail | — |
+| 35 | 2303 B | 157² | 14.7 ms | 68 | 1 | fail | fail | — |
+| 40 | 2953 B | 177² | 13.7 ms | 73 | 1 | fail | fail | — |
+
+Min px/module is the smallest number of capture pixels per QR module at which the bundled JS decoder still read the symbol. "Frame share needed" converts that into how much of the capture's short side the symbol must occupy — the practical question when someone is holding a phone over another screen. Synthetic, square-on, noiseless frames with a box blur: these are lower bounds on difficulty, not predictions of real camera behaviour.
 
 Raw results written to /private/tmp/claude-501/-Users-cohen-GitHub-ruvnet-ruvector/05d2576d-2dee-4999-b6a3-ce2701279e05/scratchpad/rvqr/bench/results/full.json
