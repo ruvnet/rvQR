@@ -56,6 +56,7 @@ Both ship in the repo, and both are real.
 - **Integrity verified**. Every byte accepted into your vault is checked against the SHA-256 hash from the manifest. A single-bit error causes the entire transfer to be rejected and discarded.
 - **RVF-aware**. Detects RVF containers (append-only segment streams with tail-discovered 4096-byte root manifest) and shows their type. Sends and receives them as-is.
 - **Real RVF parsing**. Containers are parsed by the actual RVF WebAssembly microkernel — header, segment table, per-segment CRC, vector count and dimensionality — and then searched, with a working nearest-neighbour query over the vectors inside.
+- **Sends only what changed**. If the receiver already holds an older copy, rvQR compares two ways of describing the difference and sends the smaller. The coarse one resends whole segments; the fine one diffs *inside* them — individual vector records, WASM function bodies, copy-on-write cluster maps. On a 1.13 MB container with a handful of edits that is 40,285 bytes instead of 1,125,630. The fine diff is not always right: it carries a table naming every unit, and when that table costs more than it saves the coarse diff wins instead. The panel tells you which one it picked and why, because a tool that silently changes strategy cannot be debugged by the person holding it.
 - **Scans without a native decoder**. Where the browser has no `BarcodeDetector` (Firefox, older Safari), rvQR falls back to its own bundled QR decoder rather than giving up.
 - **Decode from a picture**. Photograph or screenshot the sending screen and drop the image in; every frame visible in it is read at once. No camera permission needed, works in any browser.
 - **WASM inspection**. Compile-only analysis of WebAssembly modules—lists all exported names without instantiating or executing the code.
@@ -219,6 +220,25 @@ single-symbol case rvQR complements by streaming.
 ## Testing 🧪
 
 Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
+
+That page covers the app suite — 103 assertions. Eight further suites run under
+Node only, because they need timing, forced garbage collection or containers too
+large to be comfortable in a browser tab: crypto (44), perf (60), fountain (39),
+semdelta (34), delta (31), proto2 (30), expiry (25) and provenance (23). 389
+in total.
+
+```bash
+for f in artifacts/*.test.js; do node "$f"; done
+node --expose-gc artifacts/proto2.test.js   # 2 of its 30 SKIP without this flag
+```
+
+The `--expose-gc` note is not incidental. Those two tests measure retained
+memory after a forced collection, and without the flag they skip while the
+suite still prints a total — a green summary covering tests that never ran.
+
+Performance claims in [`docs/benchmarks.md`](./docs/benchmarks.md) come from
+`node bench/index.mjs`, which records the machine, the commit, and every module
+it measured alongside the numbers.
 
 The same assertions run under Node:
 
