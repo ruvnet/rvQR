@@ -1066,17 +1066,25 @@
 
     // -- first-run state -----------------------------------------------------
 
-    test('welcome: shows once, then stays dismissed', function () {
+    test('welcome: shows on every load until explicitly silenced', function () {
       var store = (function () {
         var data = {};
         return {
           getItem: function (k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
-          setItem: function (k, v) { data[k] = String(v); }
+          setItem: function (k, v) { data[k] = String(v); },
+          removeItem: function (k) { delete data[k]; }
         };
       })();
       assert(core.shouldShowWelcome(store), 'a fresh visitor should see it');
       assert(core.markWelcomeSeen(store), 'marking should succeed');
-      assert(!core.shouldShowWelcome(store), 'it should stay dismissed');
+      assert(
+        core.shouldShowWelcome(store),
+        'dismissing closes it for the visit only — a refresh shows it again'
+      );
+      assert(core.suppressWelcome(store), 'opting out should succeed');
+      assert(!core.shouldShowWelcome(store), 'an explicit opt-out stops it');
+      assert(core.unsuppressWelcome(store), 'undo should succeed');
+      assert(core.shouldShowWelcome(store), '"show it again" restores it');
       // A different version key re-shows, which is the point of versioning it.
       assert(core.shouldShowWelcome(store, 'rvqr.welcome.v2'), 'a new version should show again');
       return core.WELCOME_KEY;

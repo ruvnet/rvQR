@@ -302,19 +302,62 @@
   function shouldShowWelcome(storage, key) {
     if (!storage) return true;
     try {
-      return storage.getItem(key || WELCOME_KEY) === null;
+      // The intro shows on every load, including a refresh. Dismissing it
+      // closes it for that visit only — the app is a demonstration as much as
+      // a tool, and a visitor who reloads is usually trying to see the thing
+      // again, not being nagged. Permanent removal is a deliberate opt-in via
+      // suppressWelcome(), so the choice stays the viewer's rather than being
+      // made for them by a single earlier dismissal.
+      // Treat an empty value as absent: a storage that refuses removeItem may
+      // only be able to blank the entry, and a blank must not read as a mute.
+      var flag = storage.getItem(suppressKeyFor(key));
+      return flag === null || flag === '';
     } catch (e) {
       return true;
     }
   }
 
+  /** The opt-out companion to {@link shouldShowWelcome}'s key. */
+  function suppressKeyFor(key) {
+    return (key || WELCOME_KEY) + '.suppressed';
+  }
+
+  /**
+   * Records that the intro was shown. This is a visit record, not a mute —
+   * it deliberately does NOT stop the intro appearing again, so callers on
+   * the dismissal path can keep calling it unchanged.
+   */
   function markWelcomeSeen(storage, key) {
     if (!storage) return false;
     try {
       storage.setItem(key || WELCOME_KEY, String(Date.now()));
       return true;
     } catch (e) {
-      return false; // storage refused; the welcome simply shows again
+      return false;
+    }
+  }
+
+  /** Stop showing the intro on future loads. The explicit opt-out. */
+  function suppressWelcome(storage, key) {
+    if (!storage) return false;
+    try {
+      storage.setItem(suppressKeyFor(key), String(Date.now()));
+      return true;
+    } catch (e) {
+      return false; // storage refused; the intro simply keeps showing
+    }
+  }
+
+  /** Undo {@link suppressWelcome} — what "show the intro again" calls. */
+  function unsuppressWelcome(storage, key) {
+    if (!storage) return false;
+    var k = suppressKeyFor(key);
+    try {
+      if (typeof storage.removeItem === 'function') storage.removeItem(k);
+      else storage.setItem(k, '');
+      return true;
+    } catch (e) {
+      return false;
     }
   }
 
@@ -1121,6 +1164,8 @@
     gateFrame: gateFrame,
     shouldShowWelcome: shouldShowWelcome,
     markWelcomeSeen: markWelcomeSeen,
+    suppressWelcome: suppressWelcome,
+    unsuppressWelcome: unsuppressWelcome,
     prefersReducedMotion: prefersReducedMotion,
     gridPlan: gridPlan,
     cellForSequence: cellForSequence,
