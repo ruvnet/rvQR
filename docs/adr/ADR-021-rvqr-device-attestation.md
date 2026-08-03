@@ -36,6 +36,19 @@ keys are the remedy named there, and this ADR is where they arrive.
 
 ### 2.1 Bind the handshake to measured boot state
 
+> **Implementation status, added when `artifacts/attest.js` landed
+> ([519a209](https://github.com/ruvnet/rvQR/commit/519a209)): NONE of the four
+> roots of trust below is exercised.** §4.4 of this document requires each to be
+> exercised on real hardware "or the ones that are not are removed from this
+> document". They are named here rather than removed, because the evidence
+> format and the verdict-and-gate structure around them are built and tested and
+> would otherwise lose their subject — but the protocols themselves are not
+> implemented and no attestation has ever been produced or checked by this
+> repository, on hardware or otherwise. `attest.describeRoots()` reports the same
+> thing at runtime, so the limitation is discoverable from the code and not only
+> from this note. Any reader treating the list below as support is reading an
+> intention.
+
 The session established in
 [ADR-012](./ADR-012-rvqr-post-quantum-manifest.md) incorporates the receiver's
 attestation evidence, produced by whichever root of trust the platform offers:
@@ -134,6 +147,22 @@ superseded rather than amended when the key leaves `localStorage`.
    the receipt, never conflated.
 4. **Each of the four roots of trust is exercised on real hardware**, or the ones
    that are not are removed from this document.
+   **NOT MET, and none is exercised.** See the status note in §2.1.
+
+> **Where this list actually stands at [519a209](https://github.com/ruvnet/rvQR/commit/519a209).**
+> Recording which criteria are met matters more than counting them: an
+> acceptance list whose met and unmet entries look alike will be read as
+> satisfied.
+>
+> | # | State | Evidence |
+> |---|---|---|
+> | 1 | **met** | A valid attestation for an ungranted device returns `admit: false`, `capability-refused`; restoring the grant admits the identical verdict, so the refusal is the capability rule and not another one. |
+> | 2 | **met** | A state that does not exist yet returns `unknown-attestation-state` and fails closed. |
+> | 3 | **half met** | The RECEIPT distinguishes the two cases — `senderRequiredAttestation` separates "nobody asked" from "asked and got none". The UI half is NOT met: nothing is wired to the page yet, and until it is, a criterion reading "in the UI and in the receipt" is not satisfied. |
+> | 4 | **not met** | No root of trust is exercised. |
+> | 5 | **met** | A replayed nonce returns `replayed`; evidence bound to another session returns `unbound`. |
+> | 6 | **not met** | The hardware-key path is not demonstrated, so ADR-035 is NOT superseded and the localStorage identity stands. |
+> | 7 | **not met** | The privacy trade is not yet stated anywhere a user can see it. |
 5. **Replay of a recorded attestation is refused** — the evidence is bound to the
    session id and a fresh nonce, the same rule
    [ADR-007](./ADR-007-rvqr-ultrasonic-control-channel.md) §2.4 applies to
