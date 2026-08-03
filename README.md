@@ -20,7 +20,7 @@ guide is built into the app under the **Guide** tab.
 | | |
 |---|---|
 | **Hosted** | [ruvnet.github.io/rvQR](https://ruvnet.github.io/rvQR/artifacts/) — the normal app. |
-| **One file** | [`standalone.html`](https://ruvnet.github.io/rvQR/standalone.html) — the whole app, both demo artifacts and the RVF microkernel inlined into a single ~450 KB page. Save it and open it from disk: it makes **no network requests at all**, so it keeps working on a machine that has never been online. Handy for the air-gapped side of a transfer. |
+| **One file** | [`standalone.html`](https://ruvnet.github.io/rvQR/standalone.html) — the whole app, both demo artifacts and the RVF microkernel inlined into a single ~830 KB page. Save it and open it from disk: it makes **no network requests at all**, so it keeps working on a machine that has never been online. Handy for the air-gapped side of a transfer. |
 
 Receiving needs a camera, which browsers only grant on `https://` or a local
 file — both of the above qualify. The photo-upload and paste paths work
@@ -43,10 +43,10 @@ Both ship in the repo, and both are real.
 
 ## Screens 📸
 
-| Vault | Send | Receive |
-|:---:|:---:|:---:|
-| ![The rvQR artifact vault on a phone, showing a drop zone with Import file and Load demo artifact buttons above one stored artifact: rvf_wasm_bg.wasm, 40.0 KB, with a WASM type badge and a truncated SHA-256](./docs/images/vault.png) | ![The Send tab on a phone showing a dense QR symbol mid-stream, a circular progress ring at 23 percent, and the caption "frame 19 / 82 · QR version 19"](./docs/images/send.png) | ![The Receive tab on a phone: a Start camera button above a transfer in progress reading "artifact.bin — 56%", 10 of 18 data frames, a progress bar and a grid of frame cells filling in unevenly, with the paste-a-frame-by-hand panel open below](./docs/images/receive.png) |
-| Stored artifacts, typed and hashed | Frame 19 of 82, QR version 19 | Frames landing out of order, 56% in |
+| Vault | Send | Receive | Send only what's missing |
+|:---:|:---:|:---:|:---:|
+| ![The rvQR artifact vault on a phone: a dashed drop zone reading "Drop a file here" above an Import file button and two demo buttons, then a "Stored (2)" list holding rvf_wasm_bg.wasm at 40.0 KB with a WASM badge and ruvnet-demo.rvf at 2.3 KB with an RVF badge, each showing a truncated SHA-256](./docs/images/vault.png) | ![The Send tab on a phone showing a dense QR symbol mid-stream above a circular progress ring reading 9 percent, captioned "frame 7 / 82 · QR version 19" and "rvf_wasm_bg.wasm · 40.0 KB · 512 B/frame · transfer 400f3bd7", with Play and Restart buttons and a frame scrubber below](./docs/images/send.png) | ![The Receive tab on a phone offering three routes: "Receive by camera" with a Start camera button, "Receive from a picture" with a Choose image drop zone noting that several frames in one picture are all read at once, and a "Paste a frame by hand" panel below](./docs/images/receive.png) | ![The delta pairing step on a phone: a "Show my pairing code" button above an explanation that the other device answers with a code of its own, a dense QR symbol labelled "QR version 8", and the next numbered step reading "02 Read their inventory"](./docs/images/pairing.png) |
+| Stored artifacts, typed and hashed | Frame 7 of 82, QR version 19 | Camera, photo, or pasted by hand | Pairing first, because an inventory is sealed |
 
 ## Features ✨
 
@@ -56,6 +56,7 @@ Both ship in the repo, and both are real.
 - **Integrity verified**. Every byte accepted into your vault is checked against the SHA-256 hash from the manifest. A single-bit error causes the entire transfer to be rejected and discarded.
 - **RVF-aware**. Detects RVF containers (append-only segment streams with tail-discovered 4096-byte root manifest) and shows their type. Sends and receives them as-is.
 - **Real RVF parsing**. Containers are parsed by the actual RVF WebAssembly microkernel — header, segment table, per-segment CRC, vector count and dimensionality — and then searched, with a working nearest-neighbour query over the vectors inside.
+- **Picks the route, and shows its reasoning**. Before a send, rvQR scores the available strategies — protocol version, delta granularity, frame size, whether to use fountain coding — and explains which it chose. Four rules sit *outside* that scoring and cannot be outvoted by it: an unverified peer is not a transfer partner, projected memory stays under 128 MiB, an offline policy forbids every radio, and a transfer that commits its result may not rest on a partial verification. They are applied as a filter before anything is scored, because a safety rule expressed as a large penalty is not a safety rule — a confident enough score beats any finite penalty. Rejected options are listed with the rule that rejected them, since a control you cannot see may as well not have run.
 - **Sends only what changed**. If the receiver already holds an older copy, rvQR compares two ways of describing the difference and sends the smaller. The coarse one resends whole segments; the fine one diffs *inside* them — individual vector records, WASM function bodies, copy-on-write cluster maps. On a 1.13 MB container with a handful of edits that is 40,285 bytes instead of 1,125,630. The fine diff is not always right: it carries a table naming every unit, and when that table costs more than it saves the coarse diff wins instead. The panel tells you which one it picked and why, because a tool that silently changes strategy cannot be debugged by the person holding it.
 - **Scans without a native decoder**. Where the browser has no `BarcodeDetector` (Firefox, older Safari), rvQR falls back to its own bundled QR decoder rather than giving up.
 - **Decode from a picture**. Photograph or screenshot the sending screen and drop the image in; every frame visible in it is read at once. No camera permission needed, works in any browser.
@@ -221,11 +222,11 @@ single-symbol case rvQR complements by streaming.
 
 Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
 
-That page covers the app suite — 103 assertions. Eight further suites run under
+That page covers the app suite — 113 assertions. Nine further suites run under
 Node only, because they need timing, forced garbage collection or containers too
-large to be comfortable in a browser tab: crypto (44), perf (60), fountain (39),
-semdelta (34), delta (31), proto2 (30), expiry (25) and provenance (23). 389
-in total.
+large to be comfortable in a browser tab: perf (60), planner (47), crypto (44),
+fountain (39), semdelta (34), delta (31), proto2 (30), expiry (25) and
+provenance (23). 446 in total.
 
 ```bash
 for f in artifacts/*.test.js; do node "$f"; done

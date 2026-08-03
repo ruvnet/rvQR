@@ -533,6 +533,208 @@
   };
 });
 
+/*
+ * The transfer-plan view model.
+ *
+ * planner.js enumerates every strategy this app could use, throws out the ones
+ * a hard rule forbids, ranks what survives and returns the winner along with
+ * every loser and the rule that killed it. Until now the app chose by
+ * defaulting — v1, indexed, 512 B, whole artifact — and a default is a decision
+ * nobody has to defend. This turns plan() into the rows the panel renders.
+ *
+ * Two of those rows carry more weight than the rest and neither is the winner.
+ *
+ *   THE REJECTIONS. A hard rule that fires invisibly is a hard rule the
+ *   operator cannot act on, and it is indistinguishable from a rule that is not
+ *   there — which is what the pinned-fingerprint gate was until the signature
+ *   panel started saying which of its four verdicts it had reached. Rejections
+ *   are therefore rendered, grouped by the rule and the sentence planner.js
+ *   itself wrote — never re-worded here, because a reason restated by the UI is
+ *   a reason that can drift away from the rule enforcing it.
+ *
+ *   THE EMPTY PLAN. `chosen === null` is not an error and not a blank panel: it
+ *   is the correct answer when no strategy is permitted, which is exactly what
+ *   an unverified peer produces. It renders as its own state, saying that no
+ *   transfer is possible and which rule made it so. There is no branch here
+ *   that yields a sendable plan out of an empty one.
+ *
+ * A third state exists because the app is smaller than the planner's world:
+ * planner.js can rank a peer radio link, and rvQR has no radio. Such a plan is
+ * described, and marked `runnable: false` so the caller offers no send button.
+ * A plan the app cannot carry out is still worth showing — it tells the
+ * operator what their radio policy just bought — but it is not a transfer.
+ *
+ * Pure, like the two view models above, and for the same reason: the failure
+ * mode is a plausible-looking number rather than an exception, and a
+ * plausible-looking number is only catchable by asserting on the rendered text.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    // Hangs off the provenance view model's export, exactly as deltaChoice
+    // does: tests.js requires this file once and reaches all three.
+    module.exports.transferPlan = api;
+  } else {
+    root.RVQRTransferPlanView = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  /**
+   * Display names for planner.js's four rule ids. Held as a map rather than
+   * built by capitalising the id, so a rule renamed upstream shows up as a
+   * missing label here instead of as a plausible sentence about a rule that no
+   * longer exists.
+   */
+  var RULE_LABELS = {
+    trust: 'Trust',
+    radio: 'Radio policy',
+    memory: 'Memory budget',
+    verification: 'Verification'
+  };
+
+  /**
+   * The four terms of J, in the order the objective states them, with the
+   * weight each carries. The weights are read off the plan's own terms rather
+   * than hardcoded — see `termRows` — so a re-weighted objective cannot leave
+   * this panel quoting the old split.
+   */
+  var TERM_NAMES = { T: 'Time', E: 'Energy', B: 'Bytes', R: 'Risk' };
+  var TERM_ORDER = ['T', 'E', 'B', 'R'];
+
+  function ruleLabel(rule) {
+    return RULE_LABELS[rule] || String(rule);
+  }
+
+  function pct(n) { return Math.round(n * 100) + '%'; }
+
+  /**
+   * One row per term: what it is, what it scored, and what fraction of J it
+   * accounts for. The last part is the one that makes the panel checkable — a
+   * reader can see that a 0.30 risk on an unrecognised framing is what cost
+   * this strategy the ranking, rather than being told a total and trusted with
+   * it.
+   */
+  function termRows(terms, weights) {
+    return TERM_ORDER.map(function (k) {
+      var w = weights[k];
+      return {
+        term: k,
+        label: TERM_NAMES[k] + ' (' + pct(w) + ' of J)',
+        value: terms[k],
+        text: terms[k].toFixed(2) + ' × ' + w.toFixed(2) + ' = ' + (terms[k] * w).toFixed(3)
+      };
+    });
+  }
+
+  /**
+   * Rejections, folded on (rule, reason).
+   *
+   * Grouped rather than listed one per candidate because the same rule kills
+   * whole families at once — an offline policy takes out every radio candidate,
+   * an unverified peer takes out all of them — and eighteen identical sentences
+   * is a wall a reader skips. The count is kept, because "18 strategies" and
+   * "1 strategy" are different news. First-seen order is preserved so the
+   * panel is a deterministic function of the plan, like the plan is of the
+   * situation.
+   */
+  function rejectionRows(rejected) {
+    var order = [];
+    var byKey = {};
+    (rejected || []).forEach(function (r) {
+      var key = r.rule + ' ' + r.reason;
+      if (!byKey[key]) {
+        byKey[key] = { rule: r.rule, reason: r.reason, count: 0, label: ruleLabel(r.rule) };
+        order.push(key);
+      }
+      byKey[key].count++;
+    });
+    return order.map(function (key) {
+      var g = byKey[key];
+      g.text = g.count + (g.count === 1 ? ' strategy — ' : ' strategies — ') + g.reason;
+      return g;
+    });
+  }
+
+  /**
+   * @param plan  what planner.js's plan() returned
+   * @param opts  { weights } — the planner's WEIGHT_* constants, so the split
+   *              shown is the split the objective actually used
+   */
+  function model(plan, opts) {
+    opts = opts || {};
+    if (!plan || typeof plan !== 'object' || !Array.isArray(plan.rejected)) return null;
+    var weights = opts.weights || { T: 0.45, E: 0.20, B: 0.20, R: 0.15 };
+    var rejected = rejectionRows(plan.rejected);
+    var considered = plan.candidateCount || 0;
+
+    if (!plan.chosen) {
+      // Every branch below this point assumes a strategy. There is none, and
+      // there is no default to fall back to: a default here would be the app
+      // choosing to send after the rules said it may not.
+      return {
+        ok: false,
+        runnable: false,
+        strategy: null,
+        label: null,
+        headline: 'No transfer is possible.',
+        summary: 'All ' + considered + ' strategies rvQR could use were blocked by a hard ' +
+          'rule, so there is nothing left to send. Nothing was sent.',
+        scoreText: null,
+        terms: [],
+        rejected: rejected,
+        reason: plan.reason,
+        inventoryNote: null,
+        note: null,
+        tone: 'bad'
+      };
+    }
+
+    var chosen = plan.chosen;
+    // planner.js ranks a peer radio link because a planner should describe the
+    // world, not this build. rvQR paints QR codes and nothing else, so a peer
+    // plan is reported and not offered.
+    var runnable = chosen.transport !== 'peer';
+
+    return {
+      ok: true,
+      runnable: runnable,
+      strategy: chosen.id,
+      label: chosen.label,
+      // The strategy leads, then its cost. A reader who takes in one line
+      // should take in what will happen, not how well it scored.
+      headline: chosen.label + ': J = ' + plan.J.toFixed(3) + '.',
+      summary: considered + ' strategies considered, ' + plan.admissible.length +
+        ' passed the hard rules, ' + plan.rejected.length + ' blocked.',
+      // J is a cost against one fixed reference — what this app did before
+      // anybody chose anything — so it is quoted as that fraction rather than
+      // as a bare number with no scale.
+      scoreText: 'J = ' + plan.J.toFixed(3) + ' — ' + pct(plan.J) +
+        ' of what sending it the old way would have cost.',
+      terms: termRows(plan.terms, weights),
+      rejected: rejected,
+      reason: plan.reason,
+      inventoryNote: plan.inventory ? plan.inventory.reason : null,
+      note: runnable ? null
+        : 'The best strategy here is a radio link, and rvQR has no radio transport — ' +
+          'it transfers by screen and camera. Set the radio policy back to offline-only ' +
+          'for a plan this build can actually run.',
+      tone: runnable ? 'good' : ''
+    };
+  }
+
+  return {
+    RULE_LABELS: RULE_LABELS,
+    TERM_NAMES: TERM_NAMES,
+    TERM_ORDER: TERM_ORDER,
+    ruleLabel: ruleLabel,
+    termRows: termRows,
+    rejectionRows: rejectionRows,
+    model: model
+  };
+});
+
 (function () {
   'use strict';
 
@@ -561,12 +763,14 @@
   function resumeLib() { return window.RVQRResume || null; }
   function proto2Lib() { return window.RVQRProto2 || null; }
   function provenanceLib() { return window.RVQRProvenance || null; }
+  function plannerLib() { return window.RVQRPlanner || null; }
 
   // The view model above, which this file also defines. Read through a getter
   // for the same reason as the rest: a missing panel is better than a broken
   // one, and the vault must render either way.
   function provenanceView() { return window.RVQRProvenanceView || null; }
   function deltaChoiceView() { return window.RVQRDeltaChoiceView || null; }
+  function transferPlanView() { return window.RVQRTransferPlanView || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -1864,16 +2068,266 @@
       return;
     }
     openReceiverInventory(lib, semDeltaLib(), text).then(function (r) {
+      lastReceiver = { inventory: r.inventory, sealed: r.sealed };
       renderDeltaChoice(box, r.inventory, r.sealed);
     }, function (e) {
+      lastReceiver = null;
       box.textContent = '';
       box.appendChild(el('div', 'notice bad',
         'That does not look like an inventory: ' + (e && e.message ? e.message : e)));
     });
   }
 
+  // --- The plan --------------------------------------------------------------
+  //
+  // planner.js decides how to send BEFORE anything is built: which framing,
+  // which transfer mode, what chunk size, and whether to take the delta road at
+  // all. Until now the app answered all four by defaulting — v1, indexed,
+  // 512 B, whole artifact — and a default is a decision nobody has to defend.
+  //
+  // It is consulted here and not on the ordinary Send tab, and the reason is
+  // one of its own hard rules. The trust rule asks whether the peer is verified,
+  // and a QR stream painted at whoever points a camera has no peer to verify:
+  // that transfer is a broadcast, and putting it through a rule it can never
+  // satisfy would block the app on a fact it cannot establish. A device that
+  // has shown you an inventory IS a peer, and one this app can pair with, so
+  // this is the flow where the question has an answer — and where an operator
+  // told "no transfer is possible" has something to do about it.
+  //
+  // The plan and semdelta.chooseDelta() are not rivals and must not be made
+  // into them. The plan decides whether to describe the difference at all, from
+  // sizes, before a byte is built. chooseDelta() then builds both deltas and
+  // measures which is smaller. planner.js says so itself: when the two
+  // disagree, the measurement is right and the plan was an estimate.
+
+  // The inventory the current panel was planned against. Kept so a change to
+  // the link settings or the radio policy re-plans, rather than leaving on
+  // screen a decision that was made under rules the operator has since changed.
+  var lastReceiver = null;
+
   /**
-   * Renders the choice, both figures, and why.
+   * The situation, built from what the app actually knows and nothing else.
+   *
+   * Every field here is either measured, published by the receiver, or chosen
+   * by the operator. Where the app knows nothing — whether that device can read
+   * v2 frames, what the link is losing — the value is the conservative one and
+   * says so, because a situation padded with optimistic guesses produces a plan
+   * that is confident about things nobody checked.
+   */
+  function situationFor(receiverInv) {
+    var lib = deltaLib();
+    var bytes = recordBytes(send.record);
+    var spans = (receiverInv && receiverInv.spans) || [];
+    var units = (receiverInv && receiverInv.units) || [];
+
+    // The finest granularity their inventory supports, which bounds what can be
+    // planned now: a unit delta needs a unit table that has already crossed the
+    // wire. A span-only inventory is not a poorer version of a semantic one, it
+    // is a different fact about what the sender may do.
+    var holds = units.length ? 'unit' : spans.length ? 'span' : 'none';
+
+    // How much of this artifact they already hold, from the hashes they
+    // published. This is a hash comparison and builds no payload, which is what
+    // makes it usable before deciding whether to build one.
+    var overlap = 0;
+    try {
+      overlap = lib.diff(lib.inventory(bytes), receiverInv).savedFraction || 0;
+    } catch (e) { overlap = 0; }
+
+    // Bytes living in segments semdelta.js can look inside, read off their own
+    // unit table: units tile exactly those segments, so their lengths sum to
+    // the decomposable total. Only the inventory-granularity rule reads it.
+    var decomposable = 0;
+    for (var i = 0; i < units.length; i++) decomposable += units[i].length || 0;
+
+    return {
+      artifact: { bytes: bytes.length, name: send.record.name },
+      receiver: {
+        holds: holds,
+        baseBytes: (receiverInv && receiverInv.size) || 0,
+        spanCount: spans.length,
+        unitCount: units.length,
+        decomposableBytes: decomposable,
+        hashBytes: receiverInv && receiverInv.hashBytes,
+        overlap: overlap,
+        // We diff against the inventory in hand, so the base planned against is
+        // the base they published. There is no staleness to discount.
+        baseConfidence: 1,
+        // Nothing in an inventory says whether that device can read v2 frames.
+        // Left false, so a v2 plan carries the hazard of a receiver that cannot
+        // parse it rather than assuming a capability nobody claimed.
+        supportsV2: false
+      },
+      link: {
+        // rvQR measures no loss anywhere, and inventing a rate would put a
+        // number the app never observed into three of J's four terms.
+        lossRate: 0,
+        fps: send.fps,
+        // The symbol the benchmarks were measured at, at the error correction
+        // the operator actually chose — L carries 792 payload bytes, M carries
+        // 624, and that difference is the operator's setting, not a constant.
+        symbolBytes: lib.byteCapacity(19, send.ecl)
+      },
+      device: {
+        // This device is the one painting frames. The memory rule projects a
+        // sender's copy count, not a receiver's.
+        role: 'sender'
+      },
+      policy: {
+        radio: send.radio,
+        // A delta is applied by the receiver and becomes its new base, so this
+        // transfer commits its result.
+        commit: true,
+        // rvQR verifies the whole artifact's hash or it does not accept it at
+        // all. There is no partial verification to offer, so none is enumerated
+        // — a strategy the app cannot perform must not be rankable.
+        allowPartialVerification: false
+      },
+      trust: {
+        // The pairing handshake is the only peer identity this app can hold.
+        verified: !!pairing.session,
+        // Nothing is pinned at pairing time yet, so there is no expected key to
+        // compare against and the rule reduces to "are we paired". Both halves
+        // are wired through anyway, so that pinning — when it arrives — is
+        // enforced by the rule rather than by somebody remembering this line.
+        pinnedKeyId: pairing.session && pairing.session.identityVerified
+          ? pairing.session.peerFingerprint : null,
+        presentedKeyId: pairing.session ? pairing.session.peerFingerprint : null
+      }
+    };
+  }
+
+  /**
+   * Runs the planner, or reports that it could not.
+   *
+   * Returns null when planner.js never loaded, which is a different outcome
+   * from a plan that found nothing: the first means nobody reasoned about this
+   * transfer, the second means somebody did and the answer was no.
+   */
+  function planTransfer(receiverInv) {
+    var P = plannerLib();
+    var view = transferPlanView();
+    if (!P || !view) return null;
+    var situation;
+    try {
+      situation = situationFor(receiverInv);
+      var plan = P.plan(situation);
+      return {
+        situation: situation,
+        plan: plan,
+        model: view.model(plan, {
+          weights: {
+            T: P.WEIGHT_TIME, E: P.WEIGHT_ENERGY, B: P.WEIGHT_BYTES, R: P.WEIGHT_RISK
+          }
+        }),
+        // The inputs the app supplied that it did not measure, named on screen
+        // rather than left for a reader to infer from a confident-looking J.
+        assumptions: 'Planned at ' + situation.link.fps + ' frames per second and ' +
+          situation.link.symbolBytes + ' B per symbol, against a link rvQR does not ' +
+          'measure the loss of, for a receiver that has not said it can read v2 frames.'
+      };
+    } catch (e) {
+      return { error: e };
+    }
+  }
+
+  /** The decision, its cost, and every option the rules threw out. */
+  function renderTransferPlan(box, planned) {
+    var m = planned.model;
+
+    var n = el('div', m.tone ? 'notice ' + m.tone : 'notice');
+    n.appendChild(el('strong', '', m.headline + ' '));
+    n.appendChild(document.createTextNode(m.summary));
+    if (m.note) n.appendChild(el('span', 'small', ' ' + m.note));
+    box.appendChild(n);
+
+    if (m.ok) {
+      var dl = el('dl', 'kv');
+      dl.style.marginTop = '.7rem';
+      m.terms.forEach(function (row) {
+        dl.appendChild(el('dt', '', row.label));
+        dl.appendChild(el('dd', 'muted', row.text));
+      });
+      dl.appendChild(el('dt', '', 'Total'));
+      dl.appendChild(el('dd', '', m.scoreText));
+      box.appendChild(dl);
+    }
+
+    // Always rendered when there are any, winner or no winner. A rule that
+    // fires with nothing on screen is a rule the operator cannot act on, and is
+    // indistinguishable from a rule that never ran.
+    if (m.rejected.length) {
+      box.appendChild(el('p', 'small', m.ok
+        ? 'Why the other strategies were not used'
+        : 'What blocked every strategy'));
+      var rl = el('dl', 'kv');
+      m.rejected.forEach(function (row) {
+        rl.appendChild(el('dt', '', row.label));
+        rl.appendChild(el('dd', 'muted', row.text));
+      });
+      box.appendChild(rl);
+    }
+
+    box.appendChild(el('p', 'small muted', m.reason));
+    if (m.inventoryNote) {
+      box.appendChild(el('p', 'small muted',
+        'For their next inventory: ' + m.inventoryNote + '.'));
+    }
+    box.appendChild(el('p', 'small muted', planned.assumptions));
+  }
+
+  /**
+   * Puts the plan into effect, and into the settings panel.
+   *
+   * Framing, mode and chunk size are decisions the planner has just made, so
+   * the controls that used to make them are moved to match. Leaving them
+   * showing the operator's old choice while the send used the planner's would
+   * be the settings panel describing a transfer that is not happening.
+   */
+  function applyPlan(chosen) {
+    send.format = core.normalizeFormat(chosen.format);
+    send.mode = chosen.mode === core.MODE_FOUNTAIN ? core.MODE_FOUNTAIN : core.MODE_INDEXED;
+    send.chunk = chosen.chunkBytes;
+    $('formatPick').value = send.format;
+    $('modePick').value = send.mode;
+    $('chunkRange').value = String(send.chunk);
+    $('chunkLabel').textContent = String(send.chunk);
+    renderFormatNote();
+    renderModeNote();
+    renderSignNote();
+  }
+
+  /**
+   * The plan declined the delta road, and the whole artifact goes instead.
+   *
+   * That is an answer, not a failure to find a delta: when most of a container
+   * has turned over, describing the difference costs more than resending it.
+   * Nothing was built to reach that conclusion — the planner reached it from
+   * sizes — so there is no measured second figure to show beside it, and the
+   * panel does not manufacture one.
+   */
+  function renderPlannedFullSend(box) {
+    var bytes = recordBytes(send.record);
+    box.appendChild(el('p', 'small muted',
+      'This plan does not take the delta road, so no delta was built to compare ' +
+      'against. The whole artifact goes.'));
+    var go = el('button', 'btn-primary', 'Send the whole artifact');
+    go.style.marginTop = '.6rem';
+    go.addEventListener('click', function () {
+      startSend(send.record.id);
+      toast('Sending ' + core.formatBytes(bytes.length) + ' — the whole artifact');
+    });
+    box.appendChild(go);
+  }
+
+  /** Re-plans the panel already on screen after an input to it changed. */
+  function replanLastReceiver() {
+    if (!lastReceiver || !send.record) return;
+    renderDeltaChoice($('deltaResult'), lastReceiver.inventory, lastReceiver.sealed);
+  }
+
+  /**
+   * Renders the plan, then the choice, both figures, and why.
    *
    * The payload rendered here is the payload sent: chooseDelta() already built
    * both, so the button ships the very bytes that were measured rather than
@@ -1883,6 +2337,39 @@
     var sem = semDeltaLib();
     var view = deltaChoiceView();
     box.textContent = '';
+
+    box.appendChild(el('p', 'small muted', sealed
+      ? 'Their inventory arrived sealed and opened under this session.'
+      : 'Their inventory arrived in the clear. Pair first to keep it from anyone watching.'));
+
+    var planned = planTransfer(receiverInv);
+    if (planned && planned.error) {
+      box.appendChild(el('div', 'notice bad',
+        'Could not plan this transfer: ' + (planned.error.message || planned.error)));
+      return;
+    }
+    if (planned) {
+      renderTransferPlan(box, planned);
+      // Two states end here, and neither of them sends. `ok` false means no
+      // strategy was admissible — an unverified peer produces exactly that —
+      // and there is no default to fall back on, because falling back would be
+      // the app sending after the rules said it may not. `runnable` false means
+      // the winning strategy needs a radio this build does not have.
+      if (!planned.model.ok || !planned.model.runnable) return;
+      applyPlan(planned.plan.chosen);
+      if (planned.plan.chosen.granularity === plannerLib().GRANULARITY_FULL) {
+        renderPlannedFullSend(box);
+        return;
+      }
+      box.appendChild(el('p', 'small muted',
+        'The plan takes the delta road; which delta is settled by building both ' +
+        'and measuring them.'));
+    } else {
+      box.appendChild(el('p', 'small muted',
+        'The planner module did not load, so the transfer settings are the ones ' +
+        'you chose rather than ones anything reasoned about.'));
+    }
+
     if (!sem || !view) {
       renderSpanOnlyDiff(box, receiverInv);
       return;
@@ -1917,9 +2404,6 @@
     box.appendChild(dl);
 
     box.appendChild(el('p', 'small muted', model.reason));
-    box.appendChild(el('p', 'small muted', sealed
-      ? 'Their inventory arrived sealed and opened under this session.'
-      : 'Their inventory arrived in the clear. Pair first to keep it from anyone watching.'));
 
     var go = el('button', 'btn-primary', 'Send the ' + model.label.toLowerCase());
     go.style.marginTop = '.6rem';
@@ -2084,7 +2568,12 @@
     // with proto2.js missing produces v1 frames.
     wire: core.DEFAULT_FORMAT,
     sign: false,
-    identity: null
+    identity: null,
+    // The operator's radio policy, held in planner.js's own vocabulary so it
+    // can be handed straight to a rule rather than translated at the boundary.
+    // Offline-only by default because it is the only policy this build can
+    // carry out: rvQR's transport is the screen in front of you.
+    radio: 'offline'
   };
 
   /**
@@ -2675,6 +3164,26 @@
     } else {
       note.textContent = 'Numbered chunks, looped until the receiver has them all. A missed frame waits for the next pass.';
     }
+  }
+
+  /**
+   * What the radio policy buys, and what it costs.
+   *
+   * It is a rule rather than a preference — planner.js filters on it before
+   * anything is scored, so no learned bonus can ever trade it away — and the
+   * note says which of the two settings this build can actually carry out,
+   * because a policy that produces only unusable plans should say so before the
+   * operator wonders why no send button appeared.
+   */
+  function renderRadioNote() {
+    var note = $('radioNote');
+    if (send.radio === 'offline') {
+      note.textContent = 'No transport that needs a radio will be proposed. rvQR ' +
+        'transfers by screen and camera, so this is the only policy it can carry out.';
+      return;
+    }
+    note.textContent = 'A peer radio link may be ranked, and it usually wins. rvQR has ' +
+      'no radio transport, so such a plan is described and no send is offered for it.';
   }
 
   function renderSignNote() {
@@ -3788,6 +4297,11 @@
     });
 
     $('sendPick').addEventListener('change', function (e) {
+      // A plan is about one artifact against one receiver. Changing the
+      // artifact leaves the panel describing a transfer that is no longer the
+      // one on the table, so the receiver it was planned against is dropped
+      // rather than silently reused.
+      lastReceiver = null;
       if (e.target.value) startSend(e.target.value);
       else { stopSend(); $('sendStageCard').hidden = true; }
     });
@@ -3809,9 +4323,26 @@
       $('fpsLabel').textContent = String(send.fps);
       if (send.playing) play(true);
     });
+    // Frame rate and error correction are both inputs to the plan — one sets
+    // how long a strategy takes, the other how much a symbol carries — so a
+    // plan on screen is recomputed rather than left describing the old link.
+    $('fpsRange').addEventListener('change', replanLastReceiver);
     $('eclPick').addEventListener('change', function (e) {
       send.ecl = e.target.value;
       drawFrame(send.index);
+      replanLastReceiver();
+    });
+
+    // --- radio policy ---
+    // A hard rule, not a weight: planner.js filters on it before ranking, so
+    // nothing it could learn is able to overturn the operator's answer here.
+    $('radioPick').addEventListener('change', function (e) {
+      var P = plannerLib();
+      send.radio = e.target.value === 'any'
+        ? (P ? P.RADIO_ANY : 'any')
+        : (P ? P.RADIO_OFFLINE : 'offline');
+      renderRadioNote();
+      replanLastReceiver();
     });
 
     // --- frame format ---
@@ -4000,7 +4531,13 @@
     renderFormatNote();
     renderModeNote();
     renderSignNote();
+    renderRadioNote();
     offerResume();
+    // The radio policy exists to constrain the planner. Without planner.js
+    // there is nothing to constrain, so the control is removed rather than left
+    // as a setting that changes nothing — the same reason the pairing step goes
+    // when the module it serves is absent.
+    if (!plannerLib()) $('radioPolicyRow').hidden = true;
     if (!fountainLib()) $('modePick').disabled = true;
     if (!cryptoLib()) $('signSend').disabled = true;
     if (!deltaLib()) $('deltaSendCard').hidden = true;

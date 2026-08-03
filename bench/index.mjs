@@ -9,7 +9,7 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory, semdelta.
+ *         fleet, closures, memory, semdelta, planner.
  *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
@@ -42,6 +42,7 @@ import { runFleetSuite, runFleetScaleCheck } from './suites/fleet.mjs';
 import { runClosureSuite, closureProfiles, FIRST_CLOSURE_TARGET_SECONDS } from './suites/closures.mjs';
 import { runMemorySuite } from './suites/memory.mjs';
 import { runSemDeltaSuite } from './suites/semdelta.mjs';
+import { runPlannerSuite } from './suites/planner.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -1124,6 +1125,339 @@ function printSemDeltaSuite(res) {
   say('');
 }
 
+function printPlannerSuite(res) {
+  say('### The transfer planner: choosing a strategy before spending a byte');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  const w = res.weights;
+  say(
+    `Driving ${path.relative(REPO_ROOT, res.path)} end to end. ` +
+      `J = ${w.T}·T + ${w.E}·E + ${w.B}·B + ${w.R}·R, weights summing to ${w.sum}, every term a ratio ` +
+      `against the reference strategy (${res.reference}) evaluated in the same situation — that is, ` +
+      'against what this app does today when nobody chooses anything. Container facts are read off ' +
+      `real containers by the ${res.parserKind}` +
+      `${res.parserReason ? ` (the microkernel would not instantiate: ${res.parserReason})` : ''}; ` +
+      `timings are the median of ${res.reps} runs.`
+  );
+  say('');
+  say('**The containers the receiver-side facts come from, measured rather than assumed:**');
+  say('');
+  say(
+    markdownTable(
+      ['container', 'bytes', 'spans', 'units', 'spans decomposed', 'decomposable bytes'],
+      res.containers.map((c) => [
+        `${c.label}${c.synthetic ? ' *(synthetic)*' : ''}`,
+        c.containerBytes.toLocaleString('en-US'),
+        String(c.spanCount),
+        String(c.unitCount),
+        `${c.decomposedSpans}/${c.spanCount}`,
+        c.decomposableBytes.toLocaleString('en-US')
+      ])
+    )
+  );
+  say('');
+
+  say('**What the planner chose, and out of how much.**');
+  say('');
+  say(
+    markdownTable(
+      ['situation', 'artifact', 'receiver holds', 'loss', 'candidates', 'admitted', 'chosen', 'J', 'T / E / B / R', 'publish next'],
+      res.situations.map((s) => [
+        `${s.name}${s.synthetic ? ' *(synthetic)*' : ''}`,
+        `${s.artifactBytes.toLocaleString('en-US')} B`,
+        s.holds,
+        `${Math.round(s.lossRate * 100)}%`,
+        String(s.candidateCount),
+        String(s.admitted),
+        `**${s.chosenLabel}**`,
+        fmt(s.J, 3),
+        s.terms
+          ? `${fmt(s.terms.T, 2)} / ${fmt(s.terms.E, 2)} / ${fmt(s.terms.B, 2)} / ${fmt(s.terms.R, 2)}`
+          : '—',
+        `${s.inventoryGranularity} (${s.inventoryVerdict})`
+      ])
+    )
+  );
+  say('');
+
+  say(
+    '**What the alternatives cost.** Reporting that the planner returned the lowest J would be ' +
+      'circular — J is what it sorts on. These are the extremes over the ADMISSIBLE set, the ' +
+      'strategies that could legally have been chosen, in the planner\'s own transfer model:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['situation', 'chosen', 'fastest admissible', 'slowest admissible', 'chosen ÷ fastest', 'chosen wire', 'leanest wire', 'heaviest wire', 'today’s default'],
+      res.situations.map((s) => [
+        s.name,
+        `${fmt(s.chosenSeconds, 2)} s`,
+        `${fmt(s.bestSeconds, 2)} s`,
+        `${fmt(s.worstSeconds, 2)} s`,
+        `${fmt(s.chosenSeconds / s.bestSeconds, 2)}×`,
+        `${Math.round(s.chosenWireBytes).toLocaleString('en-US')} B`,
+        `${Math.round(s.bestWireBytes).toLocaleString('en-US')} B`,
+        `${Math.round(s.worstWireBytes).toLocaleString('en-US')} B`,
+        `${fmt(s.referenceSeconds, 2)} s / ${Math.round(s.referenceWireBytes).toLocaleString('en-US')} B`
+      ])
+    )
+  );
+  say('');
+  const notFastest = res.situations.filter((s) => !s.chosenIsFastest);
+  say(
+    'The last column is the receiver-side decision, which is in a different tense from the rest of the ' +
+      'row: `chosen` is what the sender does now, bounded by what the receiver already published, and ' +
+      '`publish next` is what that receiver should publish the next time it is asked. A receiver that ' +
+      'published a unit table once and is told here not to do it again is the defect being corrected.'
+  );
+  say('');
+  say(
+    notFastest.length
+      ? `With the radio allowed, the chosen strategy is also a time-minimal one in ` +
+        `${res.situations.length - notFastest.length} of ${res.situations.length} situations. In the ` +
+        `other ${notFastest.length} it is not, and that is J trading: ` +
+        notFastest
+          .map((s) => `${s.name} gives up ${fmt(s.chosenSeconds - s.bestSeconds, 2)} s against ${s.fastestLabel}`)
+          .join('; ') +
+        '.'
+      : 'With the radio allowed, the chosen strategy is also a time-minimal one in every situation, so ' +
+        'nothing in this table exercises J trading time against bytes, energy or risk. Ties between ' +
+        'equally fast candidates are broken on J and then on id, and are not counted as trades here.'
+  );
+  say('');
+
+  const radioChosen = res.situations.filter((s) => s.chosenTransport === 'peer');
+  say(
+    `**Wherever policy allows a radio, the plan is a foregone conclusion** — ${radioChosen.length} of ` +
+      `${res.situations.length} situations choose the peer link, because it moves bytes at a rate no QR ` +
+      'symbol approaches. The optical grid — two framings, two modes, two chunk sizes, two verification ' +
+      'depths — only shows through when the radio is forbidden, and the optical case is the one this ' +
+      'application is for. The same situations with `policy.radio = offline`:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['situation', 'chosen optical strategy', 'J', 'T / E / B / R', 'runner-up', 'runner-up J', 'chosen', 'fastest admissible', 'slowest admissible', 'wire bytes'],
+      res.optical.map((s) => [
+        s.name,
+        `**${s.chosenLabel}**`,
+        fmt(s.J, 3),
+        s.terms
+          ? `${fmt(s.terms.T, 2)} / ${fmt(s.terms.E, 2)} / ${fmt(s.terms.B, 2)} / ${fmt(s.terms.R, 2)}`
+          : '—',
+        s.runnerUpLabel || '—',
+        fmt(s.runnerUpJ, 3),
+        `${fmt(s.chosenSeconds, 2)} s`,
+        `${fmt(s.bestSeconds, 2)} s`,
+        `${fmt(s.worstSeconds, 2)} s`,
+        `${Math.round(s.chosenWireBytes).toLocaleString('en-US')} B`
+      ])
+    )
+  );
+  say('');
+  const opticalNotFastest = res.optical.filter((s) => !s.chosenIsFastest);
+  const opticalNotLeanest = res.optical.filter((s) => !s.chosenIsLeanest);
+  say(
+    `Offline, the chosen strategy is a time-minimal one in ` +
+      `${res.optical.length - opticalNotFastest.length} of ${res.optical.length} situations and a ` +
+      `byte-minimal one in ${res.optical.length - opticalNotLeanest.length}` +
+      (opticalNotFastest.length
+        ? `. Where it is neither — ${opticalNotFastest
+            .map((s) => `${s.name}, giving up ${fmt(s.chosenSeconds - s.bestSeconds, 2)} s against ${s.fastestLabel}`)
+            .join('; ')} — the seconds are what the other three terms bought.`
+        : '. The two agree in every row, so nothing here catches T and B pulling apart; the fountain ' +
+          'mode wins on both at once because a rateless transport pays no coupon-collector penalty and ' +
+          'therefore paints fewer symbols as well as finishing sooner.')
+  );
+  say('');
+  const risky = res.optical.filter((s) => s.terms && s.terms.R > 0);
+  if (risky.length) {
+    say(
+      `The risk term is live in ${risky.length} of these rows and decisive in none of them: ` +
+        risky
+          .map((s) => `${s.name} carries R = ${fmt(s.terms.R, 2)}, worth ${fmt(res.weights.R * s.terms.R, 3)} of J, ` +
+            `against a runner-up ${fmt(s.runnerUpJ - s.J, 3)} behind`)
+          .join('; ') +
+        '. A hazard priced below the gap it would have to close does not change a decision, which is ' +
+        'the honest reading of a weighted sum and not a criticism of one.'
+    );
+    say('');
+  }
+
+  say(
+    '**The cost of deciding.** `plan()` enumerates and scores the whole candidate set before a byte ' +
+      'moves. "Saved" is the reference strategy\'s projected transfer time minus the chosen one\'s:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['situation', 'candidates', 'admitted', 'plan p50', 'plan p95', 'transfer saved', 'saved ÷ planning', 'verdict'],
+      res.situations.map((s) => {
+        const ratio = s.savedSeconds / (s.planMs.p50 / 1000);
+        return [
+          s.name,
+          String(s.candidateCount),
+          String(s.admitted),
+          `${fmt(s.planMs.p50, 3)} ms`,
+          `${fmt(s.planMs.p95, 3)} ms`,
+          `${fmt(s.savedSeconds, 2)} s`,
+          Number.isFinite(ratio) ? Math.round(ratio).toLocaleString('en-US') + '×' : '—',
+          s.savedSeconds > 0 ? 'pays for itself' : '**costs more than it saves**'
+        ];
+      })
+    )
+  );
+  say('');
+  const ratios = res.situations
+    .map((s) => s.savedSeconds / (s.planMs.p50 / 1000))
+    .filter((r) => Number.isFinite(r) && r > 0);
+  const orders = [Math.floor(Math.log10(Math.min(...ratios))), Math.floor(Math.log10(Math.max(...ratios)))];
+  say(
+    'Two readings of that table are worth keeping apart. The planning cost is real and small: a plan is ' +
+      'arithmetic over a few dozen candidates and never touches the artifact, so it does not grow with ' +
+      'the container — the megabyte row plans no more slowly than the 132-byte one. The saving is a ' +
+      'PROJECTION and it is not all the planner\'s doing: in the rows where the peer link wins, most of ' +
+      'the saved time is the radio being faster than a screen, which needs no planner to notice. The ' +
+      'narrower claim the table supports is the one that matters for a regression: at these candidate ' +
+      `counts the decision is ${orders[0]} to ${orders[1]} orders of magnitude cheaper than the transfer ` +
+      'it decides about, so it cannot be the thing that costs more than it saves.'
+  );
+  say('');
+
+  say('**The hard rules under an adversarial adviser.** Advice weight asked for: ' +
+    `${res.rules[0].adviceWeightAsked}, applied: ` +
+    `${Math.max(...res.rules.map((r) => r.adviceWeightApplied))} ` +
+    `(the module caps it at ${res.maxAdviceWeight}; the trust row reports 0 because it has no ranked ` +
+    'candidate to carry a weight at all). The adviser returns the maximum preference for exactly the ' +
+    'candidates the rule forbids and the minimum for every other candidate:');
+  say('');
+  say(
+    markdownTable(
+      ['rule', 'situation', 'candidates', 'admitted', 'rejected', 'rejected by this rule', 'maximally favoured', 'appeared in the ranking', 'violator chosen?', 'outcome'],
+      res.rules.map((r) => [
+        r.rule,
+        r.name,
+        String(r.candidateCount),
+        String(r.admitted),
+        String(r.rejectedTotal),
+        String(r.rejectedByThisRule),
+        String(r.favoured),
+        String(r.violatorsRanked),
+        r.violatorChosen ? '**YES**' : 'no',
+        r.chosenLabel ? r.chosenLabel : '*no plan at all*'
+      ])
+    )
+  );
+  say('');
+  const leaked = res.rules.filter((r) => r.violatorChosen || r.violatorsRanked > 0 || r.violatorsAdmitted > 0);
+  say(
+    leaked.length
+      ? `**${leaked.length} rule(s) leaked a forbidden candidate into the ranking: ` +
+        `${leaked.map((r) => r.rule).join(', ')}.**`
+      : 'No forbidden candidate reached the ranking under any of the four rules, at any advice weight ' +
+        'the module would accept or the caller would ask for. The reason it cannot is structural rather ' +
+        'than numerical: a rejection carries an id, a label and a sentence, not a candidate object, so ' +
+        'after the filter runs there is nothing left for the adviser to prefer.'
+  );
+  say('');
+  say(
+    'The trust row is the one that returns no plan at all. Every candidate breaks that rule, so the ' +
+      'admissible set is empty and `chosen` is null — the correct outcome for an unverified peer, and ' +
+      `the plan still explains itself: "${res.rules[0].reason}"`
+  );
+  say('');
+
+  say(
+    '**The inventory-granularity rule.** A receiver decides whether to publish a unit table *before* ' +
+      'anyone knows what changed, so the rule bounds what such a table could possibly save. The unit ' +
+      'table is paid twice with certainty — once on the inventory hop, once inside the delta payload — ' +
+      'and saves at most the decomposable bytes, once. "Break-even" is the largest fraction of those ' +
+      'bytes that may turn over before it stops paying:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['container', 'shape', 'record', 'inventory extra', 'payload extra', 'paid twice', 'decomposable', 'break-even', 'tolerance', 'verdict', 'publishes'],
+      res.granularity.map((g) => [
+        `${g.name}${g.synthetic ? ' *(synthetic)*' : ''}${g.hypothetical ? ' *(sizes only)*' : ''}`,
+        g.what,
+        `${g.recordBytes} B`,
+        `${g.inventoryExtra.toLocaleString('en-US')} B`,
+        `${g.payloadExtra.toLocaleString('en-US')} B`,
+        `${g.doublePaid.toLocaleString('en-US')} B`,
+        `${g.decomposableBytes.toLocaleString('en-US')} B`,
+        g.decomposableBytes > 0 ? fmt(g.breakEven * 100, 1) + '%' : '—',
+        fmt(g.tolerance * 100, 0) + '%',
+        g.verdict,
+        `**${g.granularity}**`
+      ])
+    )
+  );
+  say('');
+  const units = res.granularity.filter((g) => g.granularity === 'unit');
+  const spans = res.granularity.filter((g) => g.granularity === 'span');
+  say(
+    `${units.length} of ${res.granularity.length} shapes publish a unit table and ${spans.length} decline ` +
+      `it — units for ${units.map((g) => g.name).join(', ')}; spans for ` +
+      `${spans.map((g) => g.name).join(', ')}. ` +
+      'A rule that only ever said yes would not be a rule, and the declining rows are not failures: ' +
+      'declining unit granularity when it would have helped costs some bytes, paying for it when it ' +
+      'cannot possibly help is the defect it exists to prevent.'
+  );
+  say('');
+  const ti = res.toleranceInterval;
+  say(
+    '**The tolerance interval, derived from these break-evens rather than quoted.** ' +
+      `${ti.declined} shape${ti.declined === 1 ? ' was' : 's were'} declined on the tolerance test and ` +
+      `${ti.admitted} admitted, so every tolerance in (${fmt(ti.open, 3)}, ${fmt(ti.close, 3)}] gives ` +
+      `identical verdicts on all ${ti.declined + ti.admitted} of them. The module's default is ` +
+      `${res.defaultRewriteTolerance}, which is ${ti.defaultInside ? 'inside' : '**outside**'} that ` +
+      'interval. The interval\'s width is the honest measure of how well this many shapes pin a threshold ' +
+      'down, which is to say not very: the binding shapes are ' +
+      `${res.granularity.filter((g) => g.breakEven === ti.open).map((g) => g.name).join(', ')} below and ` +
+      `${res.granularity.filter((g) => g.breakEven === ti.close).map((g) => g.name).join(', ')} above, ` +
+      'and a container between them would narrow it further or move it.'
+  );
+  say('');
+
+  const checked = res.granularity.filter((g) => g.actualSpanInventoryBytes !== null);
+  say(
+    '**The rule\'s arithmetic against the real encoders.** The bound predicts inventory sizes instead of ' +
+      'encoding anything, so both are reported for every container this suite parsed for real. Actual is ' +
+      '`delta.encodeInventory` and `semdelta.encodeSemanticInventory`, base64url in both columns:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['container', 'span inventory predicted', 'span actual', 'unit inventory predicted', 'unit actual', 'agrees?'],
+      checked.map((g) => {
+        const ok = g.predictedSpanInventoryBytes === g.actualSpanInventoryBytes &&
+          g.predictedUnitInventoryBytes === g.actualUnitInventoryBytes;
+        return [
+          g.name,
+          `${g.predictedSpanInventoryBytes.toLocaleString('en-US')} B`,
+          `${g.actualSpanInventoryBytes.toLocaleString('en-US')} B`,
+          `${g.predictedUnitInventoryBytes.toLocaleString('en-US')} B`,
+          `${g.actualUnitInventoryBytes.toLocaleString('en-US')} B`,
+          ok ? 'exact' : `**NO** (${g.predictedSpanInventoryBytes - g.actualSpanInventoryBytes} B, ` +
+            `${g.predictedUnitInventoryBytes - g.actualUnitInventoryBytes} B)`
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    `Deciding costs ${fmt(Math.max(...res.granularity.map((g) => g.chooseMs.p50)), 4)} ms at worst across ` +
+      'these shapes: the rule is arithmetic on four numbers and does not touch the container, which is ' +
+      'why it can run before the inventory it is deciding about exists.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 function main() {
@@ -1424,6 +1758,18 @@ function main() {
       reps: args.quick ? 1 : 5
     });
     printSemDeltaSuite(results.semdelta);
+  }
+
+  if (want('planner')) {
+    say('---');
+    say('');
+    results.planner = runPlannerSuite({
+      demoBytes: rvf,
+      wasmModule: wasm,
+      seed: args.seed,
+      reps: args.quick ? 1 : 9
+    });
+    printPlannerSuite(results.planner);
   }
 
   if (args.json) {

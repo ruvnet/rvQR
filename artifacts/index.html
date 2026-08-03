@@ -1067,6 +1067,25 @@
         </label>
         <p class="small muted" id="signNote" style="margin:0 0 .8rem"></p>
 
+        <!--
+          A rule the planner enforces rather than a preference it weighs, which
+          is why it sits with the settings and not inside the plan panel: the
+          operator decides whether a radio may be used at all, and no score the
+          planner can compute is allowed to overturn that. Offline-only is the
+          default because rvQR's only working transport is the screen in front
+          of you — allowing a radio lets the planner rank a peer link that this
+          build cannot yet run, and the plan panel says so plainly rather than
+          offering a send button for a transport that does not exist.
+        -->
+        <div id="radioPolicyRow">
+          <label class="field" for="radioPick">Radio policy</label>
+          <select id="radioPick">
+            <option value="offline" selected>Offline only — nothing leaves by radio</option>
+            <option value="any">Allow a radio link</option>
+          </select>
+          <p class="small muted" id="radioNote" style="margin:.4rem 0 .8rem"></p>
+        </div>
+
         <label class="field" for="chunkRange">Chunk size — <span id="chunkLabel">512</span> bytes per frame</label>
         <input type="range" id="chunkRange" min="128" max="1024" step="64" value="512">
         <label class="field" for="fpsRange">Speed — <span id="fpsLabel">5</span> frames per second</label>
@@ -1436,6 +1455,17 @@
   script list is derived from this document.
 -->
 <script src="./provenance.js" defer></script>
+<!--
+  planner.js reads RVQRCore at load time and nothing else — no DOM, no storage,
+  no clock — so it only has to follow core.js, which is one of the eager scripts
+  above. It is deferred with the other optional modules because nothing on the
+  first paint needs it: it is consulted once, when a peer has shown what it
+  holds and the app is about to choose how to send. Without it the send panel
+  falls back to the settings the operator picked, and says so, rather than
+  pretending a strategy was reasoned about. Loading it here is also what puts it
+  in the standalone build, whose script list is derived from this document.
+-->
+<script src="./planner.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

@@ -108,6 +108,21 @@ receiver. The semantic *inventory* is larger in every case too (667 B against
 134 B for the demo, 44,235 B against 190 B for the large container), which
 `chooseDelta` does not look at and which no scenario here makes decisive.
 
+**11. A learned model cannot buy a forbidden transfer, and the decision costs
+four to seven orders of magnitude less than the transfer it decides.** MEASURED
+on `artifacts/planner.js` with an adviser returning the maximum preference for
+exactly the candidates each hard rule forbids and the minimum for every other
+candidate, at an advice weight of 1000: across the trust, memory, radio and
+verification rules, **18, 12, 2 and 9 forbidden candidates were rejected and
+none of them appeared anywhere in the ranking** — the unverified peer
+correctly produces no plan at all rather than a bad one. Planning itself is 0.018
+to 0.104 ms over 18 to 54 candidates and does not grow with the artifact: the
+1,125,950-byte container plans in 0.076 ms and the 132-byte one in 0.041 ms.
+**The inventory-granularity rule closes the defect §7 measured**, publishing a
+unit table for 4 of the 8 container shapes tried and declining it for the other
+4 — including the demo container, whose table costs 869 B twice over against
+1,798 decomposable bytes.
+
 ---
 
 ## Reproducing this
@@ -129,6 +144,7 @@ node bench/index.mjs --suite fleet       # N receivers, peer exchange (a model)
 node bench/index.mjs --suite closures    # progressive activation (a model)
 node bench/index.mjs --suite memory      # working memory and payload copies
 node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
+node bench/index.mjs --suite planner     # strategy choice, the hard rules, inventory granularity
 
 # The memory suite spawns its own child process; to run that probe directly:
 node --expose-gc bench/lib/memprobe.mjs
@@ -692,8 +708,13 @@ decline it, and the "every record rewritten" row is that bill arriving: summing
 both hops it costs 2,177 B against the span path's 1,308 B, a case where the
 semantic machinery loses overall while `chooseDelta` still returns the right
 answer to the narrower question it was asked. No granularity rule exists
-anywhere in the module. A receiver cannot know what changed, but it can bound
-what a unit table can possibly save, and it currently does not try.
+anywhere in `semdelta.js`. A receiver cannot know what changed, but it can bound
+what a unit table can possibly save, and `semdelta.js` does not try.
+**`artifacts/planner.js` now does**, from sizes and before any inventory is
+built; the rule and its verdicts on eight container shapes — including this
+container, where it declines the unit table and reproduces the 869 B figure
+above from span and unit counts alone — are measured in the planner subsection
+at the end of §10.
 
 Cost of the machinery, median of 5 runs on the machine recorded above: the
 1.13 MB container plans in about 15 ms, inventories in about 27 ms, and takes
@@ -876,6 +897,232 @@ predicts. Every fountain transport, shipped and reference alike, sits within 2%
 of exact across the whole range, which is the validation that the P term is the
 right shape for a rateless transport and the warning that it is not a general
 one.
+
+### The transfer planner: choosing a strategy before spending a byte
+
+`node bench/index.mjs --suite planner`
+
+G above ranks *configurations* by goodput. `artifacts/planner.js` makes the
+adjacent decision: given a situation — artifact size, what the receiver already
+holds, what the link is doing, what the device can spare, what policy allows —
+it enumerates concrete strategies, discards the ones the hard rules forbid,
+ranks what is left by
+
+    J = 0.45·T + 0.20·E + 0.20·B + 0.15·R      (a cost — lower is better)
+
+and returns the winner with every loser and the reason it lost. Each of T, E and
+B is a ratio against one fixed reference strategy — v1 JSON, indexed, 512 B
+chunk, whole artifact, complete verification, which is what this app does today
+when nobody chooses anything — evaluated in the same situation. R is already a
+probability. **T's inputs are measured (§4, §10); E's are not, and there is no
+power measurement anywhere in this document (§17), so the energy term is a
+relative proxy in arbitrary units.**
+
+This suite was run on the machine and seed recorded above but **at
+2026-08-03T19:43:22Z, later than the run the rest of this document reports**.
+Every byte count, candidate count, span count, unit count, verdict and J score
+below is deterministic and reproduces from the seed; only the millisecond
+columns are of that particular run, and they move a few tens of percent between
+runs on this machine.
+
+Receiver-side facts below are read off real containers by the real
+`rvf_wasm_bg.wasm` microkernel — spans from `delta.spanPlan`, units from
+`semdelta.semanticPlan`, decomposable bytes summed over the spans
+`semdelta.decompositionReport` says it actually decomposed — rather than
+asserted:
+
+| container | bytes | spans | units | spans decomposed | decomposable bytes |
+|---|---|---|---|---|---|
+| demo container | 2,304 | 4 | 28 | 1/4 | 1,798 |
+| WASM container | 41,053 | 1 | 71 | 1/1 | 41,053 |
+| RVCOW cluster map † | 18,163 | 1 | 126 | 1/1 | 18,163 |
+| membership bitmap † | 5,160 | 1 | 21 | 1/1 | 5,160 |
+| large container † | 1,125,950 | 7 | 2,359 | 4/7 | 1,125,444 |
+
+† Synthetic containers, constructed because the repository ships nothing at the
+scale those mechanisms exist for. All three are parsed for real, by the same
+parser and the same code path as the two that are not.
+
+**What the planner chose, and what the alternatives would have cost.** Reporting
+that it returned the lowest J would be circular — J is what it sorts on. The
+spread columns are the extremes over the *admissible* set, the strategies that
+could legally have been chosen, in the planner's own transfer model. The link is
+version 19-L at 5 fps throughout.
+
+| situation | artifact | receiver holds | candidates → admitted | chosen | J | chosen | fastest / slowest admissible | today's default |
+|---|---|---|---|---|---|---|---|---|
+| cold receiver, demo container | 2,304 B | nothing | 18 → 18 | peer link, whole artifact | 0.051 | 0.08 s | 0.08 s / 3.00 s | 3.00 s |
+| receiver holds a near-identical copy | 2,304 B | units, 99% overlap | 54 → 54 | peer link, unit delta | 0.011 | 0.02 s | 0.02 s / 3.00 s | 3.00 s |
+| lossy link, 45% loss | 40,989 B | nothing | 18 → 18 | peer link, whole artifact | 0.030 | 2.27 s | 2.27 s / 103.60 s | 103.60 s |
+| tiny artifact | 132 B | nothing | 18 → 18 | peer link, whole artifact | 0.009 | 0.00 s | 0.00 s / 1.00 s | 1.00 s |
+| large container, mostly unchanged † | 1,125,950 B | units, 99% overlap | 54 → 54 | peer link, unit delta | 0.003 | 1.51 s | 1.51 s / 1,037.00 s | 1,037.00 s |
+| offline policy | 40,989 B | nothing | 18 → **16** | optical v2, fountain @ 1024 B, whole artifact | 0.327 | 14.40 s | 14.40 s / 38.80 s | 38.80 s |
+| receiver has not declared v2 | 40,989 B | nothing | 18 → 18 | peer link, whole artifact | 0.070 | 1.39 s | 1.39 s / 38.80 s | 38.80 s |
+| committing transfer | 40,989 B | spans, 90% overlap | 36 → **18** | peer link, whole artifact | 0.070 | 1.39 s | 1.39 s / 38.80 s | 38.80 s |
+
+The slowest admissible strategy is 2.7× to 687× the chosen one across these
+rows, and above 27× in seven of the eight, so the choice is not between
+near-equivalents. Restricted to the optical strategies the spread narrows to
+1.7×–66×, which is the honest figure for what choosing well is worth when there
+is no radio to reach for. **And wherever policy allows a radio the answer is a
+foregone conclusion**: 7 of the 8 situations pick the peer
+link, because a peer link moves bytes at a rate no QR symbol approaches. The
+optical grid — two framings, two modes, two chunk sizes, two verification depths
+— only becomes visible when the radio is forbidden, and the optical case is the
+one this application is for:
+
+| situation, radio forbidden | chosen optical strategy | J | T / E / B / R | runner-up | runner-up J | chosen | slowest admissible |
+|---|---|---|---|---|---|---|---|
+| cold receiver, demo container | v2, fountain @ 1024 B, whole artifact | 0.411 | 0.47 / 0.54 / 0.47 / 0.00 | the same, partial verify | 0.448 | 1.40 s | 3.00 s |
+| receiver holds a near-identical copy | v1, fountain @ 1024 B, unit delta | 0.176 | 0.20 / 0.23 / 0.20 / 0.00 | v1, fountain @ 512 B, unit delta | 0.176 | 0.60 s | 3.00 s |
+| lossy link, 45% loss | v2, fountain @ 1024 B, whole artifact | 0.199 | 0.23 / 0.26 / 0.23 / 0.00 | the same, partial verify | 0.236 | 23.40 s | 103.60 s |
+| tiny artifact | v1, fountain @ 1024 B, whole artifact | 0.528 | 0.60 / 0.69 / 0.60 / 0.00 | v1, fountain @ 512 B, whole artifact | 0.528 | 0.60 s | 1.00 s |
+| large container, mostly unchanged † | v2, fountain @ 1024 B, unit delta | 0.013 | 0.02 / 0.02 / 0.02 / 0.00 | v1, fountain @ 1024 B, unit delta | 0.016 | 15.60 s | 1,037.00 s |
+| receiver has not declared v2 | v2, fountain @ 1024 B, whole artifact | 0.372 | 0.37 / 0.43 / 0.37 / **0.30** | v1, fountain @ 1024 B, whole artifact | 0.395 | 14.40 s | 38.80 s |
+| committing transfer | v2, fountain @ 1024 B, whole artifact | 0.327 | 0.37 / 0.43 / 0.37 / 0.00 | the same, span delta | 0.327 | 14.40 s | 38.80 s |
+
+**The optical winner is a fountain stream in every one of those rows**, and in
+each it is simultaneously the fastest and the leanest admissible strategy — which
+is not a coincidence and not a trade: a rateless transport pays no
+coupon-collector penalty, so it paints fewer symbols *and* finishes sooner, and
+§3 measured both halves of that. Nothing in this suite therefore catches T and B
+pulling apart. **The risk term is live in exactly one row and decisive in none.**
+A v2 candidate aimed at a receiver that has not said it can read v2 carries
+R = 0.30, worth 0.045 of J; the gap it would have to close is 0.023, so v2 still
+wins. A hazard priced below the gap it would have to close changes nothing, which
+is the honest reading of a weighted sum rather than a complaint about one.
+
+**The cost of deciding.**
+
+| situation | candidates | plan p50 | plan p95 | transfer saved against today's default | saved ÷ planning |
+|---|---|---|---|---|---|
+| cold receiver, demo container | 18 | 0.077 ms | 0.993 ms | 2.92 s | 37,988× |
+| receiver holds a near-identical copy | 54 | 0.104 ms | 0.134 ms | 2.98 s | 28,669× |
+| lossy link, 45% loss | 18 | 0.033 ms | 0.060 ms | 101.33 s | 3,039,800× |
+| tiny artifact | 18 | 0.041 ms | 0.198 ms | 1.00 s | 24,455× |
+| large container, mostly unchanged † | 54 | 0.076 ms | 0.120 ms | 1,035.49 s | 13,677,441× |
+| offline policy | 18 | 0.018 ms | 0.059 ms | 24.40 s | 1,324,935× |
+| receiver has not declared v2 | 18 | 0.020 ms | 0.033 ms | 37.41 s | 1,894,184× |
+| committing transfer | 36 | 0.029 ms | 0.044 ms | 37.41 s | 1,306,904× |
+
+Two readings of that table have to be kept apart. The planning cost is measured
+and it is small, and it **does not grow with the artifact** — a plan is
+arithmetic over a few dozen candidates and never touches the container. Compare
+the two rows with the same 18 candidates and a 310× difference in size: the
+40,989-byte module plans in 0.033 ms and the 132-byte segment in 0.041 ms, the
+larger artifact being the *faster* of the two. What moves the column is candidate
+count, which is why the 54-candidate rows are the slow ones at 0.076 and
+0.104 ms. The saving is a **projection**, and it is not
+all the planner's doing: in the rows where the peer link wins, most of the saved
+time is a radio being faster than a screen, which needs no planner to notice. The
+narrower claim, which is the one that matters for a regression, is that at these
+candidate counts the decision is four to seven orders of magnitude cheaper than
+the transfer it decides about, so it cannot be the thing that costs more than it
+saves. The p95 column is where a first call pays for a cold JIT; the p50 is what
+a running system sees.
+
+**The hard rules under an adversarial adviser.** The learned component is
+injected as `adviser.preference(candidate, situation)`. This run supplies one
+that returns the maximum preference for exactly the candidates a rule forbids and
+the minimum for every other candidate, and asks for an advice weight of 1000 —
+which the module clamps to 0.35, but the request is what an unbounded learned
+model would make.
+
+| rule | situation | candidates | admitted | rejected by this rule | maximally favoured | reached the ranking | violator chosen? | outcome |
+|---|---|---|---|---|---|---|---|---|
+| trust | unverified peer | 18 | **0** | 18 | 18 | 0 | no | **no plan at all** |
+| memory | 48 MiB artifact | 18 | 6 | 12 | 12 | 0 | no | peer link, whole artifact |
+| radio | offline policy, 10 MB/s peer link | 18 | 16 | 2 | 2 | 0 | no | optical v2, indexed @ 1024 B, whole artifact |
+| verification | committing transfer | 18 | 9 | 9 | 9 | 0 | no | peer link, whole artifact |
+
+**Nothing forbidden reached the ranking, was admitted, or was chosen, under any
+of the four rules.** The reason is structural rather than numerical, and that is
+the point of the design: `admit()` returns candidate objects on one side and
+report rows — an id, a label, a rule and a sentence — on the other, and `rank()`
+is handed only the first list. There is no penalty to outbid because there is no
+rejected candidate left in the world the ranking can see, so the ceiling on
+advice weight bounds drift rather than safety.
+
+**The unverified-peer row is the one that returns nothing at all**, and that is
+correct rather than a failure: all 18 candidates break the trust rule, the
+admissible set is empty, `chosen` is null, and the plan still explains itself —
+*"no strategy passed the hard rules — 18 on trust; first: the peer is not
+verified, and an unverified peer is not a transfer partner at any score"*. A
+caller that treats a null plan as an error will report a shrug where the module
+gave it a sentence.
+
+**The inventory-granularity rule, which closes the defect §7 measured.**
+`semanticInventory()` builds a unit table unconditionally, before anyone knows
+what changed, so the receiver pays for unit granularity even in the transfers
+where the sender will decline it. A receiver cannot know what changed, but it can
+bound what a unit table could possibly save: the table is paid **twice** with
+certainty — once on the inventory hop, once inside the delta payload — and saves
+at most the decomposable bytes, once. "Break-even" below is the largest fraction
+of those bytes that may turn over before it stops paying.
+
+| container | shape | table paid twice | decomposable | break-even | verdict | publishes |
+|---|---|---|---|---|---|---|
+| demo container | 4 spans, 28 units | 533 + 336 = **869 B** | 1,798 B | 51.7% | marginal | **span** |
+| WASM container | 1 span, 71 units | 1,336 + 980 = 2,316 B | 41,053 B | 94.4% | worth-it | **unit** |
+| RVCOW cluster map † | 1 span, 126 units | 2,362 + 1,750 = 4,112 B | 18,163 B | 77.4% | worth-it | **unit** |
+| membership bitmap † | 1 span, 21 units | 402 + 280 = 682 B | 5,160 B | 86.8% | worth-it | **unit** |
+| large container † | 7 spans, 2,359 units | 44,045 + 32,928 = 76,973 B | 1,125,444 B | 93.2% | worth-it | **unit** |
+| many tiny units ‡ | 2 spans, 40 units | 758 + 532 = 1,290 B | 900 B | −43.3% | **impossible** | **span** |
+| opaque container ‡ | 5 spans, nothing parseable | 104 B | 0 B | — | nothing-to-decompose | **span** |
+| cold receiver ‡ | nothing held | 11 B | 0 B | — | nothing-to-decompose | **span** |
+
+‡ Sizes only — these three are shapes rather than containers, because the rule
+takes four numbers and never sees a container. That is what lets it run before
+the inventory it is deciding about exists, and it costs 0.0012 ms at worst here.
+
+**Four shapes take unit granularity and four decline it**, which is the property
+worth having: a rule that only ever said yes would not be a rule. The 869 B on
+the demo row is the same 869 B §7 measured as the difference between the semantic
+path's 2,177 B two-hop total and the span path's 1,308 B, reproduced here from
+sizes rather than from payloads. The `impossible` row is a stronger verdict than
+`marginal` and is stated separately for that reason: 1,290 B of table against
+900 B of content cannot be saved by any edit however small, where the demo row is
+merely a bet a receiver has no business taking.
+
+**Declining costs bytes; paying when it cannot help is the defect.** §7 measured
+two edits to the *same* demo container — one where unit granularity wins by 687 B
+and one where it loses by 869 B. A receiver cannot tell those apart, and this
+rule does not pretend to: the fraction rewritten appears only in deriving the
+threshold, never in the decision.
+
+**The threshold is pinned by 5 shapes, and loosely.** Of the shapes the tolerance
+test actually decides, 1 is declined and 4 are admitted, so **every rewrite
+tolerance in (0.517, 0.774] gives identical verdicts on all five**; the module's
+default of 0.75 is inside it. The interval is bounded below by the demo container
+and above by the RVCOW cluster map, and a container between them would narrow it
+or move it. Five shapes is not many, and the interval's width is the honest
+measure of that rather than a footnote to it.
+
+**The rule's arithmetic against the real encoders.** The bound predicts inventory
+sizes instead of encoding anything, which is the only reason it can run first.
+Predicted against actual, base64url in both columns:
+
+| container | span inventory predicted | actual | unit inventory predicted | actual |
+|---|---|---|---|---|
+| demo container | 134 B | **134 B** | 667 B | **667 B** |
+| WASM container | 78 B | **78 B** | 1,414 B | **1,414 B** |
+| RVCOW cluster map † | 78 B | **78 B** | 2,440 B | **2,440 B** |
+| membership bitmap † | 78 B | **78 B** | 480 B | **480 B** |
+| large container † | 190 B | **190 B** | 44,235 B | **44,235 B** |
+
+Exact on all ten figures. Four of them are also §7's, reached independently: the
+demo container's 134 B span inventory and 667 B semantic inventory, and the large
+container's 190 B and 44,235 B, arrived at here by arithmetic on span and unit
+counts rather than by encoding a table.
+
+**What this suite does not establish.** A plan is a projection: every second in
+these tables is the planner's own transfer model, not a stopwatch, and
+`semdelta.chooseDelta()` measures the real payloads later and may disagree — when
+it does, it is right and this was an estimate. The delta rows read the receiver's
+*declared* overlap, and no hard rule catches a receiver that declares it wrongly.
+The peer link's 32 KB/s default and the energy weights are modelled inputs, so
+the rows where the radio wins are as good as those two numbers and no better. And
+passing the hard rules means a strategy is *permitted*, never that it will work.
 
 ---
 
@@ -1284,6 +1531,8 @@ store and the camera buffers are not.
 | Colour or multi-symbol frames | **Not applicable.** rvQR sends one monochrome symbol per frame. This is the single largest throughput lever the comparators use. |
 | RaptorQ interoperability | **Not applicable.** `artifacts/fountain.js` states it is not RFC 6330 conformant. |
 | Signature verification cost | **Not measured.** There is no signing path in this repository to time. |
+| Energy, in joules | **Not measurable here at all.** No power measurement of any kind exists in this repository, which is why the planner's E term (§10, the planner subsection) is a relative proxy in arbitrary units against one optical slot, and why it is the only one of J's four terms whose weight buys a number nobody has checked against a battery. |
+| Whether a plan was the *right* plan | **Not measured.** The planner subsection measures what is decided, what the alternatives would have cost in the same model, and what deciding costs. Whether the model ranks real transfers correctly needs the two devices in the first row of this table. |
 | Resume-after-termination behaviour | **Not measured.** `artifacts/resume.js` is not covered by this harness. |
 | COBRA's published throughput | **Could not verify.** Paywalled; secondary sources disagree. |
 

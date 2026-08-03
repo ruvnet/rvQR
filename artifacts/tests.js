@@ -33,6 +33,7 @@
       try { mods.delta = require('./delta.js'); } catch (e) { /* optional */ }
       try { mods.crypto = require('./crypto.js'); } catch (e) { /* optional */ }
       try { mods.semdelta = require('./semdelta.js'); } catch (e) { /* optional */ }
+      try { mods.planner = require('./planner.js'); } catch (e) { /* optional */ }
       // app.js exports its provenance view model and nothing else outside a
       // browser: the UI half of that file returns early without a document.
       try { mods.view = require('./app.js'); } catch (e) { /* optional */ }
@@ -2409,6 +2410,270 @@
         assertEqual(choiceView.model({}, {}), null, 'an empty object');
         assertEqual(choiceView.model({ chosen: 'best', bytes: 10 }, {}), null, 'an unknown strategy');
         return '3 unusable results, no panel';
+      });
+    }
+
+    // --- The transfer plan ----------------------------------------------------
+    //
+    // planner.test.js already asserts that plan() picks the right strategy and
+    // that a hard rule cannot be outvoted. These assert something it cannot:
+    // that the decision and the reasons behind it reach the screen.
+    //
+    // Every string checked below is a string the panel renders verbatim —
+    // `headline` and `summary` go into the notice, each term's `label` and
+    // `text` become a <dt>/<dd> pair, and each rejection's `label` and `text`
+    // become another. Asserting on those rather than on the numbers behind them
+    // is deliberate: this file has already shipped a regression that a test
+    // reading an element's property could not see, because a property being
+    // right is not the same fact as the right thing being displayed.
+
+    var PL = mods.planner ||
+      (typeof window !== 'undefined' ? window.RVQRPlanner : null) || null;
+    var planView = (mods.view && mods.view.transferPlan) ||
+      (typeof window !== 'undefined' ? window.RVQRTransferPlanView : null) || null;
+
+    if (mods.indexHtml) {
+      test('transfer plan: the page loads planner.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./planner.js"');
+        assert(tag >= 0, 'index.html does not reference planner.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a tag of any other shape ships a page whose planner is
+        // missing — which is how a module with a green suite reaches nobody.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(/<script[^>]*src="\.\/planner\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+        assert(line.indexOf('defer') >= 0, 'planner.js should be deferred with the optional modules');
+
+        // It reads RVQRCore at load time, so it has to follow core.js.
+        var afterCore = html.indexOf('src="./core.js"');
+        assert(afterCore >= 0 && afterCore < tag, 'planner.js is not loaded after core.js');
+        // And before app.js, which reads the planner through a getter that
+        // must not find an empty window on the send path.
+        var appTag = html.indexOf('src="./app.js"');
+        assert(appTag >= 0 && tag < appTag, 'planner.js is not loaded before app.js');
+        return 'loaded, deferred, after core.js and before app.js';
+      });
+
+      test('transfer plan: the send settings offer the radio policy the rules filter on', function () {
+        var html = mods.indexHtml;
+        // Every control the wiring reaches for by id. A missing one is a
+        // TypeError on boot, not a missing feature.
+        ['radioPolicyRow', 'radioPick', 'radioNote'].forEach(function (id) {
+          assert(html.indexOf('id="' + id + '"') >= 0, 'index.html has no #' + id);
+        });
+        // With the settings, because it is the operator's rule rather than the
+        // planner's opinion — and inside the send card, not somewhere else.
+        var card = html.indexOf('id="sendSettingsCard"');
+        assert(card >= 0 && html.indexOf('id="radioPolicyRow"') > card,
+          'the radio policy is not inside the send settings card');
+        // Both of planner.js's policies, and offline the one you get by not
+        // choosing: it is the only one this build can carry out.
+        assert(/<option value="offline" selected>/.test(html),
+          'offline-only is not the default radio policy');
+        assert(html.indexOf('<option value="any">') >= 0, 'no option allows a radio link');
+        return '3 controls in the send settings, offline-only by default';
+      });
+    }
+
+    if (PL && planView) {
+      // One situation, varied a field at a time, so each test changes exactly
+      // the thing it is about. The numbers are a real container's shape: a
+      // 1.6 MB artifact against a receiver holding 200 spans of it.
+      function situation(over) {
+        var s = {
+          artifact: { bytes: 1651200, name: 'demo.rvf' },
+          receiver: {
+            holds: 'span', baseBytes: 1651200, spanCount: 200, unitCount: 0,
+            decomposableBytes: 0, overlap: 0.99, baseConfidence: 1, supportsV2: false
+          },
+          link: { lossRate: 0, fps: 5, symbolBytes: 792 },
+          device: { role: 'sender' },
+          policy: { radio: 'offline', commit: true, allowPartialVerification: false },
+          trust: { verified: true, pinnedKeyId: null, presentedKeyId: null }
+        };
+        Object.keys(over || {}).forEach(function (k) {
+          s[k] = JSON.parse(JSON.stringify(s[k]));
+          Object.keys(over[k]).forEach(function (f) { s[k][f] = over[k][f]; });
+        });
+        return s;
+      }
+      // The weights the app hands in: the planner's own constants, so a
+      // re-weighted objective cannot leave this panel quoting the old split.
+      var WEIGHTS = {
+        T: PL.WEIGHT_TIME, E: PL.WEIGHT_ENERGY, B: PL.WEIGHT_BYTES, R: PL.WEIGHT_RISK
+      };
+      function panel(over) {
+        var plan = PL.plan(situation(over));
+        return { plan: plan, model: planView.model(plan, { weights: WEIGHTS }) };
+      }
+      function rowsByLabel(rows) {
+        var out = {};
+        rows.forEach(function (r) { out[r.label] = r; });
+        return out;
+      }
+
+      test('transfer plan: the chosen strategy, its cost and all four terms reach the screen', function () {
+        var p = panel();
+        assert(p.plan.chosen, 'the fixture no longer admits any strategy');
+
+        // The strategy leads the headline. A reader who takes in one line has
+        // to take in what is about to happen.
+        assertEqual(p.model.headline.indexOf(p.plan.chosen.label), 0,
+          'the headline does not lead with the strategy: ' + p.model.headline);
+        assert(p.model.headline.indexOf('J = ' + p.plan.J.toFixed(3)) > 0,
+          'the headline does not carry J: ' + p.model.headline);
+
+        // J alone is a bare number. It is a cost against one fixed reference —
+        // what this app did before anybody chose anything — so the panel says
+        // so rather than leaving a reader to guess the scale.
+        assert(/^J = \d\.\d{3} — \d+% of what sending it the old way would have cost\.$/
+          .test(p.model.scoreText), 'scoreText: ' + p.model.scoreText);
+
+        // All four terms, each with the weight it carries, so a reader can see
+        // which one cost this strategy the ranking instead of being handed a
+        // total and trusted with it.
+        assertEqual(p.model.terms.length, 4, 'term count');
+        var terms = rowsByLabel(p.model.terms);
+        assert(terms['Time (45% of J)'], 'no Time row: ' + Object.keys(terms).join(', '));
+        assert(terms['Energy (20% of J)'], 'no Energy row');
+        assert(terms['Bytes (20% of J)'], 'no Bytes row');
+        assert(terms['Risk (15% of J)'], 'no Risk row');
+        assertEqual(terms['Time (45% of J)'].text,
+          p.plan.terms.T.toFixed(2) + ' × 0.45 = ' + (p.plan.terms.T * 0.45).toFixed(3),
+          'the Time row');
+
+        // The four displayed contributions add up to the displayed J, to the
+        // precision they are displayed at. A panel whose parts do not sum to
+        // its total is a panel nobody can check.
+        var sum = 0;
+        p.model.terms.forEach(function (r) { sum += Number(r.text.split('= ')[1]); });
+        assert(Math.abs(sum - p.plan.J) < 0.002, 'terms sum to ' + sum + ', J is ' + p.plan.J);
+
+        assertEqual(p.model.reason, p.plan.reason, 'the panel rewrote the planner\'s reason');
+        assertEqual(p.model.ok, true, 'ok');
+        assertEqual(p.model.runnable, true, 'runnable');
+        return p.model.headline + ' / ' + p.model.scoreText;
+      });
+
+      test('transfer plan: rejected strategies are shown, in the words of the rule that killed them', function () {
+        var p = panel();
+        assert(p.plan.rejected.length > 0, 'the fixture no longer rejects anything');
+        assertEqual(p.model.rejected.length, 1, 'rejection groups');
+
+        var row = p.model.rejected[0];
+        assertEqual(row.rule, PL.RULE_RADIO, 'the rule that fired');
+        assertEqual(row.label, 'Radio policy', 'the rule label the panel shows');
+        // The sentence is planner.js's own, unedited. A reason restated by the
+        // UI is a reason that can drift away from the rule enforcing it.
+        assertEqual(row.reason, p.plan.rejected[0].reason, 'the panel rewrote the reason');
+        assertEqual(row.text,
+          p.plan.rejected.length + ' strategies — policy is offline-only and this transport needs a radio',
+          'the rejection row as displayed');
+
+        // Grouping must not lose a rejection. Every candidate the rules threw
+        // out is accounted for by exactly one row on screen.
+        var counted = 0;
+        p.model.rejected.forEach(function (r) { counted += r.count; });
+        assertEqual(counted, p.plan.rejected.length, 'rejections reachable on screen');
+        return row.text;
+      });
+
+      test('transfer plan: an unverified peer renders no transfer at all, and names the rule', function () {
+        // The case the whole shape exists for. Nothing is admissible, so there
+        // is no plan — and a blank panel here would be the app going quiet at
+        // exactly the moment it has something to say.
+        var p = panel({ trust: { verified: false } });
+        assertEqual(p.plan.chosen, null, 'a strategy survived an unverified peer');
+        assertEqual(p.model.ok, false, 'ok');
+        assertEqual(p.model.runnable, false, 'runnable');
+        assertEqual(p.model.strategy, null, 'strategy');
+        assertEqual(p.model.headline, 'No transfer is possible.', 'headline');
+        assertEqual(p.model.summary,
+          'All ' + p.plan.candidateCount + ' strategies rvQR could use were blocked by a ' +
+          'hard rule, so there is nothing left to send. Nothing was sent.', 'summary');
+        assertEqual(p.model.tone, 'bad', 'a refusal wore an encouraging tone');
+
+        // No score, no terms: there is nothing that was ranked, and printing a
+        // J for a plan that does not exist would invent one.
+        assertEqual(p.model.scoreText, null, 'scoreText');
+        assertEqual(p.model.terms.length, 0, 'terms rendered for a plan that does not exist');
+
+        // And the reason is on screen, in the rule's own words.
+        assertEqual(p.model.rejected.length, 1, 'rejection groups');
+        assertEqual(p.model.rejected[0].rule, PL.RULE_TRUST, 'the rule that fired');
+        assertEqual(p.model.rejected[0].label, 'Trust', 'the rule label the panel shows');
+        assertEqual(p.model.rejected[0].text,
+          p.plan.candidateCount + ' strategies — the peer is not verified, and an ' +
+          'unverified peer is not a transfer partner at any score',
+          'the rejection row as displayed');
+        assert(p.model.reason.indexOf('no strategy passed the hard rules') === 0,
+          'reason: ' + p.model.reason);
+        return p.model.headline + ' ' + p.model.rejected[0].text;
+      });
+
+      test('transfer plan: a peer presenting the wrong key is refused, and the panel says which', function () {
+        // The pinned-fingerprint case, wired through from the session so that
+        // pinning is enforced by the rule rather than by anybody remembering to
+        // check it at the call site.
+        var p = panel({ trust: { verified: true, pinnedKeyId: 'aaaa1111', presentedKeyId: 'bbbb2222' } });
+        assertEqual(p.plan.chosen, null, 'a strategy survived a key mismatch');
+        assertEqual(p.model.headline, 'No transfer is possible.', 'headline');
+        assertEqual(p.model.rejected[0].rule, PL.RULE_TRUST, 'the rule that fired');
+        assert(p.model.rejected[0].text.indexOf('presented bbbb2222 where aaaa1111 is pinned') > 0,
+          'the panel does not say which key turned up: ' + p.model.rejected[0].text);
+        return p.model.rejected[0].text;
+      });
+
+      test('transfer plan: a plan needing a radio is described, and not offered as a send', function () {
+        // planner.js ranks a peer radio link because a planner should describe
+        // the world rather than this build. rvQR has no radio, so the panel
+        // reports the plan and the caller offers no button for it.
+        var p = panel({ policy: { radio: PL.RADIO_ANY, commit: true, allowPartialVerification: false } });
+        assertEqual(p.plan.chosen.transport, 'peer', 'the fixture no longer picks the radio link');
+        assertEqual(p.model.ok, true, 'ok — a strategy was chosen');
+        assertEqual(p.model.runnable, false, 'runnable');
+        assertEqual(p.model.tone, '', 'a plan this build cannot run wore the good tone');
+        assert(p.model.note && /rvQR has no radio transport/.test(p.model.note),
+          'the panel does not say the plan cannot be run: ' + p.model.note);
+        // Still described in full: the operator changed a policy and this is
+        // what it bought them.
+        assertEqual(p.model.terms.length, 4, 'terms');
+        assertEqual(p.model.headline.indexOf(p.plan.chosen.label), 0, 'headline');
+        return p.model.headline + ' — ' + p.model.note;
+      });
+
+      test('transfer plan: a cold receiver and a stocked one are planned differently, and both say so', function () {
+        // "Whether the receiver reported an inventory" is an input, not a
+        // formality: a receiver that published nothing bounds the sender to
+        // whole-artifact strategies, and the panel must not offer a delta
+        // against a table nobody has.
+        var cold = panel({ receiver: { holds: 'none', spanCount: 0, overlap: 0 } });
+        assertEqual(cold.plan.chosen.granularity, PL.GRANULARITY_FULL,
+          'a delta was planned against a receiver that published nothing');
+        assert(cold.model.headline.indexOf('whole artifact') > 0,
+          'the headline does not say the whole artifact goes: ' + cold.model.headline);
+
+        var warm = panel();
+        assert(warm.plan.chosen.granularity !== PL.GRANULARITY_FULL,
+          'no delta was planned against a receiver holding 99% of it');
+        assert(warm.model.headline.indexOf('delta') > 0,
+          'the headline does not name the delta road: ' + warm.model.headline);
+        // And the cheaper plan is the one against the receiver that already
+        // holds most of it, which is the whole reason to ask.
+        assert(warm.plan.J < cold.plan.J, 'the delta plan did not score better than the full one');
+        return cold.model.headline + ' | ' + warm.model.headline;
+      });
+
+      test('transfer plan: nothing that is not a plan produces a panel', function () {
+        // The panel is fed by a module that may not have loaded and by a
+        // situation built partly from another device's inventory. Neither may
+        // produce a confident-looking strategy out of nothing.
+        assertEqual(planView.model(null, {}), null, 'null');
+        assertEqual(planView.model({}, {}), null, 'an empty object');
+        assertEqual(planView.model({ chosen: { label: 'x' } }, {}), null, 'a plan with no rejected list');
+        assertEqual(planView.model('a plan', {}), null, 'a string');
+        return '4 unusable results, no panel';
       });
     }
 
