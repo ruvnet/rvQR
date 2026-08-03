@@ -826,7 +826,24 @@
       // and those are often *larger* than the real finders — sorting by size
       // buries the true corners behind noise.
       finders.sort(function (p, q) { return q.n - p.n; });
-      var limit = Math.min(finders.length, 12);
+      // 12 was exactly enough for FOUR symbols and therefore enough for none:
+      // a 4-frame sheet contributes 12 true finders, so a single false positive
+      // ranking above a true one pushed a real corner out of the window and that
+      // frame became unfindable. It cost 40 of 200 random 4-frame sheets — the
+      // multi-frame photo path silently returning three frames out of four.
+      //
+      // The candidate loop is C(limit, 3), so raising this is not obviously
+      // free; measured on 200 fixed sheets, it is. Dropped sheets fall to zero
+      // at 14 and stay there, while median decode time is flat because
+      // binarisation and finder detection dominate:
+      //
+      //   cap 12: 40/200 dropped, 26.96 ms   cap 18: 0/200, 27.55 ms
+      //   cap 14:  0/200 dropped, 27.47 ms   cap 20: 0/200, 27.01 ms
+      //   cap 16:  0/200 dropped, 28.36 ms   cap 24: 0/200, 26.65 ms
+      //
+      // 24 carries eight symbols' worth of finders rather than sitting one
+      // false positive away from the cliff, and measures no slower than 12.
+      var limit = Math.min(finders.length, 24);
 
       // Score every triple by how much it looks like three corners of one
       // symbol, then try the most plausible first.

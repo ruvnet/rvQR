@@ -1346,6 +1346,57 @@
         return found.length + ' of ' + built.total + ' frames from a single image';
       });
 
+      test('decoder: the finder window has room for a false positive', function () {
+        // Regression for a real defect the test above could only catch by luck.
+        // It draws random bytes and mints a random transfer id, so it built a
+        // different sheet every run and failed about one run in six — a flake
+        // that looked like harness noise and was in fact the decoder dropping a
+        // frame. Both sources of variation are pinned here, so the case either
+        // always reproduces or is always fixed.
+        //
+        // A 4-frame sheet contributes 12 true finder patterns. The candidate
+        // window used to hold exactly 12, so one false positive out-ranking a
+        // true corner made that frame unfindable. Seed 2 is such a sheet: it
+        // dropped frame 2 at a window of 12 and drops nothing at 24.
+        var s = 2 >>> 0;
+        var bytes = new Uint8Array(1200);
+        for (var i = 0; i < bytes.length; i++) {
+          s = (s * 1103515245 + 12345) >>> 0;
+          bytes[i] = (s >>> 16) & 255;
+        }
+        var built = core.buildFrames(bytes, {
+          name: 'sheet.bin', chunk: 512, transferId: 'a1b2c3d4'
+        });
+        assert(built.frames.length === 4, 'expected a 4-frame sheet, got ' + built.frames.length);
+
+        var tiles = built.frames.map(function (f) {
+          return rasterize(qrlib.encodeText(f, { ecl: 'L' }), { scale: 3, quiet: 4 });
+        });
+        var cols = 2;
+        var tw = Math.max.apply(null, tiles.map(function (t) { return t.width; }));
+        var W = tw * cols, H = tw * Math.ceil(tiles.length / cols);
+        var sheet = { data: new Uint8ClampedArray(W * H * 4).fill(255), width: W, height: H };
+        tiles.forEach(function (t, k) {
+          var ox = (k % cols) * tw, oy = Math.floor(k / cols) * tw;
+          for (var y = 0; y < t.height; y++) {
+            for (var x = 0; x < t.width; x++) {
+              var sp = (y * t.width + x) * 4, dp = ((oy + y) * W + (ox + x)) * 4;
+              sheet.data[dp] = t.data[sp];
+              sheet.data[dp + 1] = t.data[sp + 1];
+              sheet.data[dp + 2] = t.data[sp + 2];
+              sheet.data[dp + 3] = 255;
+            }
+          }
+        });
+
+        var seen = {};
+        qrdec.decodeImage(sheet, { all: true }).forEach(function (f) { seen[f.text] = true; });
+        for (var j = 0; j < built.frames.length; j++) {
+          assert(seen[built.frames[j]], 'frame ' + j + ' missing — finder window too small');
+        }
+        return 'all 4 frames read from the sheet that a 12-candidate window dropped';
+      });
+
       test('decoder: error correction repairs a damaged symbol', function () {
         var msg = 'rvQR error correction check';
         var qr = qrlib.encodeText(msg, { ecl: 'Q' });
