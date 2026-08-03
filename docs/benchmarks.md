@@ -172,6 +172,30 @@ admitted**, all four refusing with `capability-refused`, and the control admits
 the structural barrier rather than a hole in it, and is reported in full rather
 than left inside a percentage.
 
+**15. Splitting an artifact into four signed closures costs a flat ~670 bytes,
+which exceeds the payload below 671 bytes — and 13,910 bytes under the signature
+scheme ADR-012 selects.** MEASURED by building and activating real four-closure
+artifacts through `artifacts/closure.js` with the real SHA-256 and Ed25519 from
+`artifacts/crypto.js`: across an 18,489× range of artifact size the overhead moves
+from **668 B to 680 B** — one manifest, whose only growth is the decimal digits of
+`originalSize`, plus one 64-byte signature per closure — so **the fraction is the
+artifact size doing all the work**. It is 1,044% of a 64-byte artifact, 29.17% of
+the 2,304-byte demo container and 0.06% of `standalone.html` at the 1,183,271
+bytes it had grown to when this ran. Under ADR-012's
+hybrid signing, and this figure is an **arithmetic PROJECTION** over ADR-022's own
+3,309 bytes per ML-DSA-65 signature rather than a measurement of one, overhead
+becomes a flat ~13,910 B and the crossover moves out 20.7× — putting **the entire
+demo container inside the region where the signatures outweigh the artifact**, at
+604% of it. Verification is where the split really costs: one Ed25519 verification
+is **4.79 ms** against 3.88 µs per KiB of SHA-256, so four closures pay four
+constant-cost signature checks and **closures 1–3 are 70.4%–75.5% of total
+verification work at every artifact size measured** — not because they are most of
+the bytes (50.0%–57.6%) but because they are three of four signature checks. And
+the optical verdict is re-derived and confirmed: at the measured 2,440 B/s a
+three-second budget is 7,320 B while three hybrid signatures alone are 10,119 B, so
+**the floor exceeds the whole budget by 38% before one content byte** and the
+honest answer is "not achievable at *any* artifact size", not "not at this one".
+
 ---
 
 ## Reproducing this
@@ -195,6 +219,12 @@ node bench/index.mjs --suite memory      # working memory and payload copies
 node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
 node bench/index.mjs --suite planner     # strategy choice, the hard rules, inventory granularity
 node bench/index.mjs --suite attest      # the attestation state matrix, fail-closed coverage, decision cost
+node bench/index.mjs --suite closure     # closure.js: signature and closure overhead, verification cost
+
+# `closures` and `closure` differ by one letter and are different suites. `closures`
+# is §12, a model of how long a split artifact takes to arrive, and runs no module.
+# `closure` is §10's last subsection, which drives artifacts/closure.js with the real
+# SHA-256 and Ed25519 and measures what the split costs.
 
 # The memory suite spawns its own child process; to run that probe directly:
 node --expose-gc bench/lib/memprobe.mjs
@@ -1683,6 +1713,280 @@ and worth having on its own: the decision procedure refuses in every state it
 should, no evidence buys an ungranted transfer, and the whole thing costs under a
 microsecond.
 
+### Progressive activation: what four signed closures cost
+
+`node bench/index.mjs --suite closure`
+
+**This is not §12, and the two selectors differ by one letter.**
+`--suite closures` is §12: a model of how long a split artifact takes to
+*arrive*, which runs no module. This is `--suite closure`, which drives
+`artifacts/closure.js` end to end — `beginActivation` → `offerClosure` ×n →
+`completion` → `activationReceipt` — with `opts.digest` wired to
+`crypto.sha256` and `opts.verifySignature` wired to `crypto.verifySync`. Every
+digest below is a real SHA-256 and every signature a real Ed25519, both from
+`artifacts/crypto.js`. Every artifact in every table was activated to
+`complete` before its row was reported, because an overhead row for a split the
+gate would refuse is a row about nothing and the failure is quiet.
+
+This section exists for **[ADR-022](adr/ADR-022-rvqr-progressive-activation.md)
+acceptance criterion 7**, the one criterion in that ADR named after this
+directory: *"Signature and closure overhead is reported in `bench/` as a
+fraction of the artifact, since on small artifacts it may exceed the payload."*
+That sentence says **may**. So what follows measures whether it does, by how
+much, and at what size it stops.
+
+**Two signature regimes appear throughout and are never mixed in one number.**
+Ed25519 at 64 bytes is what this repository has, and every Ed25519 figure below
+is MEASURED. [ADR-012](adr/ADR-012-rvqr-post-quantum-manifest.md)'s hybrid at
+3,373 bytes per closure — ML-DSA-65's 3,309 plus Ed25519's 64 — is an
+**arithmetic PROJECTION**: there is no ML-DSA-65 anywhere in this repository,
+nothing here has produced or verified one, and ADR-022 §4.5 is explicit that an
+Ed25519 measurement offered as a hybrid result *"would flatter the result"*. The
+hybrid columns therefore carry byte counts and no milliseconds. A projected size
+is arithmetic; a projected time would be an invention.
+
+**Criterion 5 is unmeetable here and no number below should be mistaken for
+it.** `closure.describeUnimplemented()`, read out of the running module rather
+than restated, reports **5 things absent** — `radio-tier`,
+`hybrid-signatures`, `closure-splitting`, `rvm-execution`, `witness-receipt` —
+and **3 injected and absent by default** — `bounded-decompression`,
+`content-digest`, `signature-verification`. There is no radio tier in this
+repository, no QUIC and no radio transport, so *"under 3 s at p95 on the radio
+tier"* is not measured and no p95 for one is quoted anywhere in this section.
+Simulating a radio and reporting the result as observed would be the dishonest
+option.
+
+This section was run at **2026-08-03T22:54:17Z**, later than the run the rest of
+this document reports, on the machine recorded above. Every byte count is
+deterministic and reproduces anywhere; the millisecond columns are of that run.
+
+#### The overhead ladder
+
+Closure 1 is the manifest and carries no artifact content, so the artifact
+itself lives in closures 2–4, split 20/30/50% across runtime, code and cold.
+**Digest bytes are a subset of manifest bytes, not an addition to them.**
+
+| artifact | source | content B | manifest B | of which digest | signature B (Ed25519) | overhead B | overhead / artifact | exceeds payload? |
+|---|---|---|---|---|---|---|---|---|
+| 64 B synthetic | generated | 64 | 412 | 192 | 256 | 668 | **1043.75%** | **yes** |
+| 128 B synthetic | generated | 128 | 412 | 192 | 256 | 668 | **521.88%** | **yes** |
+| 256 B synthetic | generated | 256 | 413 | 192 | 256 | 669 | **261.33%** | **yes** |
+| 512 B synthetic | generated | 512 | 415 | 192 | 256 | 671 | **131.05%** | **yes** |
+| 1,024 B synthetic | generated | 1,024 | 415 | 192 | 256 | 671 | 65.53% | no |
+| 2,048 B synthetic | generated | 2,048 | 416 | 192 | 256 | 672 | 32.81% | no |
+| **`ruvnet-demo.rvf`** | **measured file** | **2,304** | 416 | 192 | 256 | 672 | **29.17%** | no |
+| 4,096 B synthetic | generated | 4,096 | 417 | 192 | 256 | 673 | 16.43% | no |
+| 8,192 B synthetic | generated | 8,192 | 418 | 192 | 256 | 674 | 8.23% | no |
+| 16,384 B synthetic | generated | 16,384 | 418 | 192 | 256 | 674 | 4.11% | no |
+| 32,768 B synthetic | generated | 32,768 | 419 | 192 | 256 | 675 | 2.06% | no |
+| **`rvf_wasm_bg.wasm`** | **measured file** | **40,989** | 420 | 192 | 256 | 676 | **1.65%** | no |
+| 65,536 B synthetic | generated | 65,536 | 421 | 192 | 256 | 677 | 1.03% | no |
+| **`standalone.html`** | **measured file** | **1,183,271** | 424 | 192 | 256 | 680 | **0.06%** | no |
+
+**The criterion's "may" is a yes, and the reason is that the overhead barely
+moves.** Across an 18,489× range of artifact size the manifest grows from 412 B
+to 424 B — twelve bytes, entirely the decimal digits of `originalSize` — and the
+signature total does not move at all, because it is one signature per closure
+and there are always four. Overhead is very nearly a **constant 668–680 bytes**,
+so the fraction is the artifact size doing all the work. Four of fourteen rows
+have overhead exceeding payload; the worst is the 64-byte artifact at
+**1,044%**, which is 10.4× more signature and manifest than content.
+
+That constancy is the finding rather than an aside. It means the split's cost is
+not a percentage anyone can tune by choosing better boundaries — a different
+split moves the content column and leaves the overhead column within a few bytes
+— and it means the only levers are the number of closures and the size of a
+signature.
+
+#### The same ladder under ADR-012 hybrid signing — a projection
+
+**Every figure in this table is an arithmetic PROJECTION over ADR-022 §3's own
+3,309 bytes per ML-DSA-65 signature, and nothing in this repository has
+produced, verified or timed one.** The manifest column is unchanged and
+measured: a hybrid scheme changes what signs a closure, not what the manifest
+says about it.
+
+| artifact | content B | manifest B (measured) | signature B (projected) | overhead B (projected) | overhead / artifact (projected) | exceeds payload? |
+|---|---|---|---|---|---|---|
+| 64 B synthetic | 64 | 412 | 13,492 | 13,904 | **21725.00%** | **yes** |
+| 128 B synthetic | 128 | 412 | 13,492 | 13,904 | **10862.50%** | **yes** |
+| 256 B synthetic | 256 | 413 | 13,492 | 13,905 | **5431.64%** | **yes** |
+| 512 B synthetic | 512 | 415 | 13,492 | 13,907 | **2716.21%** | **yes** |
+| 1,024 B synthetic | 1,024 | 415 | 13,492 | 13,907 | **1358.11%** | **yes** |
+| 2,048 B synthetic | 2,048 | 416 | 13,492 | 13,908 | **679.10%** | **yes** |
+| **`ruvnet-demo.rvf`** | **2,304** | 416 | 13,492 | 13,908 | **603.65%** | **yes** |
+| 4,096 B synthetic | 4,096 | 417 | 13,492 | 13,909 | **339.58%** | **yes** |
+| 8,192 B synthetic | 8,192 | 418 | 13,492 | 13,910 | **169.80%** | **yes** |
+| 16,384 B synthetic | 16,384 | 418 | 13,492 | 13,910 | 84.90% | no |
+| 32,768 B synthetic | 32,768 | 419 | 13,492 | 13,911 | 42.45% | no |
+| **`rvf_wasm_bg.wasm`** | **40,989** | 420 | 13,492 | 13,912 | **33.94%** | no |
+| 65,536 B synthetic | 65,536 | 421 | 13,492 | 13,913 | 21.23% | no |
+| **`standalone.html`** | **1,183,271** | 424 | 13,492 | 13,916 | **1.18%** | no |
+
+#### The crossover
+
+Found by bisection over real builds rather than read off the ladder above: the
+ladder's rungs are powers of two and the answer is not, so quoting the first
+rung that clears would report a bound as though it were the crossing.
+
+| signature regime | per closure | overhead exceeds payload at or below | first size where it does not | measured or projected |
+|---|---|---|---|---|
+| Ed25519, raw bytes | 64 B | **670 B** | **671 B** | measured |
+| Ed25519, as `closure.js` puts it on a wire (hex) | 128 B | 926 B | **927 B** | measured |
+| ADR-012 hybrid, raw bytes | 3,373 B | 13,909 B | **13,910 B** | **projection** |
+
+**An artifact below 671 bytes costs more to describe than to carry**, with the
+signatures this repository actually has. Under ADR-012's hybrid signing that
+figure becomes 13,910 bytes — a projection, 20.7× further out — which puts the
+**entire demo container inside the region where the signatures outweigh the
+artifact**, at 604% of it.
+
+The middle row is not a third scheme. `parseOffer` requires `signature` to be a
+run of lowercase hex, so a 64-byte signature occupies **128 bytes as offered**,
+and this module's own encoding moves its own crossover by 256 bytes. ADR-022
+does its arithmetic in raw bytes, so the raw row is the one comparable to the
+ADR and the hex row is the one comparable to a wire.
+
+#### Per closure, worked through on the demo container
+
+| closure | role | in the activation set? | body B | digest B | digest sits | signature B (Ed25519, raw) | signature B (as offered, hex) | signature B (hybrid, projected) |
+|---|---|---|---|---|---|---|---|---|
+| 1 | `manifest` | yes | 416 | 64 | **in the pinned root** | 64 | 128 | 3,373 |
+| 2 | `runtime` | yes | 460 | 64 | in the manifest | 64 | 128 | 3,373 |
+| 3 | `code` | yes | 691 | 64 | in the manifest | 64 | 128 | 3,373 |
+| 4 | `cold` | no — cold | 1,153 | 64 | in the manifest | 64 | 128 | 3,373 |
+
+**"Body" is not "content".** Closure 1's body is the manifest, which is overhead
+in the ladder above and is no part of the artifact; the artifact is closures
+2–4. Both are digested and both are signed, which is why the verification table
+below counts four and the overhead table counts three.
+
+**Closure 1's digest is not on the wire and the other three are** — the sort of
+off-by-one that turns a byte count into a wrong byte count. A manifest cannot
+contain its own digest, so the chain is: the pinned root commits closure 1 out
+of band, and closure 1 commits closures 2–4. A four-closure artifact therefore
+carries **three** digests in its manifest and pays **four** signatures.
+
+#### What verification costs
+
+This is the number behind the "start sooner" claim. Each closure is timed
+through the shipped `offerClosure` path, median of 15 runs, from a session that
+already holds everything before it — so closure 3's figure is the cost of
+closure 3 and not the cost of replaying 1 and 2.
+
+| artifact | bytes | closures 1–3 | whole artifact | **share of verification in 1–3** | share of bodies in 1–3 | digest total | signature total | unattributed |
+|---|---|---|---|---|---|---|---|---|
+| `ruvnet-demo.rvf` | 2,304 | 14.72 ms | 19.61 ms | **75.1%** | 57.6% | 0.01 ms | 19.33 ms | +0.27 ms |
+| `rvf_wasm_bg.wasm` | 40,989 | 14.94 ms | 19.79 ms | **75.5%** | 50.5% | 0.13 ms | 19.61 ms | +0.04 ms |
+| `standalone.html` | 1,183,271 | 16.87 ms | 23.98 ms | **70.4%** | 50.0% | 3.71 ms | 23.07 ms | −2.80 ms |
+
+**Closures 1–3 are 70.4%–75.5% of the verification work at every artifact size
+measured, and it is not because they are most of the bytes.** They are three of
+four signature checks, and a signature check does not care how large the closure
+is. SHA-256 costs **3.88 µs per KiB** here; one Ed25519 verification costs
+**4.79 ms**, which is the same as digesting 1,237 KiB. So even on the 1.18 MB
+artifact the entire content digest is 3.71 ms against 23.07 ms of signature, and
+the share in closures 1–3 stays near three quarters however the artifact is
+split. **The activation set's share of verification work is a property of the
+closure count, not of the artifact.**
+
+**The unattributed column is a residue and its sign is not meaningful.** It is
+the offer time minus two quantities measured in separate loops, each a median of
+a millisecond-scale operation, so a few percent of drift in either lands there
+and it comes out negative as readily as positive — and does. At |2.80| ms
+against a 5 ms signature check, what it establishes is that the module's own
+work — parsing, ordering, copying, freezing — is **inside the measurement noise
+of the cryptography**, not that it is negative. A reader who wants
+`closure.js`'s own cost separated from Ed25519's will not get it from this
+harness.
+
+**Splitting multiplies verification work by the closure count.** An unsplit
+artifact pays one signature check; four closures pay four, which is
+**+14.38 ms** — arithmetic over the measured per-verification figure above —
+bought in exchange for starting before the cold state arrives. Against the
+transfer times §12 models that is a trade worth making by a wide margin. It is
+not free, and ADR-022 does not mention it.
+
+#### The synchronous contract picks the slow verifier
+
+`verifyClosure` compares its verifier's answer against `true`. An asynchronous
+verifier returns a promise, a promise is not `true`, and the closure is refused
+as `unverified` — measured by injecting one: state `unverified`, `admit: false`.
+That is the right failure mode, and it is also a hard constraint on what may be
+injected, because `crypto.verify` is asynchronous precisely so it can reach
+WebCrypto and `crypto.verifySync` is the pure-JS path by definition.
+
+| Ed25519 verification | p50 | p95 | injectable into `closure.js`? |
+|---|---|---|---|
+| `verifySync` (pure JS) | 4.871 ms | 5.539 ms | **yes — this is what every table above measures** |
+| `verify` (WebCrypto `subtle`) | 0.066 ms | 0.159 ms | **no** — asynchronous, so the gate refuses it |
+
+**The synchronous contract costs 73× on this platform.** The WebCrypto row is
+**not a figure for this module** — nothing can inject it — and is here only to
+turn "the sync contract costs something" into a number. Every verification
+millisecond above is the pure-JS path, because that is the only path the gate
+accepts.
+
+#### The optical verdict, re-derived
+
+ADR-022 §4.6 asks for the optical case *"measured and reported honestly,
+including 'not achievable at this artifact size' where that is the answer"*.
+`closure.opticalBudget()` computes it; this suite recomputes it independently
+from the module's exported constants and compares, because two calculations
+agreeing is worth more than one reported twice. **They agree.**
+
+| | Ed25519 (measured signature size) | ADR-012 hybrid (**projection**) |
+|---|---|---|
+| rate | 2,440 B/s (measured, §6) | 2,440 B/s (measured, §6) |
+| budget at 3 s | 7,320 B | 7,320 B |
+| closures in the activation set | 3 | 3 |
+| signature per closure | 64 B | 3,373 B |
+| **signature floor** | **192 B** | **10,119 B** |
+| room left for content | 7,128 B | **−2,799 B** |
+| achievable? | yes | **NO** |
+
+**Under ADR-012's hybrid signing the three-second optical target fails before a
+single content byte is considered.** Three closures × 3,373 B is **10,119 B of
+signature** against a whole budget of 7,320 B: **the floor exceeds the budget by
+38%**. Content is what is left *after* the floor, so no artifact size helps. The
+answer ADR-022 §4.6 anticipates is "not achievable at this artifact size" and
+the honest answer is the stronger **"not achievable at any artifact size"** —
+swept across seven artifact sizes from 1,024 B to 1,048,576 B, none fits, and
+none could, because the floor does not move with the artifact.
+
+To make the floor alone fit, a transfer would need **4.15 s** at the measured
+rate, or **3,373 B/s** inside three seconds — 1.38× the optical channel — and
+that buys zero bytes of artifact. With Ed25519 the same budget has 7,128 B to
+spare, which is exactly why ADR-022 §4.5 insists the criterion-5 measurement be
+taken with hybrid signatures in place: **the two schemes do not differ by a
+margin, they differ by whether the thing is possible.** And on this module's own
+wire the signature is hex, so the hybrid floor is 20,238 B — 2.76× the budget
+rather than 1.38×.
+
+This reaches §12's conclusion by a different route and agrees with it. §12 works
+from QR capacity at 5 fps and finds 9,927 B of ML-DSA-65 signature against 9,975
+B of capacity; this works from the measured 2,440 B/s byte rate and the hybrid's
+3,373 B per closure and finds 10,119 B against 7,320 B. Two models, one counting
+frames and one counting bytes, both saying the signatures do not fit.
+
+#### What this section does not establish
+
+It does not measure criterion 5 and cannot: there is no radio tier here, so no
+p95 on one is quoted. It does not measure ML-DSA-65 — every hybrid figure is
+arithmetic over a size ADR-022 states, and there is no post-quantum signature in
+this repository to time. It does not split an artifact: ADR-022 §3 says that
+tooling does not exist, so the splits are this harness's, and a different split
+moves the content column while leaving the overhead column within a few bytes —
+which is precisely why the *fraction* rather than the byte count is what
+criterion 7 asks for. And nothing here executes: "activated" means the gate
+opened and the bytes are readable, not that any code ran.
+
+What it does establish is what criterion 7 asked for. Overhead is essentially
+constant at 668–680 bytes; it exceeds the payload below **671 bytes** with the
+signatures this repository has and below a projected **13,910 bytes** under the
+scheme ADR-012 selects; and the activation set is three quarters of the
+verification work at every size measured.
+
 ---
 
 # Part II — MODELLED
@@ -1767,12 +2071,21 @@ unfavourable way round rather than the favourable one.
 
 `node bench/index.mjs --suite closures`
 
-**Nothing in this repository signs a closure or activates one.**
-`artifacts/rvf.js` parses containers and `artifacts/delta.js` walks their spans,
-but there is no closure signature and no partial activation. What follows is
+**This section is a model of transfer TIME and runs no module.** What follows is
 arithmetic over measured span sizes, measured artifact sizes and measured byte
-rates. Whether a partially transferred RVF can actually execute is a runtime
-question this harness cannot answer.
+rates: how long a split artifact takes to arrive, not what verifying it costs.
+`artifacts/rvf.js` parses containers and `artifacts/delta.js` walks their spans,
+and neither splits an artifact into closures — ADR-022 §3's splitting tooling
+still does not exist, so every split below is the model's.
+
+**What has changed since this section was written is that the verification side
+is now measured.** `artifacts/closure.js` landed and does verify and activate
+closures, so the closure subsection of §10 — `--suite closure`, one letter apart
+from this one's `--suite closures` — drives it end to end with a real SHA-256 and
+a real Ed25519 and reports the byte overhead and the verification cost. Read the
+two together: this section is the time on the wire, that one is the cost at the
+receiver. Whether a partially transferred RVF can actually *execute* is still a
+runtime question neither can answer, because there is no RVM in this repository.
 
 The model accounts for the things that make small closures relatively expensive:
 each closure pays its own signature and its own manifest frame, and closure
@@ -2016,7 +2329,8 @@ in the brief for this work. Reported rather than smoothed.
 | §2's break-even table gives a single size at which each artifact clears the 8% gate — 6,144 B for float32 vectors | Scanning float32 prefixes at 18 sizes, the verdict **flips five times**: 2,304 B passes, 2,560 B fails, 3,072 B passes, 3,584 B fails, 4,096 B passes | Both are correct about what they measured (brotli-6 at a 512 B chunk against brotli-11 at 764 B), and neither is a break-even for the content. The ratio climbs smoothly and the frame count is a step function, so the gate is crossed repeatedly. A "break-even size" column reports the first crossing; for this content it is not the last. |
 | ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.78×, v2 at 2.56× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
 | A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
-| ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps | **Jointly infeasible.** Neither ADR is wrong alone. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
+| ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps (§12, counting frames). Reached independently in §10's closure subsection by counting bytes instead: **10,119 B of hybrid signature against a 7,320 B budget at the measured 2,440 B/s, a floor 38% larger than the whole budget** | **Jointly infeasible, and now by two routes that do not share a model.** Neither ADR is wrong alone. The byte-rate route also settles the wording ADR-022 §4.6 leaves open: because the floor does not move with the artifact, the answer is not "not achievable at this artifact size" but **not achievable at any**. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
+| ADR-022 and ADR-012 budget signatures in raw bytes; `closure.js` `parseOffer` requires `signature` to be a run of lowercase hex | Measured: a 64-byte Ed25519 signature occupies **128 bytes as offered**. Every signature budget in both ADRs is therefore half the wire cost of this encoding — the hybrid optical floor is 20,238 B rather than 10,119 B, 2.76× the 3-second budget rather than 1.38× | **Both are right about different things and the gap is a factor of two.** The ADRs size a signature; the module encodes one. It moves `closure.js`'s own overhead crossover from 671 B to 927 B, and it makes the infeasibility in the row above worse rather than better, so it changes no conclusion — but a byte budget quoted from an ADR and compared against this module's wire is out by 2× and nothing currently says so. |
 | ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule survives — §2 measures every corpus artifact clearing it — but the supporting arithmetic is 15% optimistic: 8% of 40 KB is 5.0 frames and 1.0 s at 665 B, not the 4.3 frames and 0.9 s the ADR states. The conclusion does not move. |
 | `core.SIGNATURE_SIZE = 16` | 16 bytes is not a signature size for any standard scheme | Modelled with 64 B (Ed25519) instead, with the discrepancy stated. Whatever 16 means, it is a truncated tag. |
 | Decode cost at 512 B symbols is 3.86 ms (previous revision of this document) | 2.63 ms this run | Same code, same seed, warmer JIT. Millisecond figures on this machine vary by tens of percent between runs; byte and frame counts do not vary at all. |
@@ -2094,10 +2408,12 @@ store and the camera buffers are not.
 | The >8 MB compression branch, as configured | **Measured only with the threshold moved.** This repository ships nothing that reaches 8 MB, so §2 exercises the prefix path at `sampleAbove` 32,768 B. The branch works and agrees with the whole-artifact decision on these artifacts; whether it would on an 8 MB artifact is untested, and a declining prefix estimate is final for its codec. |
 | A shared compression dictionary | **Not measurable — none exists.** `compress.js` ships an empty `DICTIONARIES` and every manifest it produces sets dictId 0. Its docblock quotes held-out dictionary figures; this harness measures the no-dictionary path only, which is the only path the shipped module can take. |
 | Peer-exchange link behaviour | **Not measured.** §11 counts bytes, not seconds, on the peer side, and models nothing about the medium. |
-| Closure activation | **Not measured.** Nothing signs or activates a closure. |
+| Closure activation | **Partly measured, since `artifacts/closure.js` landed.** The closure subsection (§10, after attestation) builds four-closure artifacts and activates them to `complete` through the shipped gate with a real SHA-256 and a real Ed25519. What is still not measured: nothing in the app or the transport *produces* closures — ADR-022 §3's splitting tooling does not exist, so the splits are the harness's — and nothing executes what is activated, because there is no RVM. "Activated" means the gate opened and the bytes are readable. |
+| **ADR-022's radio tier** | **Not measurable, because none exists.** There is no QUIC and no radio transport in this repository, so ADR-022 §4.5's "under 3 s at p95 on the radio tier" is not measured and no p95 for one is quoted anywhere in this document. `closure.describeUnimplemented()` reports it `absent` from inside the running module. Simulating a radio and reporting the result as observed would be worse than reporting nothing. |
+| **ML-DSA-65, or any post-quantum signature** | **Not measurable, because none exists.** `crypto.js` is Ed25519 only. Every hybrid figure anywhere in this document — §12's and the closure subsection's alike — is arithmetic over ADR-022 §3's own 3,309 bytes per signature, labelled a projection where it appears. There are no hybrid *timings* at all, since a projected size is arithmetic and a projected time would be an invention. |
 | Colour or multi-symbol frames | **Not applicable.** rvQR sends one monochrome symbol per frame. This is the single largest throughput lever the comparators use. |
 | RaptorQ interoperability | **Not applicable.** `artifacts/fountain.js` states it is not RFC 6330 conformant. |
-| Signature verification cost | **Not measured.** There is no signing path in this repository to time. |
+| Signature verification cost | **Measured, for Ed25519 only.** The closure subsection (§10) times `crypto.verifySync` at **4.79 ms** per verification and `crypto.sha256` at 3.88 µs per KiB, which is what makes four separately signed closures cost four constant-cost checks. `crypto.verify` reaches WebCrypto and does the same check in 0.066 ms, but it is asynchronous and `closure.js`'s gate refuses a promise, so the slow path is the only injectable one. No post-quantum verification is timed anywhere; see the ML-DSA-65 row above. |
 | Energy, in joules | **Not measurable here at all.** No power measurement of any kind exists in this repository, which is why the planner's E term (§10, the planner subsection) is a relative proxy in arbitrary units against one optical slot, and why it is the only one of J's four terms whose weight buys a number nobody has checked against a battery. |
 | Whether a plan was the *right* plan | **Not measured.** The planner subsection measures what is decided, what the alternatives would have cost in the same model, and what deciding costs. Whether the model ranks real transfers correctly needs the two devices in the first row of this table. |
 | **Any root of trust — DICE, TPM 2.0, Secure Enclave, Android hardware-backed keys** | **Not measurable, because none is implemented.** ADR-021 §2.1 names all four; `attest.describeRoots()` reports all four `unexercised`, and nothing in this repository has produced or checked an attestation on hardware or otherwise. The attestation subsection (§10, after the planner) uses an **injected stub verifier** wherever a chain check is needed, and so measures the verdict-and-gate logic only. On this platform the `attested` state is unreachable without a verifier that does not exist here. **rvQR does not attest devices**, and no figure in that subsection should be read as evidence that it does. |

@@ -9,7 +9,13 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory, semdelta, planner, attest.
+ *         fleet, closures, memory, semdelta, planner, attest, closure.
+ *
+ * `closures` and `closure` differ by one letter and are different suites.
+ * `closures` (suite 10) is a MODEL of how long a split artifact takes to
+ * arrive and runs no module; `closure` (suite 15) drives artifacts/closure.js
+ * with the real SHA-256 and Ed25519 from artifacts/crypto.js and measures what
+ * the split costs in bytes and in verification time.
  *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
@@ -50,6 +56,7 @@ import { runMemorySuite } from './suites/memory.mjs';
 import { runSemDeltaSuite } from './suites/semdelta.mjs';
 import { runPlannerSuite } from './suites/planner.mjs';
 import { runAttestSuite } from './suites/attest.mjs';
+import { runClosureModuleSuite, runSignatureBackends } from './suites/closure.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -2437,6 +2444,412 @@ function printAttestSuite(res) {
   say('');
 }
 
+function pct(x, digits = 2) {
+  return `${fmt(x * 100, digits)}%`;
+}
+
+function printClosureModuleSuite(res, backends) {
+  say('### Progressive activation: what four signed closures cost — `artifacts/closure.js`');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+
+  const k = res.constants;
+  say(
+    '**This is not the closure suite above it.** `--suite closures` is a model of how long a split ' +
+      'artifact takes to *arrive* and runs no module. This is `--suite closure`, which drives ' +
+      `\`artifacts/closure.js\` end to end — \`beginActivation\` → \`offerClosure\` ×n → \`completion\` → ` +
+      '`activationReceipt` — with `opts.digest` wired to `crypto.sha256` and `opts.verifySignature` wired ' +
+      'to `crypto.verifySync`. Every signature below was produced by ' +
+      `${res.signatureName} and verified by it; every digest is ${res.digestName}. Two suites whose ` +
+      'selectors differ by one letter is a trap, so it is stated here rather than left to be discovered.'
+  );
+  say('');
+  say(
+    'This exists for **ADR-022 acceptance criterion 7**: *"Signature and closure overhead is reported in ' +
+      '`bench/` as a fraction of the artifact, since on small artifacts it may exceed the payload."* ' +
+      'That sentence says **may**, so what follows measures whether it does, by how much, and at what ' +
+      'size it stops.'
+  );
+  say('');
+  say(
+    `**Two signature regimes, and they are never mixed in one number.** Ed25519 at ` +
+      `${k.ed25519SignatureBytes} B is what this repository has and every Ed25519 figure below is ` +
+      `MEASURED. ADR-012's hybrid at ${k.hybridPerClosure.toLocaleString('en-US')} B per closure ` +
+      `(ML-DSA-65's ${k.mldsa65SignatureBytes.toLocaleString('en-US')} plus Ed25519's ` +
+      `${k.ed25519SignatureBytes}) is an **arithmetic PROJECTION** — there is no ML-DSA-65 anywhere in ` +
+      'this repository, nothing here has produced or verified one, and ADR-022 §4.5 is explicit that an ' +
+      'Ed25519 measurement presented as a hybrid result "would flatter the result". So the hybrid column ' +
+      'carries byte counts and no milliseconds: a projected size is arithmetic, a projected time would ' +
+      'be an invention.'
+  );
+  say('');
+
+  const absent = res.unimplemented.filter((u) => u.status === 'absent');
+  const injected = res.unimplemented.filter((u) => u.status === 'injected-absent');
+  say(
+    `**What the module says about itself.** \`describeUnimplemented()\` is read out of the running ` +
+      `module rather than restated here, and reports **${absent.length} things absent** — ` +
+      absent.map((u) => `\`${u.id}\``).join(', ') +
+      ` — and **${injected.length} injected and absent by default** — ` +
+      injected.map((u) => `\`${u.id}\``).join(', ') +
+      '. The first list is why **criterion 5 is unmeetable here**: there is no radio tier, no QUIC and ' +
+      'no radio transport, so "under 3 s at p95 on the radio tier" is not measured below and no p95 is ' +
+      'quoted for it. Simulating a radio and reporting the result as observed would be the dishonest ' +
+      'option and is not taken.'
+  );
+  say('');
+
+  // --- the ladder ------------------------------------------------------------
+  const L = res.ladder;
+  say(
+    `**The overhead ladder.** Real four-closure artifacts, built and activated to \`complete\` before ` +
+      'each row is reported — an overhead row for a split the gate would refuse is a row about nothing, ' +
+      'and the failure is quiet. Closure 1 is the manifest and carries no artifact content, so the ' +
+      'artifact itself lives in closures 2–4, split ' +
+      `${Math.round(res.split.runtime * 100)}/${Math.round(res.split.code * 100)}/` +
+      `${Math.round(res.split.cold * 100)}% across runtime, code and cold. **Digest bytes are a subset ` +
+      'of manifest bytes, not an addition to them.**'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'source', 'content B', 'manifest B', 'of which digest', 'signature B (Ed25519)', 'overhead B', 'overhead / artifact', 'exceeds payload?', 'activated?'],
+      L.rows.map((r) => [
+        r.label,
+        r.source,
+        r.contentBytes.toLocaleString('en-US'),
+        String(r.manifestBytes),
+        String(r.digestBytes),
+        String(r.ed25519SignatureBytes),
+        r.ed25519OverheadBytes.toLocaleString('en-US'),
+        `**${pct(r.ed25519Fraction)}**`,
+        r.ed25519ExceedsPayload ? '**yes**' : 'no',
+        r.verified ? 'complete' : '**NO**'
+      ])
+    )
+  );
+  say('');
+  const exceeding = L.rows.filter((r) => r.ed25519ExceedsPayload);
+  const manifestSpread = [Math.min(...L.rows.map((r) => r.manifestBytes)), Math.max(...L.rows.map((r) => r.manifestBytes))];
+  say(
+    `**The criterion's "may" is a yes, and the reason is that overhead barely moves.** Across a ` +
+      `${(L.rows[L.rows.length - 1].bytes / L.rows[0].bytes).toLocaleString('en-US', { maximumFractionDigits: 0 })}× ` +
+      `range of artifact size the manifest moves from ${manifestSpread[0]} B to ${manifestSpread[1]} B — ` +
+      `${manifestSpread[1] - manifestSpread[0]} bytes, entirely the decimal digits of \`originalSize\` — ` +
+      `and the signature total does not move at all, because it is one signature per closure and there ` +
+      `are always four. So overhead is very nearly a **constant ` +
+      `${L.rows[0].ed25519OverheadBytes.toLocaleString('en-US')}–` +
+      `${L.rows[L.rows.length - 1].ed25519OverheadBytes.toLocaleString('en-US')} B**, and the fraction is ` +
+      `the artifact size doing all the work. ${exceeding.length} of ${L.rows.length} rows have overhead ` +
+      `exceeding the payload` +
+      (exceeding.length
+        ? ` — the worst is ${exceeding[0].label} at **${pct(exceeding[0].ed25519Fraction, 0)} of the ` +
+          `artifact**, which is ${fmt(exceeding[0].ed25519Fraction, 1)}× more signature and manifest than ` +
+          'content.'
+        : '.')
+  );
+  say('');
+
+  say(
+    '**The same ladder under ADR-012 hybrid signing. Every figure in this table is an arithmetic ' +
+      'PROJECTION over ADR-022 §3\'s own 3,309 bytes per ML-DSA-65 signature, and nothing in this ' +
+      'repository has produced, verified or timed one.** The manifest column is unchanged and measured: ' +
+      'a hybrid scheme changes what signs a closure, not what the manifest says about it.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'content B', 'manifest B (measured)', 'signature B (projected)', 'overhead B (projected)', 'overhead / artifact (projected)', 'exceeds payload?'],
+      L.rows.map((r) => [
+        r.label,
+        r.contentBytes.toLocaleString('en-US'),
+        String(r.manifestBytes),
+        r.hybridSignatureBytes.toLocaleString('en-US'),
+        r.hybridOverheadBytes.toLocaleString('en-US'),
+        `**${pct(r.hybridFraction)}**`,
+        r.hybridExceedsPayload ? '**yes**' : 'no'
+      ])
+    )
+  );
+  say('');
+
+  // --- crossover -------------------------------------------------------------
+  const cross = (id) => res.crossovers.find((c) => c.regime === id);
+  const ed = cross('ed25519');
+  const edWire = cross('ed25519-wire');
+  const hy = cross('hybrid');
+  say(
+    '**The crossover, found by bisection over real builds rather than read off the ladder.** The ' +
+      'ladder\'s rungs are powers of two and the answer is not, so quoting the first rung that clears ' +
+      'would report a bound as though it were the crossing:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['signature regime', 'per closure', 'overhead exceeds payload at or below', 'first size where it does not', 'measured or projected'],
+      [
+        [
+          'Ed25519, raw bytes',
+          `${k.ed25519SignatureBytes} B`,
+          `**${ed.lastExceeding.toLocaleString('en-US')} B**`,
+          `**${ed.crossover.toLocaleString('en-US')} B**`,
+          'measured'
+        ],
+        [
+          'Ed25519, as this module puts it on a wire (hex)',
+          `${k.ed25519SignatureBytes * 2} B`,
+          `${edWire.lastExceeding.toLocaleString('en-US')} B`,
+          `**${edWire.crossover.toLocaleString('en-US')} B**`,
+          'measured'
+        ],
+        [
+          'ADR-012 hybrid, raw bytes',
+          `${k.hybridPerClosure.toLocaleString('en-US')} B`,
+          `${hy.lastExceeding.toLocaleString('en-US')} B`,
+          `**${hy.crossover.toLocaleString('en-US')} B**`,
+          '**projection**'
+        ]
+      ]
+    )
+  );
+  say('');
+  say(
+    `**An artifact below ${ed.crossover.toLocaleString('en-US')} bytes costs more to describe than to ` +
+      `carry**, with the signatures this repository actually has. Under ADR-012's hybrid signing that ` +
+      `figure becomes ${hy.crossover.toLocaleString('en-US')} bytes — a **projection**, ` +
+      `${fmt(hy.crossover / ed.crossover, 1)}× further out — so the whole of this repository's demo ` +
+      'container sits inside the region where the signatures outweigh the artifact. The middle row is ' +
+      'not a third scheme: `parseOffer` requires `signature` to be a run of lowercase hex, so a ' +
+      `${k.ed25519SignatureBytes}-byte signature occupies ${k.ed25519SignatureBytes * 2} bytes as ` +
+      'offered, and this module\'s own encoding moves its own crossover by ' +
+      `${(edWire.crossover - ed.crossover).toLocaleString('en-US')} bytes. ADR-022 does its arithmetic ` +
+      'in raw bytes, so the raw row is the one comparable to the ADR and the hex row is the one ' +
+      'comparable to a wire.'
+  );
+  say('');
+
+  // --- the worked example ----------------------------------------------------
+  const ex = res.example;
+  say(
+    `**Per closure, worked through on ${ex.name} (${ex.bytes.toLocaleString('en-US')} B)**, so the ` +
+      'totals above can be checked by hand rather than inferred:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['closure', 'role', 'in the activation set?', 'body B', 'digest B', 'digest sits', 'signature B (Ed25519, raw)', 'signature B (as offered, hex)', 'signature B (hybrid, projected)'],
+      ex.closures.map((c) => [
+        String(c.index),
+        `\`${c.role}\``,
+        c.activation ? 'yes' : 'no — cold',
+        c.contentBytes.toLocaleString('en-US'),
+        String(c.digestHexBytes),
+        c.digestOnWire ? 'in the manifest' : '**in the pinned root**',
+        String(c.signatureRawBytes),
+        String(c.signatureHexBytes),
+        c.hybridSignatureProjectedBytes.toLocaleString('en-US')
+      ])
+    )
+  );
+  say('');
+  say(
+    '**"Body" is not "content".** Closure 1\'s body is the manifest, which is overhead in the ladder ' +
+      'above and is not part of the artifact; the artifact is closures 2–4. Both are digested and both ' +
+      'are signed, which is why the verification table below counts all four and the overhead table ' +
+      'counts three.'
+  );
+  say('');
+  say(
+    '**Closure 1\'s digest is not on the wire and the other three are**, which is the sort of off-by-one ' +
+      'that turns a byte count into a wrong byte count. A manifest cannot contain its own digest, so the ' +
+      'chain is: the pinned root commits closure 1 out of band, and closure 1 commits closures 2–4. A ' +
+      'four-closure artifact therefore carries **three** digests in its manifest and pays **four** ' +
+      `signatures. The receipt for this activation reads *"${ex.receipt ? ex.receipt.summary : '—'}"*.`
+  );
+  say('');
+
+  // --- verification cost -----------------------------------------------------
+  const V = res.verification;
+  say(
+    '**What verification costs, which is the number behind the "start sooner" claim.** Each closure is ' +
+      `timed through the shipped \`offerClosure\` path, median of ${V.reps} runs, from a session that ` +
+      'already holds everything before it — so closure 3\'s figure is the cost of closure 3 and not the ' +
+      'cost of replaying 1 and 2:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'bytes', 'closures 1–3', 'whole artifact', '**share of verification in 1–3**', 'share of bodies in 1–3', 'digest total', 'signature total', 'unattributed'],
+      V.rows.filter((r) => !r.error).map((r) => [
+        r.name,
+        r.bytes.toLocaleString('en-US'),
+        `${fmt(r.activationMs, 2)} ms`,
+        `${fmt(r.wholeMs, 2)} ms`,
+        `**${pct(r.activationShare, 1)}**`,
+        pct(r.activationByteShare, 1),
+        `${fmt(r.digestMs, 2)} ms`,
+        `${fmt(r.signatureVerifyMs, 2)} ms`,
+        `${r.moduleResidueMs >= 0 ? '+' : '−'}${fmt(Math.abs(r.moduleResidueMs), 2)} ms`
+      ])
+    )
+  );
+  say('');
+  const p = V.primitives;
+  const spread = V.rows.filter((r) => !r.error);
+  const shareRange = spread.length
+    ? [Math.min(...spread.map((r) => r.activationShare)), Math.max(...spread.map((r) => r.activationShare))]
+    : [NaN, NaN];
+  say(
+    `**Closures 1–3 are ${pct(shareRange[0], 0)}–${pct(shareRange[1], 0)} of the verification work at ` +
+      `every artifact size measured, and that is not because they are most of the bytes.** They are ` +
+      'three of four signature checks, and a signature check does not care how large the closure is. ' +
+      `SHA-256 costs ${fmt(p.sha256PerKiB * 1000, 2)} µs per KiB here; one Ed25519 verification costs ` +
+      `**${fmt(p.ed25519Verify, 2)} ms**, which is the same as digesting ` +
+      `${Math.round(p.ed25519Verify / p.sha256PerKiB).toLocaleString('en-US')} KiB. So on the ` +
+      `${spread.length ? spread[spread.length - 1].bytes.toLocaleString('en-US') : '—'} B artifact the ` +
+      'entire content digest is a minority of the cost and four signatures are the rest, and the share ' +
+      'in closures 1–3 stays near three quarters however the artifact is split.'
+  );
+  say('');
+  say(
+    '**The unattributed column is a residue and its SIGN IS NOT MEANINGFUL.** It is the offer time minus ' +
+      'two quantities measured in separate loops, each a median of a millisecond-scale operation, so a ' +
+      'few percent of run-to-run drift in either lands there and it comes out negative as readily as ' +
+      'positive — ' +
+      (spread.some((r) => r.moduleResidueMs < 0)
+        ? 'and it does, in the table above. '
+        : 'in this run every row above happens to be positive, which is luck rather than a result. ') +
+      `At |${spread.length ? fmt(Math.max(...spread.map((r) => Math.abs(r.moduleResidueMs))), 2) : '—'}| ms ` +
+      'against a 5 ms signature check, what it establishes is that the module\'s own work — parsing, ' +
+      'ordering, copying, freezing — is **inside the measurement noise of the cryptography**, not that it ' +
+      'is negative. These are figures about cryptography rather than about JavaScript, and a reader who ' +
+      'wants the module\'s own cost separated from Ed25519\'s will not get it from this harness.'
+  );
+  say('');
+  say(
+    `**Splitting therefore multiplies verification work by the closure count.** An unsplit artifact pays ` +
+      `one signature check; four closures pay four, which is ` +
+      `**+${fmt(3 * p.ed25519Verify, 2)} ms** of verification bought in exchange for starting before the ` +
+      'cold state arrives — arithmetic over the measured per-verification figure above. Against the ' +
+      'transfer times suite 10 models, that is a trade worth making by a wide margin; it is not free, ' +
+      'and ADR-022 does not mention it.'
+  );
+  say('');
+
+  if (backends && backends.available) {
+    const b = backends;
+    say(
+      '**And the module\'s synchronous contract picks the slow verifier.** `verifyClosure` compares its ' +
+        'verifier\'s answer against `true`, so an asynchronous verifier returns a promise, a promise is ' +
+        `not \`true\`, and the closure is refused as \`unverified\` — measured: injecting one yields ` +
+        `state \`${res.asyncInjection.state}\` and \`admit: ${res.asyncInjection.admitted}\`. That is the ` +
+        'right failure mode and it is also a constraint on what may be injected, because `crypto.verify` ' +
+        'is asynchronous precisely so it can reach WebCrypto and `crypto.verifySync` is the pure-JS path ' +
+        'by definition:'
+    );
+    say('');
+    say(
+      markdownTable(
+        ['Ed25519 verification', 'p50', 'p95', 'injectable into `closure.js`?'],
+        [
+          [`\`verifySync\` (pure JS)`, `${fmt(b.syncMs.p50, 3)} ms`, `${fmt(b.syncMs.p95, 3)} ms`, '**yes — this is what is measured above**'],
+          b.asyncMs
+            ? [`\`verify\` (WebCrypto \`subtle\`)`, `${fmt(b.asyncMs.p50, 3)} ms`, `${fmt(b.asyncMs.p95, 3)} ms`, '**no** — asynchronous, so the gate refuses']
+            : ['`verify` (WebCrypto `subtle`)', 'unavailable', '—', 'no']
+        ]
+      )
+    );
+    say('');
+    if (b.asyncMs && b.ratio) {
+      say(
+        `**The synchronous contract costs ${fmt(b.ratio, 0)}× on this platform** — ` +
+          `${fmt(b.syncMs.p50, 2)} ms against ${fmt(b.asyncMs.p50, 3)} ms for the same key, message and ` +
+          'signature. The WebCrypto row is **not a figure for this module**: nothing can inject it, and ' +
+          'it is here only to turn "the sync contract costs something" into a number. Every verification ' +
+          'millisecond in the tables above is the pure-JS path, because that is the only path the gate ' +
+          'accepts.'
+      );
+      say('');
+    }
+  }
+
+  // --- the optical verdict ---------------------------------------------------
+  const O = res.optical;
+  const R = O.rederived;
+  say(
+    '**The optical verdict — ADR-022 §4.6, which asks for the answer "including *not achievable at this ' +
+      'artifact size* where that is the answer".** `opticalBudget()` computes it; this suite recomputes ' +
+      'it independently from the module\'s exported constants and compares, because two calculations ' +
+      `agreeing is worth more than one reported twice. They ${O.agrees ? '**agree**' : '**DISAGREE**'}:`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['', 'Ed25519 (measured signature size)', 'ADR-012 hybrid (**projection**)'],
+      [
+        ['rate', `${R.rateBytesPerSecond.toLocaleString('en-US')} B/s (measured, §6)`, `${R.rateBytesPerSecond.toLocaleString('en-US')} B/s (measured, §6)`],
+        ['budget at 3 s', `${R.budgetBytes.toLocaleString('en-US')} B`, `${R.budgetBytes.toLocaleString('en-US')} B`],
+        ['closures in the activation set', String(R.closures), String(R.closures)],
+        ['signature per closure', `${k.ed25519SignatureBytes} B`, `${R.hybridPerClosure.toLocaleString('en-US')} B`],
+        ['**signature floor**', `**${R.ed25519FloorBytes.toLocaleString('en-US')} B**`, `**${R.hybridFloorBytes.toLocaleString('en-US')} B**`],
+        ['room left for content', `${R.ed25519ContentBytes.toLocaleString('en-US')} B`, `**${R.hybridContentBytes.toLocaleString('en-US')} B**`],
+        ['achievable?', R.ed25519Achievable ? 'yes' : '**no**', R.hybridAchievable ? 'yes' : '**NO**']
+      ]
+    )
+  );
+  say('');
+  say(
+    `**Under ADR-012's hybrid signing the three-second optical target fails before a single content ` +
+      `byte is considered.** ${R.closures} closures × ${R.hybridPerClosure.toLocaleString('en-US')} B is ` +
+      `**${R.hybridFloorBytes.toLocaleString('en-US')} B of signature** against a whole budget of ` +
+      `${R.budgetBytes.toLocaleString('en-US')} B — the floor exceeds the budget by ` +
+      `**${pct(R.hybridOvershoot - 1, 0)}**. Content is what is left *after* the floor, so no artifact ` +
+      'size helps: the answer ADR-022 §4.6 anticipates is "not achievable at this artifact size" and the ' +
+      `honest answer is the stronger **"not achievable at any artifact size"**. Swept across ` +
+      `${O.sweep.length} artifact sizes from ${O.sweep[0].artifactBytes.toLocaleString('en-US')} B to ` +
+      `${O.sweep[O.sweep.length - 1].artifactBytes.toLocaleString('en-US')} B, ` +
+      `**${O.anySizeAchievableHybrid ? 'some' : 'none'} fits**. Every figure in the hybrid column is a ` +
+      'projection over ADR-022 §3\'s own 3,309 bytes; the rate is measured and the multiplication is not ' +
+      'a measurement of anything.'
+  );
+  say('');
+  say(
+    `To make the floor alone fit, the transfer would need **${fmt(R.secondsNeededForFloor, 2)} s** at the ` +
+      `measured rate, or **${R.rateNeededForFloor.toLocaleString('en-US')} B/s** inside three seconds — ` +
+      `${fmt(R.rateNeededForFloor / R.rateBytesPerSecond, 2)}× the optical channel, and that buys zero ` +
+      'bytes of artifact. With Ed25519 the same budget has ' +
+      `${R.ed25519ContentBytes.toLocaleString('en-US')} B to spare, which is why ADR-022 §4.5 insists the ` +
+      'criterion-5 measurement be taken with hybrid signatures in place: the two schemes do not differ ' +
+      'by a margin, they differ by whether the thing is possible. And on this module\'s own wire the ' +
+      `hybrid floor is hex, so it is ${R.hybridFloorOnWireBytes.toLocaleString('en-US')} B — ` +
+      `${fmt(R.hybridFloorOnWireBytes / R.budgetBytes, 2)}× the budget rather than ` +
+      `${fmt(R.hybridOvershoot, 2)}×.`
+  );
+  say('');
+
+  // --- what this does not establish -----------------------------------------
+  say(
+    '**What this suite does not establish.** It does not measure criterion 5 and cannot: there is no ' +
+      'radio tier in this repository, so no p95 on one is quoted anywhere above. It does not measure ' +
+      'ML-DSA-65 — every hybrid figure is arithmetic over a size ADR-022 states, and there is no ' +
+      'post-quantum signature in this repository to time. It does not split an artifact: ADR-022 §3 says ' +
+      'that tooling does not exist, so the splits here are this harness\'s, and a different split moves ' +
+      'the content column while leaving the overhead column within a few bytes — which is precisely why ' +
+      'the fraction, rather than the byte count, is the quantity the criterion asks for. And nothing ' +
+      'here executes: "activated" means the gate opened and the bytes are readable, not that any code ' +
+      'ran. What the tables do establish is narrower and is what criterion 7 asked for: overhead is ' +
+      `essentially constant, it exceeds the payload below ${ed.crossover.toLocaleString('en-US')} B with ` +
+      `the signatures this repository has and below ${hy.crossover.toLocaleString('en-US')} B under the ` +
+      'scheme ADR-012 selects, and the activation set is three quarters of the verification work at ' +
+      'every size measured.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 // Asynchronous solely because one measurement is: the browser's own
@@ -2791,6 +3204,22 @@ async function main() {
       reps: args.quick ? 5 : 25
     });
     printAttestSuite(results.attest);
+  }
+
+  if (want('closure')) {
+    say('---');
+    say('');
+    // Not --trials either: this suite's cost is dominated by pure-JS Ed25519 at
+    // milliseconds a call, so the dial is repetitions of a handful of expensive
+    // operations rather than trials of a cheap one.
+    results.closure = runClosureModuleSuite({
+      reps: args.quick ? 3 : 15,
+      seed: args.seed
+    });
+    // Asynchronous solely because `crypto.verify` has no synchronous form, and
+    // the point of measuring it is that `closure.js` cannot use it.
+    results.closureBackends = await runSignatureBackends({ reps: args.quick ? 10 : 40 });
+    printClosureModuleSuite(results.closure, results.closureBackends);
   }
 
   if (args.json) {
