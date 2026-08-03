@@ -11,6 +11,10 @@
   var qrlib = window.RVQRCode;
   var qrdec = window.RVQRDecode;
   var rvflib = window.RVQRRvf;
+  // expiry.js loads eagerly, before this file, because the vault consults it on
+  // its very first read. Still read defensively: if it is missing, disposal is
+  // simply unavailable rather than half-enforced.
+  var expiryLib = window.RVQRExpiry || null;
 
   // The roadmap modules load with `defer`, so they are not present while app.js
   // is evaluating. Everything reads them through these getters and treats
@@ -98,7 +102,40 @@
     return tx('readonly', function (store) { return store.getAll(); }).then(function (rows) {
       rows = rows || [];
       rows.sort(function (a, b) { return b.addedAt - a.addedAt; });
-      return rows;
+      return sweepExpired(rows);
+    });
+  }
+
+  /**
+   * The enforcement point for timed disposal.
+   *
+   * Every read of the vault passes through here, so a record whose moment
+   * arrived while the app was closed — when no timer of ours was running — is
+   * deleted before anything can list it, open it, send it or export it. The
+   * in-page timer below is a convenience that makes the countdown reach zero
+   * while you watch; this is what makes the deletion actually happen.
+   *
+   * A record that fails to delete is still withheld from the caller, and the
+   * failure is surfaced rather than swallowed: the app must never quietly show
+   * an artifact it has told you is gone, nor quietly claim one is gone when it
+   * is not.
+   */
+  function sweepExpired(rows) {
+    if (!expiryLib) return Promise.resolve(rows);
+    var split = expiryLib.partition(rows, Date.now());
+    if (!split.expired.length) return Promise.resolve(rows);
+    return Promise.all(split.expired.map(function (r) {
+      return vaultDelete(r.id).then(function () { return null; }, function (err) { return err; });
+    })).then(function (errors) {
+      var failed = errors.filter(Boolean).length;
+      if (failed) {
+        toast(failed + ' expired artifact' + (failed === 1 ? '' : 's') + ' could not be deleted');
+      } else {
+        toast(split.expired.length + ' artifact' +
+          (split.expired.length === 1 ? '' : 's') + ' reached expiry and ' +
+          (split.expired.length === 1 ? 'was' : 'were') + ' destroyed');
+      }
+      return split.live;
     });
   }
 
@@ -148,6 +185,60 @@
 
   var cachedVault = [];
 
+  // Every live countdown currently on screen, as { row, node }. Kept so the
+  // ticker can repaint the digits without rebuilding the list a user may be
+  // in the middle of reading.
+  var countdownNodes = [];
+  // The detail sheet's own countdown is tracked separately from the list's,
+  // because the two are rebuilt on different schedules: a vault re-render must
+  // not silently stop the clock on an open sheet.
+  var detailCountdown = null;
+  var expiryTimer = null;
+
+  /** Renders one artifact's disposal state as a readout chip, or nothing. */
+  function countdownChip(row) {
+    if (!expiryLib || !row.expiry) return null;
+    var node = el('span', 'countdown');
+    paintCountdown(node, row, Date.now());
+    countdownNodes.push({ row: row, node: node });
+    return node;
+  }
+
+  function paintCountdown(node, row, now) {
+    var d = expiryLib.describe(row.expiry, now);
+    node.className = 'countdown tone-' + d.tone;
+    node.textContent = d.countdown || 'burn';
+    node.title = d.countdown ? d.label + ' ' + d.countdown : d.label;
+  }
+
+  /**
+   * One timer for the whole app rather than one per artifact. It repaints
+   * running countdowns each second, and once anything is actually due it hands
+   * over to renderVault, whose read of the vault performs the deletion.
+   */
+  function tickExpiry() {
+    if (!expiryLib) return;
+    var now = Date.now();
+    if (expiryLib.partition(cachedVault, now).expired.length) {
+      renderVault();
+      if (openDetailId) openDetail(openDetailId);
+      return;
+    }
+    countdownNodes.forEach(function (entry) {
+      paintCountdown(entry.node, entry.row, now);
+    });
+    if (detailCountdown) paintCountdown(detailCountdown.node, detailCountdown.row, now);
+  }
+
+  function scheduleExpiryTimer() {
+    if (expiryTimer) { clearInterval(expiryTimer); expiryTimer = null; }
+    if (!expiryLib) return;
+    // No clock anywhere in the vault means no timer: a burn-on-export record
+    // needs no ticking, and neither does an empty vault.
+    if (expiryLib.nextDeadline(cachedVault, Date.now()) === null) return;
+    expiryTimer = setInterval(tickExpiry, 1000);
+  }
+
   function glyphFor(kind) {
     if (kind === 'rvf') return 'RVF';
     if (kind === 'wasm') return 'WASM';
@@ -157,10 +248,13 @@
   function renderVault() {
     return vaultList().then(function (rows) {
       cachedVault = rows;
+      countdownNodes = []; // the nodes they pointed at are about to be discarded
       var list = $('vaultList');
       list.textContent = '';
       $('vaultCount').textContent = rows.length ? '(' + rows.length + ')' : '';
       refreshSendPicker();
+
+      scheduleExpiryTimer();
 
       if (!rows.length) {
         var empty = el('div', 'card empty');
@@ -186,6 +280,8 @@
         badges.appendChild(
           el('span', 'badge ' + row.kind, row.kind === 'generic' ? 'file' : row.kind)
         );
+        var chip = countdownChip(row);
+        if (chip) badges.appendChild(chip);
         btn.appendChild(g);
         btn.appendChild(mid);
         btn.appendChild(badges);
@@ -208,18 +304,50 @@
 
   var dialog = $('detail');
 
+  // Where the stylesheet docks the detail sheet as a side panel, it is opened
+  // NON-modally so the vault list behind it stays visible and clickable:
+  // opening an artifact must not cost you your place in the list. Narrower
+  // than that it stays a modal sheet, which is the right idiom on a phone.
+  // The width here is the same 1060px the stylesheet uses for the docked panel.
+  var DOCKED_QUERY = '(min-width: 1060px)';
+  function dockedLayout() {
+    return !!(window.matchMedia && window.matchMedia(DOCKED_QUERY).matches);
+  }
+
   function showSheet() {
-    if (dialog.showModal) dialog.showModal();
+    // Already showing: openDetail has just replaced the body in place, which is
+    // what makes clicking a second artifact work while the panel is docked.
+    // Re-opening would also throw if the layout changed under an open modal.
+    if (dialog.open) return;
+    if (dockedLayout() && dialog.show) dialog.show();
+    else if (dialog.showModal) dialog.showModal();
     else dialog.setAttribute('open', '');
   }
   function hideSheet() {
+    openDetailId = null;
+    detailCountdown = null;
     if (dialog.close) dialog.close();
     else dialog.removeAttribute('open');
   }
 
+  // Which artifact the detail sheet is showing, so the expiry ticker can
+  // refresh it in place — and so a sheet left open on a record that expires
+  // does not keep offering Send and Download for something already deleted.
+  var openDetailId = null;
+
   function openDetail(id) {
     vaultGet(id).then(function (row) {
-      if (!row) return;
+      if (!row) {
+        // Swept out from under us, most likely by its own expiry.
+        if (openDetailId === id) hideSheet();
+        return;
+      }
+      if (expiryLib && expiryLib.isExpired(row.expiry, Date.now())) {
+        hideSheet();
+        renderVault();
+        return;
+      }
+      openDetailId = id;
       var bytes = recordBytes(row);
       $('detailName').textContent = row.name;
       var body = $('detailBody');
@@ -285,22 +413,164 @@
       });
       var dlBtn = el('button', '', 'Download');
       dlBtn.addEventListener('click', function () { download(row); });
-      var delBtn = el('button', 'btn-danger', 'Delete');
-      delBtn.addEventListener('click', function () {
-        if (!confirm('Delete "' + row.name + '" from this device?')) return;
-        vaultDelete(row.id).then(function () {
-          hideSheet();
-          toast('Deleted');
-          renderVault();
-        });
-      });
       actions.appendChild(sendBtn);
       actions.appendChild(dlBtn);
-      actions.appendChild(delBtn);
       body.appendChild(actions);
+
+      body.appendChild(buildDisposal(row));
 
       showSheet();
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Disposal
+  //
+  // The destructive controls live together, behind the danger colour and a
+  // confirmation, and away from Send and Download so that no amount of muscle
+  // memory turns one into the other. Nothing here is decorative: arming writes
+  // to the record, and every path out of it ends in a real vaultDelete.
+  // ---------------------------------------------------------------------------
+
+  function buildDisposal(row) {
+    detailCountdown = null; // the previous sheet's node is being replaced
+    var box = el('div', 'card tight disposal');
+    box.appendChild(el('h3', '', 'Disposal'));
+
+    if (!expiryLib) {
+      box.appendChild(el('p', 'small muted',
+        'The disposal module did not load, so self-destruct is unavailable for ' +
+        'this artifact. Nothing is armed.'));
+      return box;
+    }
+
+    var now = Date.now();
+    var state = expiryLib.describe(row.expiry, now);
+    var statusRow = el('div', 'row');
+    statusRow.appendChild(el('span', 'small muted grow', row.expiry
+      ? state.label + (state.countdown ? '' : ' — destroyed on the next download')
+      : 'Nothing armed. This artifact stays until you delete it.'));
+    if (row.expiry) {
+      var chip = el('span', 'countdown');
+      paintCountdown(chip, row, now);
+      detailCountdown = { row: row, node: chip };
+      statusRow.appendChild(chip);
+    }
+    box.appendChild(statusRow);
+
+    var opts = el('div', 'disposal-opts');
+    var currentMode = row.expiry ? row.expiry.mode : 'keep';
+
+    function option(value, title, detail) {
+      var label = el('label', 'opt');
+      var input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'disposal-' + row.id;
+      input.value = value;
+      input.checked = value === currentMode;
+      var text = el('div', 'opt-text');
+      text.appendChild(el('strong', '', title));
+      text.appendChild(el('span', '', detail));
+      label.appendChild(input);
+      label.appendChild(text);
+      opts.appendChild(label);
+      return input;
+    }
+
+    option('keep', 'Keep', 'No expiry. Delete it yourself when you are done with it.');
+    option(expiryLib.MODE_BURN, 'Burn after export',
+      'Deletes the vault copy as soon as you download it. Showing it as QR ' +
+      'frames does not consume it, so a transfer can be re-sent.');
+    option(expiryLib.MODE_TIMED, 'Timed expiry',
+      'Deletes it once the clock runs out, whether or not it was ever used.');
+
+    var ttl = document.createElement('select');
+    ttl.setAttribute('aria-label', 'Time until this artifact is destroyed');
+    expiryLib.TTL_PRESETS.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.label;
+      ttl.appendChild(o);
+    });
+    if (row.expiry && row.expiry.mode === expiryLib.MODE_TIMED) {
+      ttl.value = expiryLib.TTL_PRESETS[0].id;
+    }
+    box.appendChild(opts);
+    var ttlLabel = el('label', 'field', 'Time until destruction');
+    box.appendChild(ttlLabel);
+    box.appendChild(ttl);
+
+    function chosen() {
+      var checked = opts.querySelector('input:checked');
+      return checked ? checked.value : 'keep';
+    }
+    function syncTtl() { ttl.disabled = chosen() !== expiryLib.MODE_TIMED; }
+    opts.addEventListener('change', syncTtl);
+    syncTtl();
+
+    var armBtn = el('button', 'btn-danger btn-block', 'Apply disposal setting');
+    armBtn.style.marginTop = '.7rem';
+    armBtn.addEventListener('click', function () {
+      var mode = chosen();
+      if (mode === 'keep') {
+        if (!row.expiry) { toast('Nothing was armed'); return; }
+        if (!confirm('Disarm disposal for "' + row.name + '"?\n\n' +
+          'It will stay on this device until you delete it.')) return;
+        row.expiry = null;
+        vaultPut(row).then(function () {
+          toast('Disposal disarmed');
+          openDetail(row.id);
+          renderVault();
+        });
+        return;
+      }
+
+      var preset = expiryLib.ttlById(ttl.value);
+      var next = expiryLib.createExpiry(mode, Date.now(), preset ? preset.ms : 0);
+      if (!next) { toast('That disposal setting could not be armed'); return; }
+
+      var warning = mode === expiryLib.MODE_BURN
+        ? 'Arm "burn after export" on "' + row.name + '"?\n\n' +
+          'The next time you download it, this device\'s copy is deleted.'
+        : 'Arm a ' + (preset ? preset.label : '') + ' expiry on "' + row.name + '"?\n\n' +
+          'When the time is up, this device\'s copy is deleted.';
+      if (!confirm(warning + '\n\n' +
+        'This deletes this app\'s copy on this device only. It cannot recall a ' +
+        'file you already exported or a copy another device received, and ' +
+        'browser storage is not secure erasure.')) return;
+
+      row.expiry = next;
+      vaultPut(row).then(function () {
+        toast(mode === expiryLib.MODE_BURN ? 'Armed: burn after export' : 'Expiry armed');
+        openDetail(row.id);
+        renderVault();
+      });
+    });
+    box.appendChild(armBtn);
+
+    var nukeBtn = el('button', 'btn-danger-solid btn-block', 'Destroy now');
+    nukeBtn.style.marginTop = '.5rem';
+    nukeBtn.addEventListener('click', function () {
+      if (!confirm('Destroy "' + row.name + '" now?\n\n' +
+        'This deletes it from this device immediately and cannot be undone.')) return;
+      vaultDelete(row.id).then(function () {
+        hideSheet();
+        toast('Destroyed');
+        renderVault();
+      }, function (err) {
+        toast('Could not delete: ' + err.message);
+      });
+    });
+    box.appendChild(nukeBtn);
+
+    box.appendChild(el('p', 'small muted', 'What this does not do:'));
+    var limits = el('ul', 'limits');
+    expiryLib.describeLimits().forEach(function (line) {
+      limits.appendChild(el('li', '', line));
+    });
+    box.appendChild(limits);
+
+    return box;
   }
 
   // ---------------------------------------------------------------------------
@@ -601,6 +871,15 @@
     });
   }
 
+  /**
+   * The export path, and therefore the other enforcement point for disposal.
+   *
+   * Burn-on-export is consumed here rather than at the button, so a future
+   * caller cannot export a burn-armed artifact without triggering it. Note the
+   * honest limit of "successful": the browser owns the download once the click
+   * is dispatched and never tells us how it ended, so the copy is destroyed at
+   * the moment the bytes are handed over, not at the moment they hit disk.
+   */
   function download(row) {
     var blob = new Blob([recordBytes(row)], { type: 'application/octet-stream' });
     var url = URL.createObjectURL(blob);
@@ -611,6 +890,17 @@
     a.click();
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+
+    if (!expiryLib || !expiryLib.consumesOnExport(row.expiry)) return Promise.resolve(false);
+    return vaultDelete(row.id).then(function () {
+      hideSheet();
+      toast('Exported — this device’s copy destroyed');
+      renderVault();
+      return true;
+    }, function (err) {
+      toast('Exported, but the copy could not be deleted: ' + err.message);
+      return false;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1782,6 +2072,23 @@
     $('refreshBtn').addEventListener('click', function () { renderVault(); });
     $('detailClose').addEventListener('click', hideSheet);
 
+    // Every dismissal route ends in a 'close' event — the button, Escape on a
+    // modal dialog, or a form submit. Without this the sheet could vanish while
+    // openDetailId still claimed it was open, and the expiry ticker would go on
+    // repainting a countdown node that is no longer on screen.
+    dialog.addEventListener('close', function () {
+      openDetailId = null;
+      detailCountdown = null;
+    });
+
+    // A non-modal dialog gets no Escape handling from the browser, so the
+    // docked panel needs its own. Harmless for the modal case: by the time the
+    // browser acts on Escape the dialog is already closed.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !dialog.open) return;
+      hideSheet();
+    });
+
     ['dragenter', 'dragover'].forEach(function (ev) {
       document.addEventListener(ev, function (e) {
         e.preventDefault();
@@ -1912,7 +2219,29 @@
       });
     });
     $('welcomeClose').addEventListener('click', closeWelcome);
-    $('showWelcome').addEventListener('click', function (e) { openWelcome(e.currentTarget); });
+
+    // The intro opens on every load and dismissal covers only that visit, so
+    // this checkbox is the sole permanent opt-out. It is applied on change
+    // rather than on dismissal, so ticking it takes effect however the dialog
+    // is then closed — button, Escape or backdrop.
+    $('welcomeSuppress').addEventListener('change', function (e) {
+      var storage = safeStorage();
+      if (e.target.checked) {
+        core.suppressWelcome(storage);
+        toast('The intro will not open again');
+      } else {
+        core.unsuppressWelcome(storage);
+      }
+    });
+
+    // "Show the intro again" is also the way back from that opt-out: reopening
+    // it by hand is a clear statement that it is wanted, so the suppression is
+    // lifted rather than leaving the viewer to hunt for the checkbox.
+    $('showWelcome').addEventListener('click', function (e) {
+      core.unsuppressWelcome(safeStorage());
+      $('welcomeSuppress').checked = false;
+      openWelcome(e.currentTarget);
+    });
     // Escape and the backdrop both route through the dialog's own close event,
     // so dismissal is recorded however it happened.
     welcomeDialog.addEventListener('close', function () {

@@ -9,310 +9,517 @@
 <meta name="color-scheme" content="dark light">
 <meta name="description" content="rvQR moves files between devices with a screen and a camera. RVF containers and WASM artifacts, offline — no network, no cables, no accounts.">
 <title>rvQR — move files with a screen and a camera</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f14'/%3E%3Cg fill='%232dd4bf'%3E%3Crect x='6' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='6' y='18' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='18' width='3.5' height='3.5'/%3E%3Crect x='24' y='18' width='2' height='2'/%3E%3Crect x='18' y='24' width='2' height='2'/%3E%3Crect x='22.5' y='22.5' width='3.5' height='3.5'/%3E%3C/g%3E%3C/svg%3E">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230a0e12'/%3E%3Cg fill='%2322d3c5'%3E%3Crect x='6' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='6' y='18' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='18' width='3.5' height='3.5'/%3E%3Crect x='24' y='18' width='2' height='2'/%3E%3Crect x='18' y='24' width='2' height='2'/%3E%3Crect x='22.5' y='22.5' width='3.5' height='3.5'/%3E%3C/g%3E%3C/svg%3E">
 <style>
+  /* ===========================================================================
+     rvQR — "the folio and the plate"
+
+     Two registers share one page. Prose is set as a declassified folio:
+     numbered sections, tracked uppercase headers, hairline rules, and a light
+     theme on warm stock rather than cool white. The transfer surfaces are
+     instrument plates: graphite recesses, tabular numerals, corner brackets on
+     the two optical apertures.
+
+     The accent is signal only — progress, live state, verified data. Structure
+     is carried by rule weight, case and tracking, so the colour still means
+     something when it does appear. Semantic hues (ok / warn / danger) are held
+     separate from it, which is what lets the destructive path read as
+     unambiguously destructive.
+     =========================================================================== */
+
   :root {
-    --bg: #0b0f14;
-    --surface: #121821;
-    --surface-2: #1a2230;
-    --line: #24303f;
-    --text: #e6edf6;
-    --muted: #8b9bb0;
-    --accent: #2dd4bf;
-    --accent-ink: #06231f;
-    --danger: #f87171;
-    --warn: #fbbf24;
-    --ok: #4ade80;
-    --radius: 14px;
+    /* Type. No webfont: this app's whole argument is that it fits through a
+       camera, so the personality comes from weight, case and tracking instead
+       of from bytes. The display stack prefers a condensed face where the
+       system has one and degrades to the UI face, which still reads correctly
+       uppercase and tracked. */
+    --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --font-display: "Roboto Condensed", "Arial Narrow", "Helvetica Neue", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    --radius: 4px;      /* equipment, not app-store furniture */
+    --radius-lg: 8px;
     --tabbar: 62px;
-
-    /* Depth layer. The page sits under a teal bloom biased to the top, the
-       direction a QR frame travels from on the Send tab, over a base that
-       cools toward the bottom. Cards are lit from their top edge so they read
-       as raised against it rather than as flat panels on a flat ground. */
-    --bloom: radial-gradient(1100px 620px at 50% -18%, rgba(45, 212, 191, .16), transparent 62%);
-    --ground: linear-gradient(180deg, #0d1218 0%, var(--bg) 46%, #080c11 100%);
-    --card-face: linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--accent) 6%) 0%, var(--surface) 58%);
-    --card-edge: color-mix(in srgb, var(--accent) 26%, transparent);
-    --accent-face: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, #ffffff 8%), var(--accent) 70%);
-    --chrome: color-mix(in srgb, var(--bg) 82%, transparent);
+    --rail: 184px;      /* side navigation on wide viewports */
+    --measure: 660px;   /* grows with the viewport; see WIDE LAYOUT below */
+    --prose: 760px;     /* documents never widen past a readable measure */
+    --qr-max: 420px;    /* how large the transmitted symbol may render */
   }
 
-  /* Light theme as its own composition, not an inversion: the bloom warms
-     rather than glows, and the ground lifts toward white at the top. */
-  :root[data-theme="light"], :root:not([data-theme="dark"]) {
-    color-scheme: light dark;
+  /* --- Dark: "night desk" --------------------------------------------------
+     Ink with a cold cast rather than pure black, so the plates can sit above
+     it without a glow. */
+  :root, :root[data-theme="dark"] {
+    --bg: #0a0e12;
+    --surface: #10161d;
+    --surface-2: #18202a;
+    --line: #222d39;
+    --line-2: #2f3d4c;
+    --text: #e2e9f1;
+    --muted: #7e90a3;
+    --accent: #22d3c5;
+    --accent-ink: #03231f;
+    --ok: #3fbf6a;
+    --warn: #d99a2b;
+    --danger: #e5484d;
+
+    --ground: linear-gradient(180deg, #0c1116 0%, var(--bg) 42%, #070a0e 100%);
+    --wash: radial-gradient(1200px 520px at 50% -24%, rgba(34, 211, 197, .07), transparent 64%);
+    --plate: linear-gradient(180deg, #131a22 0%, var(--surface) 100%);
+    --chrome: rgba(10, 14, 18, .84);
+    --inset-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
+    --lift: 0 1px 2px rgba(0, 0, 0, .5);
+    --qr-plate: #ffffff;
   }
-  @media (prefers-color-scheme: light) {
-    :root:not([data-theme="dark"]) {
-      --bg: #f6f8fb;
-      --surface: #ffffff;
-      --surface-2: #eef2f7;
-      --line: #dbe3ed;
-      --text: #101720;
-      --muted: #5b6b7f;
-      --accent: #0d9488;
-      --accent-ink: #ffffff;
-      --danger: #b91c1c;
-      --warn: #92610a;
-      --ok: #15803d;
-      --bloom: radial-gradient(1000px 560px at 50% -20%, rgba(13, 148, 136, .10), transparent 60%);
-      --ground: linear-gradient(180deg, #ffffff 0%, var(--bg) 52%, #e9eef5 100%);
-      --card-face: linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--surface) 96%, var(--accent) 4%) 100%);
-      --card-edge: color-mix(in srgb, var(--accent) 20%, transparent);
-      --chrome: color-mix(in srgb, #ffffff 84%, transparent);
-    }
-  }
-  /* The viewer's toggle stamps data-theme on the root and must win over the
-     media query in BOTH directions, so each theme is restated explicitly. */
+
+  /* --- Light: "paper folio" ------------------------------------------------
+     Warm stock, not an inverted terminal. This is the clearest statement of
+     the position: the light theme is a document, and the accent becomes ink
+     rather than light. */
   :root[data-theme="light"] {
-    --bg: #f6f8fb;
-    --surface: #ffffff;
-    --surface-2: #eef2f7;
-    --line: #dbe3ed;
-    --text: #101720;
-    --muted: #5b6b7f;
-    --accent: #0d9488;
+    --bg: #eeeae2;
+    --surface: #f8f6f2;
+    --surface-2: #e6e1d7;
+    --line: #cec7ba;
+    --line-2: #b0a696;
+    --text: #14181d;
+    --muted: #6b6558;
+    --accent: #0f6f68;
     --accent-ink: #ffffff;
-    --danger: #b91c1c;
-    --warn: #92610a;
-    --ok: #15803d;
-    --bloom: radial-gradient(1000px 560px at 50% -20%, rgba(13, 148, 136, .10), transparent 60%);
-    --ground: linear-gradient(180deg, #ffffff 0%, var(--bg) 52%, #e9eef5 100%);
-    --card-face: linear-gradient(180deg, #ffffff 0%, color-mix(in srgb, var(--surface) 96%, var(--accent) 4%) 100%);
-    --card-edge: color-mix(in srgb, var(--accent) 20%, transparent);
-    --chrome: color-mix(in srgb, #ffffff 84%, transparent);
+    --ok: #166b46;
+    --warn: #8a5a10;
+    --danger: #b4232a;
+
+    --ground: linear-gradient(180deg, #f4f1ea 0%, var(--bg) 46%, #e4dfd5 100%);
+    --wash: radial-gradient(1200px 520px at 50% -24%, rgba(15, 111, 104, .06), transparent 64%);
+    --plate: linear-gradient(180deg, #fdfcfa 0%, var(--surface) 100%);
+    --chrome: rgba(238, 234, 226, .86);
+    --inset-shadow: inset 0 1px 0 rgba(255, 255, 255, .7);
+    --lift: 0 1px 2px rgba(60, 50, 32, .10);
+    --qr-plate: #ffffff;
   }
-  :root[data-theme="dark"] {
-    --bg: #0b0f14;
-    --surface: #121821;
-    --surface-2: #1a2230;
-    --line: #24303f;
-    --text: #e6edf6;
-    --muted: #8b9bb0;
-    --accent: #2dd4bf;
-    --accent-ink: #06231f;
-    --danger: #f87171;
-    --warn: #fbbf24;
-    --ok: #4ade80;
-    --bloom: radial-gradient(1100px 620px at 50% -18%, rgba(45, 212, 191, .16), transparent 62%);
-    --ground: linear-gradient(180deg, #0d1218 0%, var(--bg) 46%, #080c11 100%);
-    --card-face: linear-gradient(180deg, color-mix(in srgb, var(--surface) 94%, var(--accent) 6%) 0%, var(--surface) 58%);
-    --card-edge: color-mix(in srgb, var(--accent) 26%, transparent);
-    --chrome: color-mix(in srgb, var(--bg) 82%, transparent);
+
+  /* The system preference applies only where the viewer has not chosen. The
+     toggle stamps data-theme on the root, and because the light block above is
+     already more specific than this media query, it wins in both directions:
+     data-theme="dark" is restated here so a light-preferring system cannot
+     reach past an explicit dark choice either. */
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]):not([data-theme="light"]) {
+      --bg: #eeeae2;
+      --surface: #f8f6f2;
+      --surface-2: #e6e1d7;
+      --line: #cec7ba;
+      --line-2: #b0a696;
+      --text: #14181d;
+      --muted: #6b6558;
+      --accent: #0f6f68;
+      --accent-ink: #ffffff;
+      --ok: #166b46;
+      --warn: #8a5a10;
+      --danger: #b4232a;
+      --ground: linear-gradient(180deg, #f4f1ea 0%, var(--bg) 46%, #e4dfd5 100%);
+      --wash: radial-gradient(1200px 520px at 50% -24%, rgba(15, 111, 104, .06), transparent 64%);
+      --plate: linear-gradient(180deg, #fdfcfa 0%, var(--surface) 100%);
+      --chrome: rgba(238, 234, 226, .86);
+      --inset-shadow: inset 0 1px 0 rgba(255, 255, 255, .7);
+      --lift: 0 1px 2px rgba(60, 50, 32, .10);
+    }
   }
 
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
   body {
-    background: var(--bloom), var(--ground);
+    background: var(--wash), var(--ground);
     background-attachment: fixed, fixed;
     background-color: var(--bg);
     color: var(--text);
-    font: 16px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font: 16px/1.55 var(--font-body);
     -webkit-font-smoothing: antialiased;
     overflow-x: hidden;
     overscroll-behavior-y: contain;
   }
-  h1, h2, h3 { line-height: 1.25; margin: 0 0 .5rem; }
-  h2 { font-size: 1.15rem; letter-spacing: -.01em; }
-  h3 { font-size: .95rem; }
+
+  /* --- Typographic roles ---------------------------------------------------
+     .label is the equipment-legend voice: small, condensed, uppercase, widely
+     tracked. It marks anything an instrument would silkscreen next to a dial. */
+  .label,
+  nav.tabbar button,
+  dl.kv dt,
+  table.seg th,
+  .badge,
+  .stamp,
+  .field {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    font-weight: 700;
+  }
+
+  h1, h2, h3 { line-height: 1.3; margin: 0 0 .5rem; }
+  h3 {
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: .1em;
+    font-size: .78rem;
+    font-weight: 700;
+    color: var(--text);
+  }
   p { margin: 0 0 .75rem; }
-  a { color: var(--accent); }
+  a { color: var(--accent); text-underline-offset: 2px; }
+
+  code, .mono, .num, td.num, .countdown {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
   code, .mono {
-    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: .82em;
+    letter-spacing: .01em;
     overflow-wrap: anywhere;
   }
 
+  /* Section headers as folio paragraph marks: an index, the title in the
+     legend voice, and a rule running out to the edge of the plate. The counter
+     is per-tab, so each screen numbers itself from 01. */
+  section.stack { counter-reset: folio; }
+  section.stack h2 {
+    display: flex;
+    align-items: center;
+    gap: .55rem;
+    font-family: var(--font-display);
+    text-transform: uppercase;
+    letter-spacing: .14em;
+    font-weight: 700;
+    font-size: .82rem;
+    margin: 0 0 .8rem;
+    color: var(--text);
+  }
+  section.stack h2::before {
+    counter-increment: folio;
+    content: counter(folio, decimal-leading-zero);
+    font-family: var(--font-mono);
+    font-size: .72rem;
+    letter-spacing: .04em;
+    font-weight: 400;
+    color: var(--accent);
+    flex: 0 0 auto;
+  }
+  section.stack h2::after {
+    content: "";
+    flex: 1 1 auto;
+    height: 1px;
+    min-width: .5rem;
+    background: var(--line-2);
+  }
+
+  /* --- Page chrome ---------------------------------------------------------
+     A document header: identity left, channel readout right, closed by a
+     double rule — the folio convention, at hairline weight. */
   header {
     position: sticky; top: 0; z-index: 20;
     display: flex; align-items: center; gap: .6rem;
-    padding: calc(env(safe-area-inset-top) + .7rem) 1rem .7rem;
-    background: linear-gradient(180deg, var(--chrome), color-mix(in srgb, var(--bg) 58%, transparent));
-    backdrop-filter: blur(14px) saturate(1.2);
+    padding: calc(env(safe-area-inset-top) + .7rem) 1rem .6rem;
+    background: var(--chrome);
+    backdrop-filter: blur(14px) saturate(1.1);
     border-bottom: 1px solid var(--line);
+    box-shadow: 0 3px 0 -2px var(--line-2);
   }
   .brand { min-width: 0; }
-  .wordmark { font-weight: 700; letter-spacing: -.03em; font-size: 1.15rem; line-height: 1.1; }
+  .wordmark {
+    font-family: var(--font-display);
+    font-weight: 700; font-size: 1.24rem; line-height: 1.05;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
   .wordmark span { color: var(--accent); }
   .scope {
-    font-size: .68rem; color: var(--muted); letter-spacing: .01em;
+    font-family: var(--font-display);
+    font-size: .62rem; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .16em;
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    margin-top: .12rem;
   }
   .chip {
-    margin-left: auto; font-size: .72rem; color: var(--muted);
-    border: 1px solid var(--line); border-radius: 999px; padding: .2rem .55rem;
-    white-space: nowrap;
+    margin-left: auto; flex: 0 0 auto;
+    font-family: var(--font-mono); font-size: .64rem;
+    color: var(--muted); letter-spacing: .02em;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: .25rem .5rem; white-space: nowrap;
+    background: var(--surface);
   }
 
   main {
     padding: 1rem 1rem calc(var(--tabbar) + env(safe-area-inset-bottom) + 1.5rem);
-    max-width: 680px; margin: 0 auto;
+    max-width: var(--measure); margin: 0 auto;
   }
-  section[hidden] { display: none; }
-  .stack > * + * { margin-top: .9rem; }
+  /* `hidden` must beat every later layout rule. Without !important the wide
+     two-pane rule for #tab-receive (an id selector, and later in the sheet)
+     wins on specificity and renders a hidden tab underneath the visible one.
+     Tab switching is a correctness concern, not a stylistic one, so this is
+     the one place the override is warranted. */
+  section[hidden] { display: none !important; }
+  .stack > * + * { margin-top: .85rem; }
 
+  /* --- The plate -----------------------------------------------------------
+     Flat, squared, lit from a single inset highlight along the top edge. No
+     accent border: a panel is not a signal. */
   .card {
     position: relative;
-    background: var(--card-face);
+    background: var(--plate);
     border: 1px solid var(--line);
-    border-radius: var(--radius);
+    border-radius: var(--radius-lg);
     padding: 1rem;
-    box-shadow: 0 1px 2px rgba(0,0,0,.16), 0 8px 24px -18px rgba(0,0,0,.5);
+    box-shadow: var(--inset-shadow), var(--lift);
   }
-  /* A hairline of accent along the top edge — the "lit from above" cue that
-     separates a card from the ground without adding a heavier border. */
-  .card::before {
-    content: "";
-    position: absolute; inset: 0 0 auto 0; height: 1px;
-    border-radius: var(--radius) var(--radius) 0 0;
-    background: linear-gradient(90deg, transparent, var(--card-edge) 22%, var(--card-edge) 78%, transparent);
-    pointer-events: none;
-  }
-  .card.tight { padding: .75rem; }
+  .card.tight { padding: .8rem; }
   .muted { color: var(--muted); }
-  .small { font-size: .84rem; }
-  .row { display: flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
+  .small { font-size: .86rem; }
+  .row { display: flex; align-items: center; gap: .55rem; flex-wrap: wrap; }
+  .row.center { justify-content: center; }
+  .row.gap-top { margin-top: .8rem; }
   .grow { flex: 1 1 auto; min-width: 0; }
   .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .flush { margin: 0; }
 
+  details.card > summary {
+    cursor: pointer;
+    font-family: var(--font-display);
+    text-transform: uppercase; letter-spacing: .12em;
+    font-weight: 700; font-size: .74rem;
+    list-style-position: outside;
+    min-height: 28px; display: flex; align-items: center;
+  }
+  details.card > summary::marker { color: var(--accent); }
+  details.card[open] > summary { margin-bottom: .3rem; }
+  .details-body { margin-top: .7rem; }
+
+  /* --- Controls ------------------------------------------------------------ */
   button, .btn {
-    font: inherit; font-weight: 600;
+    font-family: var(--font-display);
+    font-size: .82rem; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .1em;
     min-height: 48px; padding: 0 1.05rem;
-    border-radius: 12px; border: 1px solid var(--line);
+    border-radius: var(--radius); border: 1px solid var(--line-2);
     background: var(--surface-2); color: var(--text);
     cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
     gap: .45rem; touch-action: manipulation;
+    text-decoration: none;
   }
   button:active { transform: translateY(1px); }
-  button:disabled { opacity: .45; cursor: not-allowed; }
+  button:disabled { opacity: .42; cursor: not-allowed; }
   .btn-primary {
-    background: var(--accent-face); color: var(--accent-ink); border-color: transparent;
-    box-shadow: 0 1px 0 color-mix(in srgb, #fff 22%, transparent) inset,
-                0 6px 18px -10px color-mix(in srgb, var(--accent) 70%, transparent);
+    background: var(--accent); color: var(--accent-ink);
+    border-color: var(--accent);
   }
-  .btn-danger { color: var(--danger); }
-  .btn-sm { min-height: 44px; padding: 0 .8rem; font-size: .85rem; font-weight: 500; }
+  /* Destructive actions are outlined in the danger hue and never share the
+     accent, so no amount of muscle memory turns a send into a delete. */
+  .btn-danger {
+    color: var(--danger);
+    border-color: color-mix(in srgb, var(--danger) 55%, var(--line));
+    background: color-mix(in srgb, var(--danger) 8%, var(--surface-2));
+  }
+  .btn-danger-solid {
+    background: var(--danger); border-color: var(--danger);
+    color: #fff;
+  }
+  .btn-sm { min-height: 44px; padding: 0 .8rem; font-size: .72rem; }
   .btn-block { width: 100%; }
+  :is(button, .btn, select, input, textarea, summary, [role="tab"]):focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+  }
 
   input[type=file] { display: none; }
   input[type=range] { width: 100%; accent-color: var(--accent); height: 34px; }
+  input[type=checkbox], input[type=radio] { accent-color: var(--accent); width: auto; min-height: 0; }
   select, input[type=text], textarea {
     font: inherit; width: 100%; min-height: 48px;
     background: var(--surface-2); color: var(--text);
-    border: 1px solid var(--line); border-radius: 12px; padding: .5rem .7rem;
+    border: 1px solid var(--line-2); border-radius: var(--radius);
+    padding: .5rem .7rem;
   }
-  textarea { min-height: 90px; font-family: ui-monospace, Menlo, monospace; font-size: .8rem; }
-  label.field { display: block; font-size: .84rem; color: var(--muted); margin-bottom: .2rem; }
+  input[type=text] { font-family: var(--font-mono); font-size: .88rem; }
+  textarea { min-height: 90px; font-family: var(--font-mono); font-size: .8rem; }
+  label.field, .field {
+    display: block; font-size: .64rem; color: var(--muted);
+    margin-bottom: .3rem;
+  }
 
   .badge {
-    display: inline-block; font-size: .7rem; font-weight: 600;
-    padding: .15rem .5rem; border-radius: 999px;
-    border: 1px solid var(--line); background: var(--surface-2); color: var(--muted);
+    display: inline-block; font-size: .6rem;
+    padding: .2rem .42rem; border-radius: var(--radius);
+    border: 1px solid var(--line-2); background: var(--surface-2); color: var(--muted);
   }
-  .badge.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
-  .badge.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .badge.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+  .badge.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
   .badge.received { color: var(--muted); border-style: dashed; }
   .badges { display: flex; flex-direction: column; align-items: flex-end; gap: .25rem; flex: 0 0 auto; }
 
+  /* --- Vault --------------------------------------------------------------- */
   .dropzone {
-    border: 1.5px dashed var(--line); border-radius: var(--radius);
-    padding: 1.4rem 1rem; text-align: center; color: var(--muted);
+    border: 1px dashed var(--line-2); border-radius: var(--radius);
+    padding: 1.3rem 1rem; text-align: center; color: var(--muted);
+    background: color-mix(in srgb, var(--surface-2) 45%, transparent);
     transition: border-color .15s, background .15s;
   }
-  body.dragging .dropzone { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, transparent); }
+  body.dragging .dropzone {
+    border-color: var(--accent); border-style: solid;
+    background: color-mix(in srgb, var(--accent) 8%, transparent);
+  }
 
   .artifact {
     display: flex; align-items: center; gap: .75rem;
-    width: 100%; text-align: left; min-height: 62px;
-    padding: .7rem .85rem; margin: 0;
+    width: 100%; text-align: left; min-height: 64px;
+    padding: .7rem .8rem; margin: 0;
+    text-transform: none; letter-spacing: normal;
+    font-family: var(--font-body); font-weight: 400; font-size: 1rem;
   }
   .artifact + .artifact { margin-top: .5rem; }
   .artifact .name { font-weight: 600; font-size: .95rem; }
   .glyph {
-    flex: 0 0 auto; width: 38px; height: 38px; border-radius: 10px;
-    display: grid; place-items: center; font-size: .68rem; font-weight: 700;
+    flex: 0 0 auto; width: 40px; height: 40px; border-radius: var(--radius);
+    display: grid; place-items: center;
+    font-family: var(--font-display); font-size: .6rem; font-weight: 700;
+    letter-spacing: .08em;
     background: var(--surface-2); color: var(--muted);
+    border: 1px solid var(--line);
   }
-  .glyph.rvf { color: var(--accent); }
-  .glyph.wasm { color: var(--warn); }
-
+  .glyph.rvf { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+  .glyph.wasm { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, var(--line)); }
   .empty { text-align: center; padding: 2rem 1rem; color: var(--muted); }
+
+  /* --- Optical apertures ---------------------------------------------------
+     The two surfaces that actually look at each other get corner brackets.
+     Two opposing corners, not four: enough to read as a reticle, restrained
+     enough not to read as a costume. Nothing else on the page wears them. */
+  .optic { position: relative; padding: 9px; }
+  .optic::before, .optic::after {
+    content: ""; position: absolute;
+    width: 15px; height: 15px;
+    border: 2px solid var(--accent);
+    pointer-events: none;
+  }
+  .optic::before { top: 0; left: 0; border-right: 0; border-bottom: 0; }
+  .optic::after { bottom: 0; right: 0; border-left: 0; border-top: 0; }
 
   #qrStage {
     display: grid; place-items: center;
-    background: #ffffff; border-radius: var(--radius); padding: 10px;
+    background: var(--qr-plate); border-radius: 2px; padding: 10px;
   }
-  #qrCanvas { width: 100%; height: auto; max-width: 420px; image-rendering: pixelated; display: block; }
+  /* The canvas is drawn at 640px with a spec-correct 4-module quiet zone baked
+     in, so scaling it up scales the quiet zone with it and `pixelated` keeps
+     the module edges hard. Physical size is a decode parameter, not a taste
+     one: a phone reading this across a desk needs the symbol big. */
+  #qrCanvas { width: 100%; height: auto; max-width: var(--qr-max); image-rendering: pixelated; display: block; }
 
-  .ring { display: block; width: 76px; height: 76px; flex: 0 0 auto; }
-  .ring circle { fill: none; stroke-width: 7; }
-  .ring .track { stroke: var(--line); }
-  .ring .fill { stroke: var(--accent); stroke-linecap: round; transition: stroke-dasharray .2s linear; }
-  .ring text { fill: var(--text); font-size: 19px; font-weight: 700; text-anchor: middle; }
+  video {
+    width: 100%; border-radius: 2px; background: #000; display: block;
+    aspect-ratio: 3/4; object-fit: cover;
+  }
 
-  .bar { height: 8px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  /* --- Readouts ------------------------------------------------------------ */
+  .ring { display: block; width: 74px; height: 74px; flex: 0 0 auto; }
+  .ring circle { fill: none; stroke-width: 6; }
+  .ring .track { stroke: var(--line-2); }
+  .ring .fill { stroke: var(--accent); stroke-linecap: butt; transition: stroke-dasharray .2s linear; }
+  .ring text {
+    fill: var(--text); font-size: 18px; font-weight: 700; text-anchor: middle;
+    font-family: var(--font-mono);
+  }
+
+  #sendFrameLabel, #rxTitle {
+    font-family: var(--font-mono); font-size: .92rem; font-weight: 600;
+    letter-spacing: .01em;
+  }
+
+  .bar { height: 6px; border-radius: 1px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--line); }
   .bar > i { display: block; height: 100%; width: 0%; background: var(--accent); transition: width .2s; }
 
   .frameGrid {
     display: grid; grid-template-columns: repeat(auto-fill, minmax(9px, 1fr));
     gap: 2px; margin-top: .6rem;
   }
-  .frameGrid i { aspect-ratio: 1; border-radius: 2px; background: var(--surface-2); }
+  .frameGrid i { aspect-ratio: 1; border-radius: 1px; background: var(--surface-2); }
   .frameGrid i.have { background: var(--accent); }
 
-  video { width: 100%; border-radius: var(--radius); background: #000; display: block; aspect-ratio: 3/4; object-fit: cover; }
-
-  .notice { border-left: 3px solid var(--warn); padding: .6rem .8rem; background: var(--surface-2); border-radius: 8px; font-size: .88rem; }
+  .notice {
+    border-left: 2px solid var(--warn); padding: .6rem .8rem;
+    background: var(--surface-2); border-radius: 0 var(--radius) var(--radius) 0;
+    font-size: .88rem;
+  }
   .notice.bad { border-color: var(--danger); }
   .notice.good { border-color: var(--ok); }
 
-  dialog {
-    width: min(680px, 100%); max-height: 88vh; margin: auto auto 0;
-    border: 1px solid var(--line); border-radius: 18px 18px 0 0;
-    background: var(--surface); color: var(--text); padding: 0;
-    padding-bottom: env(safe-area-inset-bottom);
+  /* --- The stamp -----------------------------------------------------------
+     Where the templated version of this idea stamps ACCESS GRANTED, this one
+     stamps the unflattering half of what the app can prove. Same typographic
+     register, opposite intent — the one device the design leans on. */
+  .stamp {
+    display: block;
+    font-size: .64rem;
+    color: var(--warn);
+    border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent);
+    border-radius: var(--radius);
+    padding: .45rem .6rem;
+    margin: 0 0 .85rem;
+    text-align: center;
+    line-height: 1.5;
   }
-  @media (min-width: 700px) { dialog { margin: auto; border-radius: 18px; } }
-  dialog::backdrop { background: rgba(0,0,0,.6); }
-  .sheet-head { display: flex; align-items: center; gap: .5rem; padding: 1rem; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--surface); }
-  .sheet-body { padding: 1rem; overflow-y: auto; }
-  dl.kv { margin: 0; }
-  dl.kv dt { font-size: .75rem; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; margin-top: .8rem; }
-  dl.kv dt:first-child { margin-top: 0; }
-  dl.kv dd { margin: .15rem 0 0; }
+  .stamp b { color: var(--muted); font-weight: 700; padding: 0 .15rem; }
 
-  nav.tabbar {
-    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-    display: grid; grid-template-columns: repeat(5, 1fr);
-    background: linear-gradient(0deg, var(--chrome), color-mix(in srgb, var(--bg) 62%, transparent));
-    backdrop-filter: blur(14px) saturate(1.2);
-    border-top: 1px solid var(--line);
-    padding-bottom: env(safe-area-inset-bottom);
+  /* --- Self-destruct ------------------------------------------------------- */
+  .disposal { margin-top: 1.1rem; }
+  .disposal-opts { display: grid; gap: .35rem; margin: .5rem 0 .7rem; }
+  .opt {
+    display: flex; align-items: flex-start; gap: .6rem;
+    min-height: 44px; padding: .5rem .6rem;
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface-2); cursor: pointer;
   }
-  nav.tabbar button {
-    flex-direction: column; gap: .15rem; min-height: var(--tabbar);
-    border: 0; border-radius: 0; background: none; color: var(--muted);
-    font-size: .68rem; font-weight: 600; letter-spacing: .01em;
-  }
-  nav.tabbar button[aria-selected="true"] { color: var(--accent); position: relative; }
-  nav.tabbar button[aria-selected="true"]::before {
-    content: ""; position: absolute; top: 0; left: 22%; right: 22%; height: 2px;
-    border-radius: 0 0 2px 2px;
-    background: linear-gradient(90deg, transparent, var(--accent), transparent);
-  }
-  nav.tabbar svg { width: 22px; height: 22px; }
+  .opt input { margin-top: .18rem; flex: 0 0 auto; }
+  .opt .opt-text { min-width: 0; }
+  .opt .opt-text strong { display: block; font-size: .88rem; font-weight: 600; }
+  .opt .opt-text span { display: block; color: var(--muted); font-size: .78rem; line-height: 1.45; }
+  .opt:has(input:checked) { border-color: var(--line-2); background: color-mix(in srgb, var(--accent) 7%, var(--surface-2)); }
+  .disposal select:disabled { opacity: .45; }
+  .disposal .btn-danger, .disposal .btn-danger-solid { margin-top: .5rem; }
 
-  table.seg { width: 100%; border-collapse: collapse; font-size: .8rem; }
-  table.seg th, table.seg td { text-align: left; padding: .35rem .4rem; border-bottom: 1px solid var(--line); }
-  table.seg th { color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
-  table.seg td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The countdown is a readout, so it is mono and tabular: it must not reflow
+     as digits change. Tone escalates only inside the final minute. */
+  .countdown {
+    display: inline-block;
+    font-size: .74rem; letter-spacing: .04em;
+    padding: .18rem .4rem; border-radius: var(--radius);
+    border: 1px solid var(--line-2); background: var(--surface-2); color: var(--muted);
+    white-space: nowrap;
+  }
+  .countdown.tone-armed { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+  .countdown.tone-danger { color: var(--danger); border-color: var(--danger); }
+  .countdown.tone-expired { color: var(--danger); border-style: dashed; }
+
+  /* A single lamp, pulsing only in the last minute — the one piece of motion
+     added to the page, and it stops dead under reduced motion. */
+  .countdown.tone-danger::before {
+    content: ""; display: inline-block;
+    width: .4rem; height: .4rem; margin-right: .35rem;
+    vertical-align: baseline;
+    background: var(--danger);
+    animation: lamp 1s steps(2, end) infinite;
+  }
+  @keyframes lamp { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: .25; } }
+
+  .limits { margin: .6rem 0 0; padding-left: 1.05rem; }
+  .limits li { color: var(--muted); font-size: .8rem; line-height: 1.5; margin-bottom: .3rem; }
+
+  /* --- Tables, checks, ranks ----------------------------------------------- */
+  table.seg { width: 100%; border-collapse: collapse; font-size: .82rem; }
+  table.seg th, table.seg td { text-align: left; padding: .38rem .4rem; border-bottom: 1px solid var(--line); }
+  table.seg th { color: var(--muted); font-size: .6rem; }
+  table.seg td.num { text-align: right; }
   .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-  .check { display: flex; gap: .5rem; align-items: flex-start; padding: .45rem 0; border-bottom: 1px solid var(--line); }
+  .check { display: flex; gap: .55rem; align-items: flex-start; padding: .5rem 0; border-bottom: 1px solid var(--line); }
   .check:last-child { border-bottom: 0; }
-  .check .mark { flex: 0 0 auto; width: 1.15rem; text-align: center; font-weight: 700; }
+  .check .mark { flex: 0 0 auto; width: 1.15rem; text-align: center; font-weight: 700; font-family: var(--font-mono); }
   .check.pass .mark { color: var(--ok); }
   .check.warn .mark { color: var(--warn); }
   .check.fail .mark { color: var(--danger); }
@@ -322,67 +529,317 @@
   .check .body span { display: block; color: var(--muted); font-size: .8rem; }
 
   .rank { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; font-size: .88rem; }
-  .rank .bar2 { flex: 1 1 auto; height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .rank .bar2 { flex: 1 1 auto; height: 5px; border-radius: 1px; background: var(--surface-2); overflow: hidden; }
   .rank .bar2 > i { display: block; height: 100%; background: var(--accent); }
-  .rank .id { font-weight: 600; min-width: 3.5rem; }
-  .rank .d { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .8rem; }
+  .rank .id { font-family: var(--font-mono); font-weight: 600; min-width: 3.5rem; font-size: .8rem; }
+  .rank .d { color: var(--muted); font-family: var(--font-mono); font-size: .78rem; }
 
+  dl.kv { margin: 0; }
+  dl.kv dt { font-size: .6rem; color: var(--muted); margin-top: .85rem; }
+  dl.kv dt:first-child { margin-top: 0; }
+  dl.kv dd { margin: .18rem 0 0; }
+
+  /* --- Steps --------------------------------------------------------------- */
   .steps { counter-reset: step; padding: 0; margin: 0; list-style: none; }
-  .steps > li { position: relative; padding-left: 2.1rem; margin-bottom: 1rem; }
+  .steps > li { position: relative; padding-left: 2.3rem; margin-bottom: 1.05rem; }
   .steps > li::before {
-    counter-increment: step; content: counter(step);
-    position: absolute; left: 0; top: -.1rem;
-    width: 1.5rem; height: 1.5rem; border-radius: 50%;
-    background: var(--accent); color: var(--accent-ink);
-    display: grid; place-items: center; font-size: .78rem; font-weight: 700;
+    counter-increment: step;
+    content: counter(step, decimal-leading-zero);
+    position: absolute; left: 0; top: 0;
+    font-family: var(--font-mono); font-size: .74rem;
+    color: var(--accent);
+    border-left: 2px solid var(--accent);
+    padding-left: .45rem;
   }
-  .steps h3 { margin: 0 0 .2rem; }
-  .steps p { margin: 0 0 .4rem; font-size: .88rem; color: var(--muted); }
+  .steps h3 { margin: 0 0 .25rem; }
+  .steps p { margin: 0 0 .45rem; font-size: .88rem; color: var(--muted); }
+
+  /* --- Dialogs ------------------------------------------------------------- */
+  dialog {
+    width: min(680px, 100%); max-height: 88vh; margin: auto auto 0;
+    border: 1px solid var(--line-2); border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+    background: var(--surface); color: var(--text); padding: 0;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  @media (min-width: 700px) { dialog { margin: auto; border-radius: var(--radius-lg); } }
+  dialog::backdrop { background: rgba(0, 0, 0, .68); }
+  .sheet-head {
+    display: flex; align-items: center; gap: .5rem; padding: .9rem 1rem;
+    border-bottom: 1px solid var(--line); position: sticky; top: 0;
+    background: var(--surface); z-index: 1;
+    box-shadow: 0 3px 0 -2px var(--line-2);
+  }
+  .sheet-head strong { font-family: var(--font-mono); font-size: .92rem; }
+  .sheet-body { padding: 1rem; overflow-y: auto; }
 
   #welcome { width: min(460px, 100%); }
   #welcome .sheet-body { padding: 0 1rem 1rem; }
   .welcome-stage {
     display: block; width: 100%; height: auto; aspect-ratio: 8 / 3;
-    border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line);
+    border-radius: var(--radius); background: var(--surface-2); border: 1px solid var(--line);
     margin-top: 1rem;
   }
-  .welcome-title { font-size: 1.45rem; letter-spacing: -.03em; margin: 1rem 0 .25rem; }
+  .welcome-title {
+    font-family: var(--font-display);
+    font-size: 1.6rem; letter-spacing: .04em; text-transform: uppercase;
+    margin: 1rem 0 .25rem;
+  }
   .welcome-title span { color: var(--accent); }
   .welcome-tagline { font-size: .95rem; margin: 0 0 1rem; }
-  .beats { list-style: none; margin: 0 0 1.2rem; padding: 0; }
-  .beats li { display: flex; gap: .7rem; padding: .55rem 0; border-bottom: 1px solid var(--line); }
+  .beats { list-style: none; margin: 0 0 1.1rem; padding: 0; }
+  .beats li { display: flex; gap: .7rem; padding: .6rem 0; border-bottom: 1px solid var(--line); }
   .beats li:last-child { border-bottom: 0; }
   .beats .dot {
-    flex: 0 0 auto; width: 1.6rem; height: 1.6rem; border-radius: 50%;
-    background: color-mix(in srgb, var(--accent) 18%, transparent);
-    color: var(--accent); display: grid; place-items: center;
-    font-size: .75rem; font-weight: 700;
+    flex: 0 0 auto;
+    font-family: var(--font-mono); font-size: .72rem; color: var(--accent);
+    border-left: 2px solid var(--accent); padding-left: .45rem; line-height: 1.4;
   }
   .beats strong { display: block; font-size: .92rem; }
   .beats span { color: var(--muted); font-size: .85rem; }
-  dialog.enter { animation: sheetIn .22s ease-out; }
+
+  dialog.enter { animation: sheetIn .2s ease-out; }
   @keyframes sheetIn {
-    from { opacity: 0; transform: translateY(10px); }
+    from { opacity: 0; transform: translateY(8px); }
     to { opacity: 1; transform: translateY(0); }
   }
-  @media (prefers-reduced-motion: reduce) {
-    dialog.enter { animation: none; }
+
+  /* --- Tab bar as channel selector ----------------------------------------- */
+  nav.tabbar {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
+    display: grid; grid-template-columns: repeat(5, 1fr);
+    background: var(--chrome);
+    backdrop-filter: blur(14px) saturate(1.1);
+    border-top: 1px solid var(--line-2);
+    padding-bottom: env(safe-area-inset-bottom);
   }
+  nav.tabbar button {
+    flex-direction: column; gap: .2rem; min-height: var(--tabbar);
+    border: 0; border-radius: 0; background: none; color: var(--muted);
+    font-size: .58rem; letter-spacing: .12em; padding: 0 .2rem;
+  }
+  nav.tabbar button:active { transform: none; }
+  nav.tabbar button[aria-selected="true"] { color: var(--accent); position: relative; }
+  nav.tabbar button[aria-selected="true"]::before {
+    content: ""; position: absolute; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--accent);
+  }
+  nav.tabbar svg { width: 21px; height: 21px; }
 
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%);
     bottom: calc(var(--tabbar) + env(safe-area-inset-bottom) + 14px);
-    background: var(--surface-2); border: 1px solid var(--line);
-    color: var(--text); padding: .6rem .9rem; border-radius: 999px;
-    font-size: .85rem; z-index: 40; max-width: 90vw; text-align: center;
+    background: var(--surface-2); border: 1px solid var(--line-2);
+    color: var(--text); padding: .55rem .85rem; border-radius: var(--radius);
+    font-family: var(--font-mono); font-size: .8rem;
+    z-index: 40; max-width: 90vw; text-align: center;
     opacity: 0; pointer-events: none; transition: opacity .2s;
   }
   .toast.show { opacity: 1; }
+
+  /* Anything that cannot be wrapped scrolls inside its own box rather than
+     pushing the page sideways. Hashes and export lists wrap instead, via the
+     overflow-wrap on .mono above. */
+  pre { overflow-x: auto; }
+
+  /* ===========================================================================
+     WIDE LAYOUT
+
+     Breakpoints are taken from where this content actually breaks, not from
+     device names:
+
+       760px  the side rail (184px) plus a ~560px column both fit, so the phone
+              idiom at the bottom edge can go. Deliberately below tablet
+              portrait (810–834px) so a tablet gets real navigation instead of
+              a phone UI stranded in the middle of the screen.
+      1060px  a ≥460px QR stage and a ≥340px control column fit side by side
+              with the rail. This is where the instrument tabs go two-pane.
+      1440px  room for the symbol to grow again.
+
+     The panes below are the fuller expression of the field-terminal idea, and
+     the phone layout is its compact form — not the other way round.
+     =========================================================================== */
+
+  .wide-only { display: none; }
+
+  /* Panes are ordinary blocks when stacked, so the cards inside them keep the
+     rhythm .stack gives everything else. */
+  .pane-live > * + *, .pane-alt > * + * { margin-top: .85rem; }
+
+  @media (min-width: 760px) {
+    :root { --measure: 860px; }
+
+    /* The page becomes a two-column frame: header across the top, rail down
+       the left, content in the remainder. Laying it out as a grid rather than
+       with fixed positioning means no hard-coded header height to drift. */
+    body {
+      display: grid;
+      grid-template-columns: var(--rail) 1fr;
+      grid-template-areas: "head head" "rail main";
+      align-items: start;
+    }
+    header {
+      grid-area: head;
+      position: static;          /* the rail carries navigation now, so the
+                                    document header may scroll away */
+      padding-left: 1.5rem; padding-right: 1.5rem;
+    }
+    main {
+      grid-area: main;
+      padding: 1.5rem 1.5rem 3rem;
+      width: 100%;
+    }
+
+    /* Bottom bar becomes a side rail. Same element, same buttons, same tab
+       order — so there is exactly one set of tab stops and app.js needs no
+       knowledge of which layout is showing. */
+    nav.tabbar {
+      grid-area: rail;
+      position: sticky; top: 0;
+      left: auto; right: auto; bottom: auto;
+      height: 100vh;
+      align-self: start;
+      grid-template-columns: 1fr;
+      grid-auto-rows: max-content;
+      align-content: start;
+      gap: .15rem;
+      border-top: 0;
+      border-right: 1px solid var(--line-2);
+      padding: 1rem .6rem calc(env(safe-area-inset-bottom) + 1rem);
+      padding-left: max(.6rem, env(safe-area-inset-left));
+      overflow-y: auto; /* a very short window must not clip a tab out of reach */
+    }
+
+    /* A modal dialog is in the top layer and ignores this, but the legacy
+       no-showModal fallback opens a statically-positioned dialog, which would
+       otherwise be placed as a stray grid item in a column of its own. */
+    dialog[open] { grid-area: main; }
+    nav.tabbar button {
+      flex-direction: row;
+      justify-content: flex-start;
+      gap: .65rem;
+      min-height: 46px;
+      padding: 0 .7rem;
+      border-radius: var(--radius);
+      font-size: .68rem;
+    }
+    nav.tabbar button[aria-selected="true"] {
+      background: color-mix(in srgb, var(--accent) 12%, transparent);
+    }
+    /* The active marker moves from the top edge to the leading edge, which is
+       where a rail's selection belongs. */
+    nav.tabbar button[aria-selected="true"]::before {
+      top: 50%; left: 0; right: auto;
+      height: 58%; width: 2px;
+      transform: translateY(-50%);
+    }
+
+    /* No bottom bar to clear any more. */
+    .toast {
+      bottom: 1.5rem;
+      left: calc(50% + var(--rail) / 2);
+    }
+
+    /* Documents stay a readable column even as the instruments go wide. */
+    #tab-guide, #tab-about { max-width: var(--prose); }
+  }
+
+  @media (min-width: 1060px) {
+    :root { --measure: 1180px; --qr-max: 560px; }
+
+    /* --- Vault: the list uses the width, the detail docks beside it -------- */
+    #vaultList {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: .5rem;
+      align-items: start;
+    }
+    .artifact + .artifact { margin-top: 0; }
+
+    /* The detail sheet stops being a modal sheet and becomes a docked panel,
+       so opening an artifact no longer costs you your place in the list.
+       app.js opens it non-modally at this width; see showSheet(). */
+    #detail[open] {
+      position: fixed;
+      inset: 0 0 0 auto;
+      margin: 0;
+      width: min(440px, 42vw);
+      max-height: 100vh;
+      border: 0;
+      border-left: 1px solid var(--line-2);
+      border-radius: 0;
+      box-shadow: -14px 0 34px -26px rgba(0, 0, 0, .75);
+      display: flex; flex-direction: column;
+    }
+    #detail[open] .sheet-body { flex: 1 1 auto; }
+    #detail::backdrop { background: transparent; }
+    /* Reserve the panel's width so it docks beside the content instead of
+       covering it. Without :has() the panel simply overlays, which still works. */
+    body:has(#detail[open]) main { padding-right: calc(min(440px, 42vw) + 1.5rem); }
+
+    /* --- Send: the symbol is the subject, the controls sit beside it ------- */
+    /* Applied only while the stage is on screen: before an artifact is picked
+       there is nothing to put in the left column, and a browser without :has()
+       keeps the single-column stack rather than an empty half. */
+    #tab-send:has(#sendStageCard:not([hidden])) {
+      display: grid;
+      grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr);
+      grid-template-areas:
+        "stage pick"
+        "stage delta"
+        "stage settings"
+        "stage .";
+      gap: 1rem;
+      align-items: start;
+    }
+    #tab-send:has(#sendStageCard:not([hidden])) > * { margin-top: 0; }
+    #tab-send:has(#sendStageCard:not([hidden])) #sendPickCard { grid-area: pick; }
+    #tab-send:has(#sendStageCard:not([hidden])) #deltaSendCard { grid-area: delta; }
+    #tab-send:has(#sendStageCard:not([hidden])) #sendSettingsCard { grid-area: settings; }
+    #tab-send:has(#sendStageCard:not([hidden])) #sendStageCard {
+      grid-area: stage;
+      position: sticky; top: 1rem;
+    }
+    /* More white margin around a bigger symbol, on top of the quiet zone the
+       canvas already carries. */
+    #qrStage { padding: clamp(10px, 2.2%, 26px); }
+
+    /* --- Receive: camera path and no-camera paths as equals --------------- */
+    #tab-receive {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      align-items: start;
+    }
+    #tab-receive > * { margin-top: 0; }
+    .wide-only { display: revert; }
+  }
+
+  @media (min-width: 1440px) {
+    :root { --measure: 1340px; --qr-max: 720px; }
+  }
+
+  /* The symbol must never grow past what the window can show without
+     scrolling — a code you have to scroll to see whole cannot be pointed at a
+     camera. Only applies where the stage sits in a column beside its controls. */
+  @media (min-width: 1060px) and (min-height: 640px) {
+    #qrCanvas { max-width: min(var(--qr-max), 62vh); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+    dialog.enter { animation: none; }
+    /* The lamp stops on, not off: the still state must still read as armed. */
+    .countdown.tone-danger::before { animation: none; opacity: 1; }
+  }
 </style>
 <header>
   <div class="brand">
     <div class="wordmark">rv<span>QR</span></div>
-    <div class="scope">RVF containers and WASM artifacts</div>
+    <div class="scope">Optical courier · offline</div>
   </div>
   <div class="chip" id="statusChip">alpha</div>
 </header>
@@ -394,12 +851,13 @@
       <h2>Artifact vault</h2>
       <p class="small muted">Files live in this browser's storage on this device. Nothing is uploaded anywhere, and nothing here is ever executed.</p>
       <div class="dropzone" id="dropzone">
-        <p style="margin:0 0 .7rem"><strong>Drop a file here</strong><br><span class="small">or</span></p>
-        <div class="row" style="justify-content:center">
+        <p class="flush"><strong>Drop a file here</strong></p>
+        <p class="small muted" style="margin:.35rem 0 .7rem">or</p>
+        <div class="row center">
           <button class="btn-primary" id="importBtn">Import file</button>
         </div>
         <p class="small" style="margin:.9rem 0 .4rem">or load a demo artifact</p>
-        <div class="row" style="justify-content:center">
+        <div class="row center">
           <button class="btn-sm" id="demoRvfBtn">ruvnet demo .rvf (2.3 KB)</button>
           <button class="btn-sm" id="demoWasmBtn">RVF runtime .wasm (40 KB)</button>
         </div>
@@ -408,7 +866,7 @@
     </div>
 
     <div class="row">
-      <h2 class="grow" style="margin:0">Stored <span class="muted small" id="vaultCount"></span></h2>
+      <h2 class="grow flush">Stored <span class="muted small" id="vaultCount"></span></h2>
       <button class="btn-sm" id="refreshBtn">Refresh</button>
     </div>
     <div id="vaultList"></div>
@@ -416,7 +874,7 @@
 
   <!-- ============================ SEND ============================= -->
   <section id="tab-send" class="stack" hidden>
-    <div class="card">
+    <div class="card" id="sendPickCard">
       <h2>Send</h2>
       <p class="small muted">Point the other device's camera at this screen. The stream loops until the receiver has every frame.</p>
       <label class="field" for="sendPick">Artifact</label>
@@ -424,9 +882,9 @@
     </div>
 
     <div class="card" id="sendStageCard" hidden>
-      <div id="qrStage"><canvas id="qrCanvas" width="512" height="512"></canvas></div>
+      <div class="optic"><div id="qrStage"><canvas id="qrCanvas" width="512" height="512"></canvas></div></div>
 
-      <div class="row" style="margin-top:.9rem">
+      <div class="row gap-top">
         <svg class="ring" viewBox="0 0 80 80" aria-hidden="true">
           <circle class="track" cx="40" cy="40" r="33"></circle>
           <circle class="fill" id="ringFill" cx="40" cy="40" r="33"
@@ -434,12 +892,12 @@
           <text x="40" y="47" id="ringText">0%</text>
         </svg>
         <div class="grow">
-          <div><strong id="sendFrameLabel">frame 0 / 0</strong></div>
+          <div id="sendFrameLabel">frame 0 / 0</div>
           <div class="small muted" id="sendMeta">—</div>
         </div>
       </div>
 
-      <div class="row" style="margin-top:.8rem">
+      <div class="row gap-top">
         <button class="btn-primary grow" id="playBtn">Pause</button>
         <button id="restartBtn">Restart</button>
       </div>
@@ -449,22 +907,24 @@
     </div>
 
     <details class="card tight" id="deltaSendCard">
-      <summary style="cursor:pointer;font-weight:600">Send only what they are missing</summary>
-      <p class="small muted" style="margin-top:.7rem">If the other device already holds an older copy of this container, it can show you an inventory QR. Scan or paste it here and rvQR will send only the segments they lack.</p>
-      <div class="row">
-        <button class="btn-sm" id="deltaImageBtn">Scan their inventory from a picture</button>
+      <summary>Send only what they are missing</summary>
+      <div class="details-body">
+        <p class="small muted">If the other device already holds an older copy of this container, it can show you an inventory QR. Scan or paste it here and rvQR will send only the segments they lack.</p>
+        <div class="row">
+          <button class="btn-sm" id="deltaImageBtn">Scan their inventory from a picture</button>
+        </div>
+        <input type="file" id="deltaImageInput" accept="image/*">
+        <textarea id="deltaInventory" placeholder="…or paste the inventory text" style="margin-top:.6rem"></textarea>
+        <div class="row" style="margin-top:.5rem">
+          <button class="btn-sm" id="deltaDiffBtn">Work out the difference</button>
+        </div>
+        <div id="deltaResult" style="margin-top:.7rem"></div>
       </div>
-      <input type="file" id="deltaImageInput" accept="image/*">
-      <textarea id="deltaInventory" placeholder="…or paste the inventory text" style="margin-top:.6rem"></textarea>
-      <div class="row" style="margin-top:.5rem">
-        <button class="btn-sm" id="deltaDiffBtn">Work out the difference</button>
-      </div>
-      <div id="deltaResult" style="margin-top:.7rem"></div>
     </details>
 
-    <details class="card tight">
-      <summary style="cursor:pointer;font-weight:600">Transfer settings</summary>
-      <div style="margin-top:.8rem">
+    <details class="card tight" id="sendSettingsCard">
+      <summary>Transfer settings</summary>
+      <div class="details-body">
         <label class="field" for="modePick">Transfer mode</label>
         <select id="modePick">
           <option value="indexed" selected>Indexed frames — numbered chunks, looped</option>
@@ -473,7 +933,7 @@
         <p class="small muted" id="modeNote" style="margin:.4rem 0 .8rem"></p>
 
         <label class="row" style="gap:.5rem;margin-bottom:.6rem">
-          <input type="checkbox" id="signSend" style="width:auto;min-height:0">
+          <input type="checkbox" id="signSend">
           <span class="small">Sign this transfer</span>
         </label>
         <p class="small muted" id="signNote" style="margin:0 0 .8rem"></p>
@@ -494,62 +954,79 @@
 
   <!-- =========================== RECEIVE =========================== -->
   <section id="tab-receive" class="stack" hidden>
-    <div class="card">
-      <h2>Receive</h2>
-      <p class="small muted">Hold this device's camera steady over the sending screen. Frames may arrive in any order; duplicates are free.</p>
-      <div id="resumeBanner"></div>
-      <div id="capabilityNotice"></div>
-      <div class="row">
-        <button class="btn-primary grow" id="scanBtn">Start camera</button>
-        <button id="resetRxBtn">Reset</button>
-      </div>
-      <p class="small muted" id="scannerNote" style="margin:.7rem 0 0"></p>
-    </div>
-
-    <div class="card">
-      <h3 style="margin-bottom:.3rem">No camera? Decode a picture</h3>
-      <p class="small muted">Take a photo or screenshot of the sending screen, then drop it here. Several frames in one picture are all read at once — and this works in any browser.</p>
-      <div class="dropzone" id="imageDrop">
-        <button class="btn-primary" id="imageBtn">Choose image</button>
-        <p class="small" style="margin:.6rem 0 0">or drop one here</p>
-      </div>
-      <input type="file" id="imageInput" accept="image/*" multiple>
-      <div id="imageResult" style="margin-top:.7rem"></div>
-    </div>
-
-    <div class="card" id="scanCard" hidden>
-      <video id="video" playsinline muted autoplay></video>
-    </div>
-
-    <div class="card" id="rxCard" hidden>
-      <div class="row">
-        <div class="grow">
-          <strong id="rxTitle">Waiting for frames…</strong>
-          <div class="small muted" id="rxMeta">—</div>
+    <!--
+      Two panes on a wide screen, stacked on a narrow one. The split is by
+      dependency, not by importance: everything on the left needs the camera,
+      everything on the right does not. A laptop webcam usually points at the
+      person rather than at the other screen, so on desktop the right-hand pane
+      is the one that actually gets used — it sits beside the camera path at
+      equal weight rather than under a disclosure below it.
+    -->
+    <div class="pane-live">
+      <div class="card" id="rxCameraCard">
+        <h2>Receive by camera</h2>
+        <p class="small muted">Hold this device's camera steady over the sending screen. Frames may arrive in any order; duplicates are free.</p>
+        <div id="resumeBanner"></div>
+        <div id="capabilityNotice"></div>
+        <div class="row">
+          <button class="btn-primary grow" id="scanBtn">Start camera</button>
+          <button id="resetRxBtn">Reset</button>
         </div>
+        <p class="small muted" id="scannerNote" style="margin:.7rem 0 0"></p>
+        <p class="small muted wide-only" style="margin:.5rem 0 0">On a laptop the built-in camera usually faces you, not the other screen. If you cannot aim it, use the picture or paste route beside this one — both are exact, not fallbacks.</p>
       </div>
-      <div class="bar" style="margin-top:.7rem"><i id="rxBar"></i></div>
-      <div class="frameGrid" id="rxGrid"></div>
-      <div id="rxResult" style="margin-top:.8rem"></div>
+
+      <div class="card" id="scanCard" hidden>
+        <div class="optic"><video id="video" playsinline muted autoplay></video></div>
+      </div>
+
+      <div class="card" id="rxCard" hidden>
+        <div class="row">
+          <div class="grow">
+            <div id="rxTitle">Waiting for frames…</div>
+            <div class="small muted" id="rxMeta">—</div>
+          </div>
+        </div>
+        <div class="bar" style="margin-top:.7rem"><i id="rxBar"></i></div>
+        <div class="frameGrid" id="rxGrid"></div>
+        <div id="rxResult" style="margin-top:.8rem"></div>
+      </div>
     </div>
 
-    <details class="card tight">
-      <summary style="cursor:pointer;font-weight:600">Verify the sender (optional)</summary>
-      <p class="small muted" style="margin-top:.7rem">If the sender signed the transfer, paste their fingerprint here and rvQR will refuse anything that does not match it. Compare the fingerprint out of band — read it aloud, not over the same camera.</p>
-      <input type="text" id="pinInput" placeholder="21fe-31df-a154-a261" autocomplete="off" spellcheck="false">
-      <div class="row" style="margin-top:.5rem">
-        <button class="btn-sm" id="pinSet">Pin this fingerprint</button>
-        <button class="btn-sm" id="pinClear">Clear</button>
+    <div class="pane-alt">
+      <div class="card" id="rxImageCard">
+        <h2>Receive from a picture</h2>
+        <p class="small muted">Take a photo or screenshot of the sending screen, then drop it here. Several frames in one picture are all read at once — and this works in any browser.</p>
+        <div class="dropzone" id="imageDrop">
+          <button class="btn-primary" id="imageBtn">Choose image</button>
+          <p class="small" style="margin:.6rem 0 0">or drop one here</p>
+        </div>
+        <input type="file" id="imageInput" accept="image/*" multiple>
+        <div id="imageResult" style="margin-top:.7rem"></div>
       </div>
-      <p class="small" id="pinState" style="margin:.6rem 0 0"></p>
-    </details>
 
-    <details class="card tight">
-      <summary style="cursor:pointer;font-weight:600">Paste a frame by hand</summary>
-      <p class="small muted" style="margin-top:.7rem">Useful without a camera: paste one decoded frame per line and feed it to the same receiver.</p>
-      <textarea id="manualFrames" placeholder='{"v":1,"t":"…","h":"…","i":0,"n":42,"m":{…}}'></textarea>
-      <button class="btn-sm" id="manualBtn" style="margin-top:.5rem">Feed frames</button>
-    </details>
+      <details class="card tight" id="rxPasteCard" open>
+        <summary>Paste a frame by hand</summary>
+        <div class="details-body">
+          <p class="small muted">Useful without a camera: paste one decoded frame per line and feed it to the same receiver. It drives exactly the same receiving logic as the other two routes.</p>
+          <textarea id="manualFrames" placeholder='{"v":1,"t":"…","h":"…","i":0,"n":42,"m":{…}}'></textarea>
+          <button class="btn-sm" id="manualBtn" style="margin-top:.5rem">Feed frames</button>
+        </div>
+      </details>
+
+      <details class="card tight" id="rxVerifyCard">
+        <summary>Verify the sender (optional)</summary>
+        <div class="details-body">
+          <p class="small muted">If the sender signed the transfer, paste their fingerprint here and rvQR will refuse anything that does not match it. Compare the fingerprint out of band — read it aloud, not over the same camera.</p>
+          <input type="text" id="pinInput" placeholder="21fe-31df-a154-a261" autocomplete="off" spellcheck="false">
+          <div class="row" style="margin-top:.5rem">
+            <button class="btn-sm" id="pinSet">Pin this fingerprint</button>
+            <button class="btn-sm" id="pinClear">Clear</button>
+          </div>
+          <p class="small" id="pinState" style="margin:.6rem 0 0"></p>
+        </div>
+      </details>
+    </div>
   </section>
 
   <!-- =========================== TUTORIAL ========================== -->
@@ -592,41 +1069,49 @@
       <p class="small">Two settings decide whether the other device can keep up.</p>
       <p class="small"><strong>Chunk size</strong> is how many bytes ride in each frame. Bigger chunks mean fewer frames but a denser symbol. 512 bytes suits a phone with native scanning; drop to 256 if the receiving device is struggling or is falling back to rvQR's own decoder.</p>
       <p class="small"><strong>Speed</strong> is frames per second. Faster finishes sooner but gives the camera less time on each frame. Five is comfortable; drop to two or three in poor light.</p>
-      <p class="small muted" style="margin:0">Hold both devices steady, fill the camera with the QR code, and avoid glare — the same things that make any QR scan work.</p>
+      <p class="small muted flush">Hold both devices steady, fill the camera with the QR code, and avoid glare — the same things that make any QR scan work.</p>
     </div>
 
     <div class="card">
       <h2>Three ways to receive</h2>
       <p class="small"><strong>Camera.</strong> The fastest route. Uses the browser's native barcode reader where there is one, and rvQR's own decoder where there is not.</p>
       <p class="small"><strong>A picture.</strong> Photograph or screenshot the sending screen and drop the image in. Every frame visible in the picture is read at once. This works in every browser, and it is the answer when the page is embedded somewhere that blocks camera access.</p>
-      <p class="small" style="margin:0"><strong>Pasted text.</strong> If you can copy a frame's contents as text, paste it in. Mostly useful for debugging, and it drives exactly the same receiving logic as the other two.</p>
+      <p class="small flush"><strong>Pasted text.</strong> If you can copy a frame's contents as text, paste it in. Mostly useful for debugging, and it drives exactly the same receiving logic as the other two.</p>
     </div>
 
     <div class="card">
       <h2>Reading the progress display</h2>
       <p class="small">The <strong>ring</strong> on the sending side shows where the sender is in its loop. It is not the receiver's progress — the sender has no idea what the receiver has.</p>
       <p class="small">The <strong>bar and grid</strong> on the receiving side are the real progress. Each cell is one frame, lit once that frame has been read. Gaps fill in as the sender loops around again. On a very large transfer, one cell stands for several frames.</p>
-      <p class="small" style="margin:0">The counters show duplicates (harmless and expected) and rejected frames (unreadable, or belonging to a different transfer).</p>
+      <p class="small flush">The counters show duplicates (harmless and expected) and rejected frames (unreadable, or belonging to a different transfer).</p>
     </div>
 
     <div class="card">
       <h2>Inspecting what you got</h2>
       <p class="small"><strong>RVF containers</strong> are parsed by the real RVF WebAssembly microkernel — the same one published as <code>@ruvector/rvf-wasm</code>. You get the header, every segment with its type and size, a CRC fingerprint per segment, and for containers with vectors, the count, the dimensionality and a working nearest-neighbour search.</p>
       <p class="small"><strong>WASM modules</strong> are compiled but never instantiated, which is enough to list their exports and imports without running a single instruction.</p>
-      <p class="small muted" style="margin:0">Where a check cannot be made honestly, rvQR says so instead of showing a green tick. Some entry points in the published kernel do less than their names suggest, and the detail view spells out which.</p>
+      <p class="small muted flush">Where a check cannot be made honestly, rvQR says so instead of showing a green tick. Some entry points in the published kernel do less than their names suggest, and the detail view spells out which.</p>
+    </div>
+
+    <div class="card">
+      <h2>Disposal</h2>
+      <p class="small">Any stored artifact can be armed to destroy itself: <strong>burn after export</strong> deletes it the moment you download it, and a <strong>timed expiry</strong> deletes it once the clock runs out. Both are set on the artifact's detail sheet, behind a confirmation, and a running countdown is shown on the artifact wherever one exists.</p>
+      <p class="small">This is a real deletion, not a display: the record leaves IndexedDB, and the vault also sweeps expired records every time it is read, so one that ran out while the app was closed is gone before it can be listed.</p>
+      <p class="small muted flush">What it cannot do is more important than what it can. It deletes this app's copy on this device. It cannot recall a file you already exported or a copy another device received, and browser storage is not secure erasure — the bytes may survive on disk until the operating system reuses that space.</p>
     </div>
 
     <div class="card">
       <h2>What is actually guaranteed</h2>
+      <p class="stamp">Integrity verified <b>·</b> Authenticity not established</p>
       <p class="small"><strong>Integrity: yes.</strong> Nothing enters the vault unless the reassembled bytes hash to exactly the SHA-256 in the manifest frame. One wrong bit discards the entire transfer.</p>
       <p class="small"><strong>Authenticity: no.</strong> The manifest travels in the same unauthenticated stream as the data, so anyone who can put a screen in front of your camera can send you a perfectly valid transfer of anything at all. Treat what arrives like a download from a stranger. Signed manifests are on the roadmap.</p>
-      <p class="small" style="margin:0"><strong>Execution: never.</strong> Receiving a file does not run it, and rvQR has no mechanism that would.</p>
+      <p class="small flush"><strong>Execution: never.</strong> Receiving a file does not run it, and rvQR has no mechanism that would.</p>
     </div>
 
     <div class="card">
       <h2>Browser reality</h2>
       <p class="small">Sending works anywhere with a canvas. For receiving, Chrome and Edge — and Safari 17 and later — have a native barcode reader that rvQR uses when it is there. Everywhere else, including Firefox and older Safari, rvQR falls back to its own decoder, which is dependable on smaller symbols and wants a steadier hand on the largest ones. The image and paste routes always work.</p>
-      <div class="row" style="margin-top:.8rem">
+      <div class="row gap-top">
         <button class="btn-sm" data-goto="about">Security details</button>
         <button class="btn-sm" id="showWelcome">Show the intro again</button>
         <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/tutorial.md">Full written guide</a>
@@ -643,6 +1128,7 @@
 
     <div class="card">
       <h2>Security model</h2>
+      <p class="stamp">Integrity verified <b>·</b> Authenticity not established</p>
       <p class="small"><strong>Transport is not trust.</strong> Receiving a file grants it no authority at all.</p>
       <ul class="small" style="margin:0 0 .5rem 1.1rem; padding:0">
         <li><strong>Nothing executes on arrival.</strong> Received bytes are inert data in local storage.</li>
@@ -655,6 +1141,18 @@
     </div>
 
     <div class="card">
+      <h2>Disposal and its limits</h2>
+      <p class="small">Artifacts can be armed to delete themselves — on first export, or on a timer. The deletion is real and happens in the vault: the record is removed from IndexedDB, and every read of the vault sweeps anything already past its moment.</p>
+      <ul class="small" style="margin:0 0 .5rem 1.1rem; padding:0">
+        <li><strong>Scope is this device.</strong> It deletes this app's copy, and nothing beyond it.</li>
+        <li><strong>No recall.</strong> A file you already downloaded, or one another device already received, is outside this app's reach forever.</li>
+        <li><strong>Not secure erasure.</strong> Deleting an IndexedDB record does not overwrite the underlying storage. The bytes may remain recoverable on disk until the operating system reuses that space.</li>
+        <li><strong>The clock needs the app.</strong> A timed expiry is enforced while this page is open, and again the next time you open it. It does not run while the app is closed, so a record can outlive its moment on disk — it simply never gets listed or opened again.</li>
+      </ul>
+      <p class="small muted flush">Arming is always confirmed before it takes effect, and destroying immediately is a separate, confirmed action.</p>
+    </div>
+
+    <div class="card">
       <h2>Under the hood</h2>
       <dl class="kv small">
         <dt>Frame</dt>
@@ -664,7 +1162,7 @@
         <dt>Receiver</dt>
         <dd>Collects frames in any order, ignores duplicates and foreign transfers, then verifies before storing.</dd>
       </dl>
-      <div class="row" style="margin-top:.9rem">
+      <div class="row gap-top">
         <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/protocol.md">Protocol spec</a>
         <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/adr/README.md">ADRs</a>
         <a class="btn btn-sm" href="./test.html">Self-tests</a>
@@ -674,7 +1172,7 @@
 
     <div class="card">
       <h2>Browser support</h2>
-      <p class="small muted" style="margin:0">Sending works anywhere with a canvas. Receiving needs the native <code>BarcodeDetector</code> API — Chrome and Edge on Android and desktop, and Safari 17 and later. On older iOS Safari this device can still send; use the paste-a-frame fallback or a supported browser to receive.</p>
+      <p class="small muted flush">Sending works anywhere with a canvas. Receiving needs the native <code>BarcodeDetector</code> API — Chrome and Edge on Android and desktop, and Safari 17 and later. On older iOS Safari this device can still send; use the paste-a-frame fallback or a supported browser to receive.</p>
     </div>
   </section>
 </main>
@@ -709,21 +1207,21 @@
     <p class="welcome-tagline">Move files between devices with a screen and a camera.</p>
     <ul class="beats">
       <li>
-        <div class="dot">1</div>
+        <div class="dot">01</div>
         <div>
           <strong>Two devices, no network</strong>
           <span>One screen shows the file as QR codes. One camera reads them. No cables, no accounts, nothing to install.</span>
         </div>
       </li>
       <li>
-        <div class="dot">2</div>
+        <div class="dot">02</div>
         <div>
           <strong>Try it right now</strong>
           <span>The demo container is 2.3 KB — about five frames, a couple of seconds. Send it, scan it on another device, then search the vectors inside it in the browser.</span>
         </div>
       </li>
       <li>
-        <div class="dot">3</div>
+        <div class="dot">03</div>
         <div>
           <strong>Nothing runs on arrival</strong>
           <span>Received bytes are inert data, and every transfer is checked against its hash. Integrity is verified; who sent it is not — treat what arrives like a download from a stranger.</span>
@@ -734,6 +1232,18 @@
       <button class="btn-primary grow" id="welcomeStart">Load the demo and send it</button>
       <button id="welcomeClose">Look around first</button>
     </div>
+    <!--
+      The intro now opens on every load and dismissal only covers that visit,
+      so this is the only way to turn it off for good. It is a plain, quiet
+      opt-out rather than a pre-ticked box: the viewer makes the choice.
+    -->
+    <label class="opt" id="welcomeSuppressRow" style="margin-top:.7rem">
+      <input type="checkbox" id="welcomeSuppress">
+      <div class="opt-text">
+        <strong>Don't show this again</strong>
+        <span>Stops the intro opening on future visits. <em>Show the intro again</em> on the Guide tab brings it back.</span>
+      </div>
+    </label>
     <p class="small muted" style="margin:.8rem 0 0">The <strong>Guide</strong> tab has the full walkthrough whenever you want it.</p>
   </div>
 </dialog>
@@ -2699,19 +3209,62 @@ var RVQR_DEMOS = (function () {
   function shouldShowWelcome(storage, key) {
     if (!storage) return true;
     try {
-      return storage.getItem(key || WELCOME_KEY) === null;
+      // The intro shows on every load, including a refresh. Dismissing it
+      // closes it for that visit only — the app is a demonstration as much as
+      // a tool, and a visitor who reloads is usually trying to see the thing
+      // again, not being nagged. Permanent removal is a deliberate opt-in via
+      // suppressWelcome(), so the choice stays the viewer's rather than being
+      // made for them by a single earlier dismissal.
+      // Treat an empty value as absent: a storage that refuses removeItem may
+      // only be able to blank the entry, and a blank must not read as a mute.
+      var flag = storage.getItem(suppressKeyFor(key));
+      return flag === null || flag === '';
     } catch (e) {
       return true;
     }
   }
 
+  /** The opt-out companion to {@link shouldShowWelcome}'s key. */
+  function suppressKeyFor(key) {
+    return (key || WELCOME_KEY) + '.suppressed';
+  }
+
+  /**
+   * Records that the intro was shown. This is a visit record, not a mute —
+   * it deliberately does NOT stop the intro appearing again, so callers on
+   * the dismissal path can keep calling it unchanged.
+   */
   function markWelcomeSeen(storage, key) {
     if (!storage) return false;
     try {
       storage.setItem(key || WELCOME_KEY, String(Date.now()));
       return true;
     } catch (e) {
-      return false; // storage refused; the welcome simply shows again
+      return false;
+    }
+  }
+
+  /** Stop showing the intro on future loads. The explicit opt-out. */
+  function suppressWelcome(storage, key) {
+    if (!storage) return false;
+    try {
+      storage.setItem(suppressKeyFor(key), String(Date.now()));
+      return true;
+    } catch (e) {
+      return false; // storage refused; the intro simply keeps showing
+    }
+  }
+
+  /** Undo {@link suppressWelcome} — what "show the intro again" calls. */
+  function unsuppressWelcome(storage, key) {
+    if (!storage) return false;
+    var k = suppressKeyFor(key);
+    try {
+      if (typeof storage.removeItem === 'function') storage.removeItem(k);
+      else storage.setItem(k, '');
+      return true;
+    } catch (e) {
+      return false;
     }
   }
 
@@ -3518,6 +4071,8 @@ var RVQR_DEMOS = (function () {
     gateFrame: gateFrame,
     shouldShowWelcome: shouldShowWelcome,
     markWelcomeSeen: markWelcomeSeen,
+    suppressWelcome: suppressWelcome,
+    unsuppressWelcome: unsuppressWelcome,
     prefersReducedMotion: prefersReducedMotion,
     gridPlan: gridPlan,
     cellForSequence: cellForSequence,
@@ -4005,6 +4560,229 @@ var RVQR_DEMOS = (function () {
     SEGMENT_TYPES: SEGMENT_TYPES,
     SEGMENT_HEADER_SIZE: SEGMENT_HEADER_SIZE,
     METRICS: METRICS
+  };
+});
+
+</script>
+<!--
+  expiry.js is pure arithmetic with no dependencies and the vault consults it on
+  its very first read, so it loads eagerly alongside core: a deferred copy would
+  leave a window in which expired records could be listed.
+-->
+<script>
+/*!
+ * rvQR expiry — the arithmetic behind self-destruct, with no storage and no DOM.
+ *
+ * Deletion itself happens in the vault (app.js). Everything that decides
+ * *whether* and *when* to delete lives here, as pure functions over a clock,
+ * because a countdown that quietly stops counting is invisible in a browser
+ * and obvious in a test.
+ *
+ * An expiry record is one of:
+ *   null                                   — nothing armed
+ *   { mode:'burn',  armedAt }              — destroy on first successful export
+ *   { mode:'timed', armedAt, expiresAt }   — destroy once the clock passes it
+ *
+ * What this module deliberately does NOT model: any promise about copies that
+ * have already left the device, and any claim about erasure below the storage
+ * API. See describeLimits().
+ *
+ * MIT License. Copyright (c) 2026 rUv.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports = api;
+  } else {
+    root.RVQRExpiry = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var MODE_BURN = 'burn';
+  var MODE_TIMED = 'timed';
+
+  var MINUTE = 60000;
+  var HOUR = 3600000;
+  var DAY = 86400000;
+
+  /** Offered durations. Ordered shortest first; the UI renders them in order. */
+  var TTL_PRESETS = [
+    { id: '15m', label: '15 minutes', ms: 15 * MINUTE },
+    { id: '1h', label: '1 hour', ms: HOUR },
+    { id: '24h', label: '24 hours', ms: DAY },
+    { id: '7d', label: '7 days', ms: 7 * DAY }
+  ];
+
+  /** The window in which a countdown is treated as urgent by the UI. */
+  var URGENT_MS = MINUTE;
+
+  function isFiniteNumber(n) {
+    return typeof n === 'number' && isFinite(n);
+  }
+
+  function ttlById(id) {
+    for (var i = 0; i < TTL_PRESETS.length; i++) {
+      if (TTL_PRESETS[i].id === id) return TTL_PRESETS[i];
+    }
+    return null;
+  }
+
+  /**
+   * Builds an expiry record, or returns null when nothing should be armed.
+   *
+   * Returning null for bad input rather than throwing is deliberate: this is
+   * fed by a <select> whose value is user-controlled, and the safe failure for
+   * a destructive feature is "did not arm", never "armed something unintended".
+   */
+  function createExpiry(mode, now, ttlMs) {
+    if (!isFiniteNumber(now)) return null;
+    if (mode === MODE_BURN) {
+      return { mode: MODE_BURN, armedAt: now };
+    }
+    if (mode === MODE_TIMED) {
+      if (!isFiniteNumber(ttlMs) || ttlMs <= 0) return null;
+      return { mode: MODE_TIMED, armedAt: now, expiresAt: now + ttlMs };
+    }
+    return null;
+  }
+
+  /** True only for a timed record whose moment has arrived. Burn never expires by clock. */
+  function isExpired(expiry, now) {
+    if (!expiry || expiry.mode !== MODE_TIMED) return false;
+    if (!isFiniteNumber(expiry.expiresAt) || !isFiniteNumber(now)) return false;
+    return now >= expiry.expiresAt;
+  }
+
+  /**
+   * Milliseconds left, or null when no clock is running (unarmed, or burn mode).
+   * Clamped at zero: a negative remainder is an expired record, and the caller
+   * should be asking isExpired() about that rather than rendering a minus sign.
+   */
+  function msRemaining(expiry, now) {
+    if (!expiry || expiry.mode !== MODE_TIMED) return null;
+    if (!isFiniteNumber(expiry.expiresAt) || !isFiniteNumber(now)) return null;
+    return Math.max(0, expiry.expiresAt - now);
+  }
+
+  function pad2(n) {
+    return (n < 10 ? '0' : '') + n;
+  }
+
+  /**
+   * A countdown a person can read at a glance and trust at a distance.
+   * Under an hour it is MM:SS, because seconds are what matter there; under a
+   * day HH:MM:SS; beyond that days and hours, because nobody watches a week
+   * tick. Rounds down, so the display never shows time that has already gone.
+   */
+  function formatCountdown(ms) {
+    if (!isFiniteNumber(ms)) return '';
+    if (ms <= 0) return '00:00';
+    var total = Math.floor(ms / 1000);
+    var days = Math.floor(total / 86400);
+    var hours = Math.floor((total % 86400) / 3600);
+    var mins = Math.floor((total % 3600) / 60);
+    var secs = total % 60;
+    if (days > 0) return days + 'd ' + pad2(hours) + 'h';
+    if (hours > 0) return pad2(hours) + ':' + pad2(mins) + ':' + pad2(secs);
+    return pad2(mins) + ':' + pad2(secs);
+  }
+
+  /** Whether the countdown has entered its final minute — the UI's cue to escalate. */
+  function isUrgent(expiry, now) {
+    var left = msRemaining(expiry, now);
+    return left !== null && left <= URGENT_MS;
+  }
+
+  /** True when exporting the bytes should destroy the record. */
+  function consumesOnExport(expiry) {
+    return !!(expiry && expiry.mode === MODE_BURN);
+  }
+
+  /**
+   * A short status line plus a tone the UI maps to a colour. Kept here rather
+   * than in the renderer so the wording and the escalation thresholds are
+   * covered by tests instead of by looking at a screen.
+   */
+  function describe(expiry, now) {
+    if (!expiry) return { label: 'Not armed', tone: 'idle', countdown: '' };
+    if (expiry.mode === MODE_BURN) {
+      return { label: 'Burn after export', tone: 'armed', countdown: '' };
+    }
+    if (expiry.mode === MODE_TIMED) {
+      if (isExpired(expiry, now)) {
+        return { label: 'Expired', tone: 'expired', countdown: '00:00' };
+      }
+      var left = msRemaining(expiry, now);
+      return {
+        label: 'Destroys in',
+        tone: isUrgent(expiry, now) ? 'danger' : 'armed',
+        countdown: formatCountdown(left)
+      };
+    }
+    return { label: 'Not armed', tone: 'idle', countdown: '' };
+  }
+
+  /**
+   * Splits vault rows into what survives and what the caller must delete.
+   * The vault calls this on every read, so an expired record cannot be handed
+   * out even once — including on the first load after the app was closed
+   * through the moment of expiry, when no timer was running to catch it.
+   */
+  function partition(rows, now) {
+    var live = [];
+    var expired = [];
+    (rows || []).forEach(function (row) {
+      if (row && isExpired(row.expiry, now)) expired.push(row);
+      else live.push(row);
+    });
+    return { live: live, expired: expired };
+  }
+
+  /**
+   * The soonest moment any row needs attention, or null if no clock is running.
+   * Lets the UI schedule one timer for the whole vault instead of one per row.
+   */
+  function nextDeadline(rows, now) {
+    var soonest = null;
+    (rows || []).forEach(function (row) {
+      var left = row && msRemaining(row.expiry, now);
+      if (left === null) return;
+      if (soonest === null || left < soonest) soonest = left;
+    });
+    return soonest;
+  }
+
+  /**
+   * The claims this feature is allowed to make, in one place, so the copy in
+   * the UI cannot drift away from what the code actually does.
+   */
+  function describeLimits() {
+    return [
+      'Deletes this app’s copy on this device, and nothing else.',
+      'It cannot recall a file you already exported, or a copy another device received.',
+      'Browser storage is not secure erasure: the record leaves IndexedDB, but the bytes may survive on disk until the operating system reuses that space.',
+      'A timed expiry is enforced while this page is open, and again the next time you open it — it does not run while the app is closed.'
+    ];
+  }
+
+  return {
+    MODE_BURN: MODE_BURN,
+    MODE_TIMED: MODE_TIMED,
+    TTL_PRESETS: TTL_PRESETS,
+    URGENT_MS: URGENT_MS,
+    ttlById: ttlById,
+    createExpiry: createExpiry,
+    isExpired: isExpired,
+    msRemaining: msRemaining,
+    formatCountdown: formatCountdown,
+    isUrgent: isUrgent,
+    consumesOnExport: consumesOnExport,
+    describe: describe,
+    partition: partition,
+    nextDeadline: nextDeadline,
+    describeLimits: describeLimits
   };
 });
 
@@ -8415,6 +9193,10 @@ var RVQR_DEMOS = (function () {
   var qrlib = window.RVQRCode;
   var qrdec = window.RVQRDecode;
   var rvflib = window.RVQRRvf;
+  // expiry.js loads eagerly, before this file, because the vault consults it on
+  // its very first read. Still read defensively: if it is missing, disposal is
+  // simply unavailable rather than half-enforced.
+  var expiryLib = window.RVQRExpiry || null;
 
   // The roadmap modules load with `defer`, so they are not present while app.js
   // is evaluating. Everything reads them through these getters and treats
@@ -8502,7 +9284,40 @@ var RVQR_DEMOS = (function () {
     return tx('readonly', function (store) { return store.getAll(); }).then(function (rows) {
       rows = rows || [];
       rows.sort(function (a, b) { return b.addedAt - a.addedAt; });
-      return rows;
+      return sweepExpired(rows);
+    });
+  }
+
+  /**
+   * The enforcement point for timed disposal.
+   *
+   * Every read of the vault passes through here, so a record whose moment
+   * arrived while the app was closed — when no timer of ours was running — is
+   * deleted before anything can list it, open it, send it or export it. The
+   * in-page timer below is a convenience that makes the countdown reach zero
+   * while you watch; this is what makes the deletion actually happen.
+   *
+   * A record that fails to delete is still withheld from the caller, and the
+   * failure is surfaced rather than swallowed: the app must never quietly show
+   * an artifact it has told you is gone, nor quietly claim one is gone when it
+   * is not.
+   */
+  function sweepExpired(rows) {
+    if (!expiryLib) return Promise.resolve(rows);
+    var split = expiryLib.partition(rows, Date.now());
+    if (!split.expired.length) return Promise.resolve(rows);
+    return Promise.all(split.expired.map(function (r) {
+      return vaultDelete(r.id).then(function () { return null; }, function (err) { return err; });
+    })).then(function (errors) {
+      var failed = errors.filter(Boolean).length;
+      if (failed) {
+        toast(failed + ' expired artifact' + (failed === 1 ? '' : 's') + ' could not be deleted');
+      } else {
+        toast(split.expired.length + ' artifact' +
+          (split.expired.length === 1 ? '' : 's') + ' reached expiry and ' +
+          (split.expired.length === 1 ? 'was' : 'were') + ' destroyed');
+      }
+      return split.live;
     });
   }
 
@@ -8552,6 +9367,60 @@ var RVQR_DEMOS = (function () {
 
   var cachedVault = [];
 
+  // Every live countdown currently on screen, as { row, node }. Kept so the
+  // ticker can repaint the digits without rebuilding the list a user may be
+  // in the middle of reading.
+  var countdownNodes = [];
+  // The detail sheet's own countdown is tracked separately from the list's,
+  // because the two are rebuilt on different schedules: a vault re-render must
+  // not silently stop the clock on an open sheet.
+  var detailCountdown = null;
+  var expiryTimer = null;
+
+  /** Renders one artifact's disposal state as a readout chip, or nothing. */
+  function countdownChip(row) {
+    if (!expiryLib || !row.expiry) return null;
+    var node = el('span', 'countdown');
+    paintCountdown(node, row, Date.now());
+    countdownNodes.push({ row: row, node: node });
+    return node;
+  }
+
+  function paintCountdown(node, row, now) {
+    var d = expiryLib.describe(row.expiry, now);
+    node.className = 'countdown tone-' + d.tone;
+    node.textContent = d.countdown || 'burn';
+    node.title = d.countdown ? d.label + ' ' + d.countdown : d.label;
+  }
+
+  /**
+   * One timer for the whole app rather than one per artifact. It repaints
+   * running countdowns each second, and once anything is actually due it hands
+   * over to renderVault, whose read of the vault performs the deletion.
+   */
+  function tickExpiry() {
+    if (!expiryLib) return;
+    var now = Date.now();
+    if (expiryLib.partition(cachedVault, now).expired.length) {
+      renderVault();
+      if (openDetailId) openDetail(openDetailId);
+      return;
+    }
+    countdownNodes.forEach(function (entry) {
+      paintCountdown(entry.node, entry.row, now);
+    });
+    if (detailCountdown) paintCountdown(detailCountdown.node, detailCountdown.row, now);
+  }
+
+  function scheduleExpiryTimer() {
+    if (expiryTimer) { clearInterval(expiryTimer); expiryTimer = null; }
+    if (!expiryLib) return;
+    // No clock anywhere in the vault means no timer: a burn-on-export record
+    // needs no ticking, and neither does an empty vault.
+    if (expiryLib.nextDeadline(cachedVault, Date.now()) === null) return;
+    expiryTimer = setInterval(tickExpiry, 1000);
+  }
+
   function glyphFor(kind) {
     if (kind === 'rvf') return 'RVF';
     if (kind === 'wasm') return 'WASM';
@@ -8561,10 +9430,13 @@ var RVQR_DEMOS = (function () {
   function renderVault() {
     return vaultList().then(function (rows) {
       cachedVault = rows;
+      countdownNodes = []; // the nodes they pointed at are about to be discarded
       var list = $('vaultList');
       list.textContent = '';
       $('vaultCount').textContent = rows.length ? '(' + rows.length + ')' : '';
       refreshSendPicker();
+
+      scheduleExpiryTimer();
 
       if (!rows.length) {
         var empty = el('div', 'card empty');
@@ -8590,6 +9462,8 @@ var RVQR_DEMOS = (function () {
         badges.appendChild(
           el('span', 'badge ' + row.kind, row.kind === 'generic' ? 'file' : row.kind)
         );
+        var chip = countdownChip(row);
+        if (chip) badges.appendChild(chip);
         btn.appendChild(g);
         btn.appendChild(mid);
         btn.appendChild(badges);
@@ -8612,18 +9486,50 @@ var RVQR_DEMOS = (function () {
 
   var dialog = $('detail');
 
+  // Where the stylesheet docks the detail sheet as a side panel, it is opened
+  // NON-modally so the vault list behind it stays visible and clickable:
+  // opening an artifact must not cost you your place in the list. Narrower
+  // than that it stays a modal sheet, which is the right idiom on a phone.
+  // The width here is the same 1060px the stylesheet uses for the docked panel.
+  var DOCKED_QUERY = '(min-width: 1060px)';
+  function dockedLayout() {
+    return !!(window.matchMedia && window.matchMedia(DOCKED_QUERY).matches);
+  }
+
   function showSheet() {
-    if (dialog.showModal) dialog.showModal();
+    // Already showing: openDetail has just replaced the body in place, which is
+    // what makes clicking a second artifact work while the panel is docked.
+    // Re-opening would also throw if the layout changed under an open modal.
+    if (dialog.open) return;
+    if (dockedLayout() && dialog.show) dialog.show();
+    else if (dialog.showModal) dialog.showModal();
     else dialog.setAttribute('open', '');
   }
   function hideSheet() {
+    openDetailId = null;
+    detailCountdown = null;
     if (dialog.close) dialog.close();
     else dialog.removeAttribute('open');
   }
 
+  // Which artifact the detail sheet is showing, so the expiry ticker can
+  // refresh it in place — and so a sheet left open on a record that expires
+  // does not keep offering Send and Download for something already deleted.
+  var openDetailId = null;
+
   function openDetail(id) {
     vaultGet(id).then(function (row) {
-      if (!row) return;
+      if (!row) {
+        // Swept out from under us, most likely by its own expiry.
+        if (openDetailId === id) hideSheet();
+        return;
+      }
+      if (expiryLib && expiryLib.isExpired(row.expiry, Date.now())) {
+        hideSheet();
+        renderVault();
+        return;
+      }
+      openDetailId = id;
       var bytes = recordBytes(row);
       $('detailName').textContent = row.name;
       var body = $('detailBody');
@@ -8689,22 +9595,164 @@ var RVQR_DEMOS = (function () {
       });
       var dlBtn = el('button', '', 'Download');
       dlBtn.addEventListener('click', function () { download(row); });
-      var delBtn = el('button', 'btn-danger', 'Delete');
-      delBtn.addEventListener('click', function () {
-        if (!confirm('Delete "' + row.name + '" from this device?')) return;
-        vaultDelete(row.id).then(function () {
-          hideSheet();
-          toast('Deleted');
-          renderVault();
-        });
-      });
       actions.appendChild(sendBtn);
       actions.appendChild(dlBtn);
-      actions.appendChild(delBtn);
       body.appendChild(actions);
+
+      body.appendChild(buildDisposal(row));
 
       showSheet();
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Disposal
+  //
+  // The destructive controls live together, behind the danger colour and a
+  // confirmation, and away from Send and Download so that no amount of muscle
+  // memory turns one into the other. Nothing here is decorative: arming writes
+  // to the record, and every path out of it ends in a real vaultDelete.
+  // ---------------------------------------------------------------------------
+
+  function buildDisposal(row) {
+    detailCountdown = null; // the previous sheet's node is being replaced
+    var box = el('div', 'card tight disposal');
+    box.appendChild(el('h3', '', 'Disposal'));
+
+    if (!expiryLib) {
+      box.appendChild(el('p', 'small muted',
+        'The disposal module did not load, so self-destruct is unavailable for ' +
+        'this artifact. Nothing is armed.'));
+      return box;
+    }
+
+    var now = Date.now();
+    var state = expiryLib.describe(row.expiry, now);
+    var statusRow = el('div', 'row');
+    statusRow.appendChild(el('span', 'small muted grow', row.expiry
+      ? state.label + (state.countdown ? '' : ' — destroyed on the next download')
+      : 'Nothing armed. This artifact stays until you delete it.'));
+    if (row.expiry) {
+      var chip = el('span', 'countdown');
+      paintCountdown(chip, row, now);
+      detailCountdown = { row: row, node: chip };
+      statusRow.appendChild(chip);
+    }
+    box.appendChild(statusRow);
+
+    var opts = el('div', 'disposal-opts');
+    var currentMode = row.expiry ? row.expiry.mode : 'keep';
+
+    function option(value, title, detail) {
+      var label = el('label', 'opt');
+      var input = document.createElement('input');
+      input.type = 'radio';
+      input.name = 'disposal-' + row.id;
+      input.value = value;
+      input.checked = value === currentMode;
+      var text = el('div', 'opt-text');
+      text.appendChild(el('strong', '', title));
+      text.appendChild(el('span', '', detail));
+      label.appendChild(input);
+      label.appendChild(text);
+      opts.appendChild(label);
+      return input;
+    }
+
+    option('keep', 'Keep', 'No expiry. Delete it yourself when you are done with it.');
+    option(expiryLib.MODE_BURN, 'Burn after export',
+      'Deletes the vault copy as soon as you download it. Showing it as QR ' +
+      'frames does not consume it, so a transfer can be re-sent.');
+    option(expiryLib.MODE_TIMED, 'Timed expiry',
+      'Deletes it once the clock runs out, whether or not it was ever used.');
+
+    var ttl = document.createElement('select');
+    ttl.setAttribute('aria-label', 'Time until this artifact is destroyed');
+    expiryLib.TTL_PRESETS.forEach(function (p) {
+      var o = document.createElement('option');
+      o.value = p.id;
+      o.textContent = p.label;
+      ttl.appendChild(o);
+    });
+    if (row.expiry && row.expiry.mode === expiryLib.MODE_TIMED) {
+      ttl.value = expiryLib.TTL_PRESETS[0].id;
+    }
+    box.appendChild(opts);
+    var ttlLabel = el('label', 'field', 'Time until destruction');
+    box.appendChild(ttlLabel);
+    box.appendChild(ttl);
+
+    function chosen() {
+      var checked = opts.querySelector('input:checked');
+      return checked ? checked.value : 'keep';
+    }
+    function syncTtl() { ttl.disabled = chosen() !== expiryLib.MODE_TIMED; }
+    opts.addEventListener('change', syncTtl);
+    syncTtl();
+
+    var armBtn = el('button', 'btn-danger btn-block', 'Apply disposal setting');
+    armBtn.style.marginTop = '.7rem';
+    armBtn.addEventListener('click', function () {
+      var mode = chosen();
+      if (mode === 'keep') {
+        if (!row.expiry) { toast('Nothing was armed'); return; }
+        if (!confirm('Disarm disposal for "' + row.name + '"?\n\n' +
+          'It will stay on this device until you delete it.')) return;
+        row.expiry = null;
+        vaultPut(row).then(function () {
+          toast('Disposal disarmed');
+          openDetail(row.id);
+          renderVault();
+        });
+        return;
+      }
+
+      var preset = expiryLib.ttlById(ttl.value);
+      var next = expiryLib.createExpiry(mode, Date.now(), preset ? preset.ms : 0);
+      if (!next) { toast('That disposal setting could not be armed'); return; }
+
+      var warning = mode === expiryLib.MODE_BURN
+        ? 'Arm "burn after export" on "' + row.name + '"?\n\n' +
+          'The next time you download it, this device\'s copy is deleted.'
+        : 'Arm a ' + (preset ? preset.label : '') + ' expiry on "' + row.name + '"?\n\n' +
+          'When the time is up, this device\'s copy is deleted.';
+      if (!confirm(warning + '\n\n' +
+        'This deletes this app\'s copy on this device only. It cannot recall a ' +
+        'file you already exported or a copy another device received, and ' +
+        'browser storage is not secure erasure.')) return;
+
+      row.expiry = next;
+      vaultPut(row).then(function () {
+        toast(mode === expiryLib.MODE_BURN ? 'Armed: burn after export' : 'Expiry armed');
+        openDetail(row.id);
+        renderVault();
+      });
+    });
+    box.appendChild(armBtn);
+
+    var nukeBtn = el('button', 'btn-danger-solid btn-block', 'Destroy now');
+    nukeBtn.style.marginTop = '.5rem';
+    nukeBtn.addEventListener('click', function () {
+      if (!confirm('Destroy "' + row.name + '" now?\n\n' +
+        'This deletes it from this device immediately and cannot be undone.')) return;
+      vaultDelete(row.id).then(function () {
+        hideSheet();
+        toast('Destroyed');
+        renderVault();
+      }, function (err) {
+        toast('Could not delete: ' + err.message);
+      });
+    });
+    box.appendChild(nukeBtn);
+
+    box.appendChild(el('p', 'small muted', 'What this does not do:'));
+    var limits = el('ul', 'limits');
+    expiryLib.describeLimits().forEach(function (line) {
+      limits.appendChild(el('li', '', line));
+    });
+    box.appendChild(limits);
+
+    return box;
   }
 
   // ---------------------------------------------------------------------------
@@ -9005,6 +10053,15 @@ var RVQR_DEMOS = (function () {
     });
   }
 
+  /**
+   * The export path, and therefore the other enforcement point for disposal.
+   *
+   * Burn-on-export is consumed here rather than at the button, so a future
+   * caller cannot export a burn-armed artifact without triggering it. Note the
+   * honest limit of "successful": the browser owns the download once the click
+   * is dispatched and never tells us how it ended, so the copy is destroyed at
+   * the moment the bytes are handed over, not at the moment they hit disk.
+   */
   function download(row) {
     var blob = new Blob([recordBytes(row)], { type: 'application/octet-stream' });
     var url = URL.createObjectURL(blob);
@@ -9015,6 +10072,17 @@ var RVQR_DEMOS = (function () {
     a.click();
     a.remove();
     setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+
+    if (!expiryLib || !expiryLib.consumesOnExport(row.expiry)) return Promise.resolve(false);
+    return vaultDelete(row.id).then(function () {
+      hideSheet();
+      toast('Exported — this device’s copy destroyed');
+      renderVault();
+      return true;
+    }, function (err) {
+      toast('Exported, but the copy could not be deleted: ' + err.message);
+      return false;
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -10186,6 +11254,23 @@ var RVQR_DEMOS = (function () {
     $('refreshBtn').addEventListener('click', function () { renderVault(); });
     $('detailClose').addEventListener('click', hideSheet);
 
+    // Every dismissal route ends in a 'close' event — the button, Escape on a
+    // modal dialog, or a form submit. Without this the sheet could vanish while
+    // openDetailId still claimed it was open, and the expiry ticker would go on
+    // repainting a countdown node that is no longer on screen.
+    dialog.addEventListener('close', function () {
+      openDetailId = null;
+      detailCountdown = null;
+    });
+
+    // A non-modal dialog gets no Escape handling from the browser, so the
+    // docked panel needs its own. Harmless for the modal case: by the time the
+    // browser acts on Escape the dialog is already closed.
+    document.addEventListener('keydown', function (e) {
+      if (e.key !== 'Escape' || !dialog.open) return;
+      hideSheet();
+    });
+
     ['dragenter', 'dragover'].forEach(function (ev) {
       document.addEventListener(ev, function (e) {
         e.preventDefault();
@@ -10316,7 +11401,29 @@ var RVQR_DEMOS = (function () {
       });
     });
     $('welcomeClose').addEventListener('click', closeWelcome);
-    $('showWelcome').addEventListener('click', function (e) { openWelcome(e.currentTarget); });
+
+    // The intro opens on every load and dismissal covers only that visit, so
+    // this checkbox is the sole permanent opt-out. It is applied on change
+    // rather than on dismissal, so ticking it takes effect however the dialog
+    // is then closed — button, Escape or backdrop.
+    $('welcomeSuppress').addEventListener('change', function (e) {
+      var storage = safeStorage();
+      if (e.target.checked) {
+        core.suppressWelcome(storage);
+        toast('The intro will not open again');
+      } else {
+        core.unsuppressWelcome(storage);
+      }
+    });
+
+    // "Show the intro again" is also the way back from that opt-out: reopening
+    // it by hand is a clear statement that it is wanted, so the suppression is
+    // lifted rather than leaving the viewer to hunt for the checkbox.
+    $('showWelcome').addEventListener('click', function (e) {
+      core.unsuppressWelcome(safeStorage());
+      $('welcomeSuppress').checked = false;
+      openWelcome(e.currentTarget);
+    });
     // Escape and the backdrop both route through the dialog's own close event,
     // so dismissal is recorded however it happened.
     welcomeDialog.addEventListener('close', function () {
