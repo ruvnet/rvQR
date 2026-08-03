@@ -607,6 +607,34 @@
       return 'a challenge is answered once';
     });
 
+    test('criterion 5: a spent list too long to search is refused, not passed', function () {
+      // Regression for a defect the benchmark found and the unit tests did not:
+      // the consumed list was silently TRUNCATED to LIMITS.consumedNonces, so a
+      // nonce sitting past the cut was never compared. The identical replayed
+      // challenge returned `replayed` inside the cap and `attested` past it,
+      // which is a sender quietly losing replay detection for everything it
+      // consumed early — the exact failure ADR-021 §4.5 forbids.
+      var over = [];
+      for (var i = 0; i < A.LIMITS.consumedNonces + 100; i++) over.push('spent-' + i);
+      over.push(NONCE);
+
+      var v = A.verifyAttestation(evidence(), expected({ consumedNonces: over }), { verifyChain: chainOk });
+      eq(v.state, A.STATE_REPLAYED, 'an unsearchable list must refuse, never report attested');
+      eq(v.binding.consumedOverflow, true, 'and say why it refused');
+      assert(/cannot be determined/i.test(v.reason),
+        'the reason must name the undetermined check: ' + v.reason);
+      eq(A.admitTransfer(policy(), v, request()).admit, false, 'and no transfer proceeds');
+
+      // The boundary still works: a list exactly at the cap is searched
+      // normally, so this refuses too little rather than too much.
+      var atCap = [];
+      for (var j = 0; j < A.LIMITS.consumedNonces; j++) atCap.push('other-' + j);
+      eq(A.verifyAttestation(evidence(), expected({ consumedNonces: atCap }), { verifyChain: chainOk }).state,
+        A.STATE_ATTESTED, 'a full-but-searchable list is still searched');
+
+      return 'an undetermined replay check refuses';
+    });
+
     // --- ADR-021 §2.1: the four sender preconditions -------------------------
 
     test('preconditions: each of ADR-021 §2.1’s four is enforced and named', function () {

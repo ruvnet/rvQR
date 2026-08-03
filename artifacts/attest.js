@@ -455,11 +455,28 @@
     var sessionMatched = isString(e.sessionId) && e.sessionId === ev.sessionId;
     var nonceMatched = isString(e.nonce) && e.nonce === ev.nonce;
     var consumedList = Array.isArray(e.consumedNonces) ? e.consumedNonces : [];
-    if (consumedList.length > LIMITS.consumedNonces) {
-      consumedList = consumedList.slice(0, LIMITS.consumedNonces);
-    }
-    var consumed = consumedList.indexOf(ev.nonce) >= 0;
-    var binding = { sessionMatched: sessionMatched, nonceMatched: nonceMatched, consumed: consumed };
+    // Truncating this list used to be silent, and silence here is a replay.
+    // Measured before the fix: the SAME challenge returned `replayed` when its
+    // nonce sat inside the cap and `attested` when it sat past it, so a sender
+    // whose consumed list outgrew the ceiling stopped detecting replays of
+    // everything it had consumed early — without any signal that it had.
+    //
+    // A truncated list cannot answer the question the check asks. It is
+    // therefore refused rather than searched, for exactly the reason a chain
+    // verifier that throws yields `unverified` rather than `unattested`: a
+    // check that did not happen is not a pass. The caller's list is its own to
+    // bound — rotate the session, or carry a structure that does not need
+    // truncating — but it may not have the answer silently guessed for it.
+    var consumedOverflow = consumedList.length > LIMITS.consumedNonces;
+    var consumed = !consumedOverflow && consumedList.indexOf(ev.nonce) >= 0;
+    var binding = {
+      sessionMatched: sessionMatched,
+      nonceMatched: nonceMatched,
+      consumed: consumed,
+      // Whether the replay check could be performed at all is a fact ABOUT the
+      // binding, so it travels with the other three rather than beside them.
+      consumedOverflow: consumedOverflow
+    };
 
     if (!sessionMatched || !nonceMatched) {
       var why = [];
@@ -475,6 +492,21 @@
         'This evidence is not bound to this transfer: ' + why.join(', ') +
         '. A recording of a genuine attestation is a genuine attestation, so binding is the check that matters.',
         { evidencePresented: true, binding: binding });
+    }
+
+    // Bound correctly, but the replay check could not be performed at all: the
+    // caller handed over more spent challenges than this module will search.
+    // Refusing is the only honest answer — the nonce may well be in the part of
+    // the list that was never looked at, and reporting `attested` here would be
+    // reporting the absence of a search as the absence of a replay.
+    if (consumedOverflow) {
+      return verdictFor(STATE_REPLAYED,
+        'This sender has recorded ' + consumedList.length + ' spent challenges, past the ' +
+        LIMITS.consumedNonces + ' this module will search, so whether challenge ' +
+        JSON.stringify(ev.nonce) + ' was already spent CANNOT BE DETERMINED. An undetermined ' +
+        'replay check is refused rather than passed: rotate the session, or keep the spent ' +
+        'list inside the bound.',
+        { evidencePresented: true, binding: binding, consumedOverflow: true });
     }
 
     // Bound correctly and yet the challenge has already been spent: the same
