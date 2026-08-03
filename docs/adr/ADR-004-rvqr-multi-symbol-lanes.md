@@ -66,6 +66,11 @@ compression, and 30.7 KB/s at 20 fps. With the measured Brotli ratio for the
 demo WASM module (2.464×, [ADR-003](./ADR-003-rvqr-adaptive-compression.md)),
 4 × 15 × 384 ÷ 0.406 ≈ **56.7 KB/s** of artifact.
 
+Through v2's ASCII armour — which is what both of the app's decode paths deliver
+today, because neither can return raw octets
+([ADR-002](./ADR-002-rvqr-binary-frame-protocol.md) §2.3) — a version-13 lane
+carries 343 bytes rather than 384, and the same arithmetic gives 20.6 KB/s.
+
 Every one of those figures is a **projection**. Nothing has been painted, no
 camera has read a grid, and the harness models frame loss without modelling
 optics at all ([docs/benchmarks.md](../benchmarks.md) §8).
@@ -145,7 +150,7 @@ would look like frame loss.
 
 - **The largest lever available, by a wide margin.** A projected 9.4× on raw
   frame capacity over today's measured default (23.0 against 2.44 KB/s) and
-  about 23× with compression, against 1.48× for the framing change and 2.46× for
+  about 23× with compression, against a measured 1.492× for the framing change and 2.46× for
   compression on the best-measured artifact.
 - **No new receiver concept.** Both decode paths already return every symbol
   found in an image; this is a sender change and a resolution requirement.

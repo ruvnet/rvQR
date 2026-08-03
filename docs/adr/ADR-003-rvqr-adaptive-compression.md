@@ -5,6 +5,7 @@
 | Status | Proposed |
 | Date | 2026-08-03 |
 | Scope | Whether, and with what, an artifact is compressed before it enters the frame stream |
+| Implementation | None. `artifacts/proto2.js` declares, carries and enforces a codec id but bundles no codec — the decoder is injected at `finalize()` |
 | Related | [ADR-002: Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-004: RVF Cognitive Container Format](./ADR-004-rvf-format.md) (mirrored), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
@@ -44,7 +45,7 @@ codec failing; it is what high-entropy float data does. Any design that assumes
 to carry.
 
 **A single fixed choice is wrong somewhere.** Compressing the RVF container
-saves 559 bytes, which at 760 payload bytes per frame
+saves 559 bytes, which at v2's measured 764 payload bytes per frame
 ([ADR-002](./ADR-002-rvqr-binary-frame-protocol.md)) is worth one frame out of
 five. Compressing a payload that is already compressed — a `.zip`, a PNG, an
 encrypted blob — costs encode time, adds a codec dependency to the receive path,
@@ -77,6 +78,24 @@ is kept for the cases where its window and static dictionary genuinely pay:
 WASM, HTML and text metadata are where the measured 2.46× and 3.54× came from,
 and those are also the artifacts a bootstrap transfer is most likely to carry.
 
+**This decision is currently in conflict with the shipped code, and the
+conflict has to be resolved before anything depends on the numbering.**
+`artifacts/proto2.js` defines its codec ids as 0 none, **1 SCF-1, 2 deflate-raw,
+3 Brotli**. Only Brotli coincides with [ADR-004 §5.1](./ADR-004-rvf-format.md),
+which assigns 1 to LZ4 and 2 to Zstd — and **Zstd, the default this ADR chooses,
+has no id in the shipped table at all**. A container compressed by RuVector at
+codec 2 and a frame declaring codec 2 currently mean different things.
+
+The recommendation is that `proto2.js` adopt RuVector's numbering, because it is
+the wider contract, because nothing is wired into the app yet, and because the
+alternative is that rvQR ends up with the private vocabulary this section exists
+to avoid. SCF-1 and deflate-raw are both real needs — SCF-1 for RVQS
+interoperability, deflate-raw because it is available in every browser through
+`DecompressionStream` with no bundle cost — so they need ids that do not collide:
+an extension range above the contract's assignments, e.g. `0xF1` for SCF-1 and
+`0xF2` for deflate-raw, leaving 1 and 2 to mean what the rest of the project
+says they mean.
+
 ### 2.2 Compress only when the complete transport envelope shrinks by ≥ 8%
 
 The comparison is not "did the payload get smaller". It is **did the whole thing
@@ -88,7 +107,7 @@ If that envelope does not shrink by at least **8%**, the artifact is sent with
 codec `0x0000` and the transport hash equals the content hash.
 
 8% is a chosen margin, not a derived constant, and the reasoning is worth
-stating so it can be argued with. At 760 payload bytes per frame and 5 fps, 8%
+stating so it can be argued with. At v2's measured 764 payload bytes per frame and 5 fps, 8%
 of a 40 KB artifact is about 3.3 KB, which is 4.3 frames, which is 0.9 seconds
 of somebody holding a phone. Below that the saving does not repay adding a
 decompressor to the critical path of a receiver whose whole promise is that it
@@ -134,10 +153,12 @@ been measured with one.
 
 - **On the artifacts actually measured, more than the framing change does.**
   Combined with [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md), the 40,989-byte
-  demo module goes from a measured 82 frames and 16.4 seconds to a projected 23
-  frames and 4.6 seconds at the same 5 fps — 3.6× — because 16,636 compressed
-  bytes at 760 bytes per frame is 22 data frames plus a manifest. That is
-  arithmetic on measured inputs, not a measurement.
+  demo module goes from a measured 82 frames and 16.4 seconds to a projected
+  **23 frames and 4.6 seconds** at the same 5 fps — 3.6× — because 16,636
+  compressed bytes at v2's measured 764 bytes per frame is 22 data frames plus a
+  manifest. Through v2's ASCII armour, which is what a receiver using either of
+  the app's current decode paths would get, it is 26 frames and 5.2 seconds.
+  Both are arithmetic on measured inputs, not measurements.
 - **The failure mode is bounded and visible.** A payload that does not compress
   is sent uncompressed, and the manifest says so in a field a receiver reads
   rather than infers.

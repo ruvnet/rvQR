@@ -18,12 +18,33 @@ upstream rather than expecting them to resolve locally.
 
 These are rvQR's, written here rather than mirrored. **rvQR-local ADRs have
 their own numbering starting at 001**, because the mirrored files below keep
-their upstream numbers — so an ADR-009 in this directory is RuVector's wire
-contract, not rvQR's ninth decision. Local ADRs say so in their header.
+their upstream numbers.
 
-| ADR | What it decides |
-|-----|-----------------|
-| [ADR-001 — rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md) | The decisions this project has actually made and shipped: fixed indexed chunks before erasure coding, integrity without authenticity as a stated position, the hostile-input ceilings and why the renderer is capped independently of them, the stall-based transfer switching rule, native scanning with a vendored decoder fallback, the iframe camera constraint, the keyframe gate, and the line between parsing an untrusted container with WebAssembly and executing it. Includes an honest cost list. |
+The two numbering spaces now collide: **ADR-004, ADR-005 and ADR-009 each exist
+twice in this directory, meaning different things.** The rule that resolves it is
+the filename, not the number — **a local ADR's slug begins with `rvqr-`**
+(`ADR-009-rvqr-signature-admission.md` is rvQR's;
+`ADR-009-rvf-v1-wire-contract.md` is RuVector's wire contract). Every local file
+also says so in a note under its header. Cite these by filename rather than by
+number.
+
+Statuses are load-bearing. Only three of the ten are Accepted; the rest are a
+throughput and control-channel programme that is written down and, with the
+exception of `artifacts/p2p.js`, not built. Each one says in its own header what
+exists.
+
+| ADR | Status | What it decides |
+|-----|--------|-----------------|
+| [ADR-001 — rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md) | Accepted | The decisions this project has actually made and shipped: fixed indexed chunks before erasure coding, integrity without authenticity as a stated position, the hostile-input ceilings and why the renderer is capped independently of them, the stall-based transfer switching rule, native scanning with a vendored decoder fallback, the iframe camera constraint, the keyframe gate, and the line between parsing an untrusted container with WebAssembly and executing it. Includes an honest cost list. |
+| [ADR-002 — Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md) | Accepted | Replaces JSON-plus-base64 framing with a 28-byte binary header, taking a version 19 symbol from 512 payload bytes to 764 — a measured **1.492×** at the same robust operating point, or 1.30× through the ASCII armour the bundled decoder forces. Carries codec id and dictionary id in every frame, original and compressed sizes as separate fields, and **both** a per-frame transport hash and the artifact's content hash. Records the correctness defect this closes: RVQS carries one `SEED_COMPRESSED` bit whose doc comment says Brotli while the builder invokes SCF-1. Implemented in `artifacts/proto2.js` (26/26 tests) and **not yet wired into the app**. |
+| [ADR-003 — Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md) | Proposed | Zstandard (RFC 8878) by default and Brotli (RFC 7932) for WASM, HTML and metadata, reusing RuVector's codec ids and Rust implementation rather than inventing an rvQR vocabulary. Compress only when the whole transport envelope shrinks by ≥ 8%. Measured on this repository's artifacts: 2.464× on the demo WASM module, 1.320× on an RVF container of float vectors, 3.535× on the standalone page. **Records an open conflict**: `proto2.js` ships a different codec table from the one this ADR adopts, and Zstd has no id in it. |
+| [ADR-004 — Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md) | Proposed | A 2×2 grid of version-13 symbols, projected at 23.0 KB/s raw and ~56.7 KB/s compressed. The single biggest lever and the highest execution risk. Derives a hard consequence from the existing blur measurement: four version-13 lanes **do not fit a 720p capture** and require 1080p, with a version-10 fallback for cameras that cannot supply it. |
+| [ADR-005 — Bounded Decode Worker Pool](./ADR-005-rvqr-decode-worker-pool.md) | Proposed | Workers add no optical capacity, and today they measure *slower* — SHA ~15%, the keyframe signature ~59% — because buffers are copied across the boundary. Transfer a cropped `ImageBitmap` instead of cloning `ImageData`, and add 2–4 workers only after multi-lane tiling gives them something to do. |
+| [ADR-006 — QR-Bootstrapped BitChat / WebRTC Escalation](./ADR-006-rvqr-p2p-escalation.md) | Proposed | QR carries identity, ephemeral keys, manifests and segment inventories; the payload moves over a WebRTC data channel (RFC 8831) or BitChat. Preserves the optical trust bootstrap and is explicitly **not radio-silent** — opt-in, off by default, empty `iceServers`. `artifacts/p2p.js` implements the WebRTC half and is not wired into the app. |
+| [ADR-007 — Ultrasonic Reverse Control Channel](./ADR-007-rvqr-ultrasonic-control-channel.md) | Proposed | Forward optical, reverse acoustic: capability negotiation, fountain rank, signal quality, pause/resume/cancel/complete. Speed comes from omitting unnecessary QR frames, not from acoustic bandwidth. Proposes a ~20-byte RVU1 control frame over 4-tone FSK against `ruvnet/ultrasonic`'s 12.7–20.2 s for a 16-byte command. Records two safety findings: AES-GCM does not stop replay of a recording, and the published 20% error tolerance is tested by negating samples, which a sign-blind decoder cannot see. |
+| [ADR-008 — Colour Channels](./ADR-008-rvqr-colour-channels.md) | **Deferred** | Potentially 1.5–3×, deferred with reasons: camera white balance and tone mapping, chroma subsampling, display profiles, and rolling shutter — none of which any measurement in this repository can bound, unlike spatial lanes. Lists what would reopen it. |
+| [ADR-009 — Pinned-Fingerprint Admission](./ADR-009-rvqr-signature-admission.md) | Accepted | A pin must be enforced where the artifact is stored, not rendered as a badge. The pure `core.admitArtifact(pin, verification)`: pending never admits, unknown verdicts fail closed, no-pin is unchanged. Records the companion defect — `signManifest` called with reversed arguments, so signing silently never happened — and that the signing key currently sits in plaintext `localStorage`. |
+| [ADR-010 — The Acceptance Bar](./ADR-010-rvqr-acceptance-bar.md) | Accepted | 100 physical transfers across iPhone Safari and Android Chrome, bright / dim / glare, 20% induced loss. Pass requires zero corrupt accepts, zero wrong-key vault writes, ≥ 99 completions and p95 under 30 s for 40 KB. States plainly that the benchmark models frame loss but not optics, so today's figures are engineering baselines — and shows the bar is unreachable until the fountain layer is wired into the transport. |
 
 ## Mirrored: wire format and contract
 
@@ -64,3 +85,6 @@ rvQR's planned use of it — a bootstrap QR carrying an X25519 public key, with
 HKDF-SHA256 deriving session keys so the optical data plane can carry encrypted
 payloads over an authenticated control channel — is specified in
 [`../protocol.md`](../protocol.md) under the roadmap, and is not implemented.
+[ADR-006](./ADR-006-rvqr-p2p-escalation.md) records the decision that governs it,
+including the WebRTC sibling that *is* implemented in `artifacts/p2p.js` and the
+reason escalation must be opt-in: it is not radio-silent.

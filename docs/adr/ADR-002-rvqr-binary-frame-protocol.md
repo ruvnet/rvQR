@@ -2,9 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Proposed |
+| Status | Accepted |
 | Date | 2026-08-03 |
 | Scope | The wire format of an rvQR frame: header, manifest body, and the fields a receiver needs before it touches a payload |
+| Implementation | `artifacts/proto2.js`, 26/26 tests in `artifacts/proto2.test.js`. **Not wired into `app.js` or `index.html`** — the app still sends and receives v1 |
 | Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-003: Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md), [ADR-004: Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-004: RVF Cognitive Container Format](./ADR-004-rvf-format.md) (mirrored) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
@@ -16,197 +17,236 @@
 
 A v1 data frame is a UTF-8 JSON object with a base64url payload
 ([docs/protocol.md](../protocol.md)). At the app's 512-byte default the envelope
-and the encoding together turn 512 payload bytes into a 740-byte QR frame — a
-44% expansion, measured across the whole chunk range in
-[docs/benchmarks.md](../benchmarks.md) §4 and §6, which reports wire efficiency
-of 65–72% depending on payload.
+and the encoding together turn 512 payload bytes into a **741-byte** QR frame —
+**44.7% overhead**, recomputed by `proto2.test.js` on every run rather than
+asserted. [docs/benchmarks.md](../benchmarks.md) §4 measures the same thing from
+the other end as a wire efficiency of 65–72%.
 
-Two thirds of that overhead is base64url, which costs four bytes for every
-three because QR byte mode carries arbitrary octets but JSON strings do not. The
-rest is the envelope itself: `{"v":1,"t":…,"h":…,"i":…,"n":…,"p":…}` is 54 to 56
-bytes of punctuation and hex.
+Two thirds of that is base64url, which costs four bytes for every three because
+QR byte mode carries arbitrary octets but JSON strings do not. The rest is the
+envelope: `{"v":1,"t":…,"h":…,"i":…,"n":…,"p":…}`.
 
-None of this is required by the medium. QR byte mode carries binary. The JSON
-was chosen because it is legible in a paste box and trivial to parse, and that
-was the right call for a first transport whose failure modes needed to be
-readable. It is not the right call for the operating point that matters, which
-is a version 19 symbol at level L: 792 bytes of capacity, of which 280 are spent
-on the encoding rather than the artifact.
+Neither cost is imposed by the medium — QR byte mode is 8-bit clean. Both are
+self-inflicted, and they were the right self-infliction for a first transport
+whose failure modes needed to be legible in a paste box. They are the wrong one
+at the operating point that matters: a version 19 symbol at level L, which holds
+792 bytes, of which v1 spends 229 on the encoding rather than the artifact.
 
 There is also a correctness defect to fix while the format is open, and it is
 not cosmetic. In the seed format rvQR's closest relative defines
 ([ADR-034](./ADR-034-qr-cognitive-seed.md) §1.1), compression is a **single
-flag** — bit 5, `SEED_COMPRESSED`, "Microkernel is LZ-compressed". A flag can
-say *that* something is compressed. It cannot say *with what*. Meanwhile the
-format family's own compression contract
-([ADR-004 §5.1](./ADR-004-rvf-format.md)) enumerates codecs by code — None
-`0x00`, LZ4 `0x01`, Zstd `0x02`, Brotli `0x03` — and its tiered strategy (§5.2)
-assigns **Brotli** to WASM payloads, while the RVQS builder actually invokes
-**SCF-1**, a custom LZ77 with a 4 KB window
-([ADR-034](./ADR-034-qr-cognitive-seed.md) §4.1, `rvf-runtime/src/compress.rs`).
-A receiver that reads the flag and follows the contract reaches for the wrong
-decoder. The bytes and the label disagree, and nothing on the wire lets a
-receiver notice.
+flag** — bit 5, `SEED_COMPRESSED`. One bit can say *that* something is
+compressed. It cannot say *with what*. And the two descriptions of that bit do
+not agree: the mirrored ADR in this directory renders it as "Microkernel is
+LZ-compressed", while the doc comment on the upstream field in
+`rvf-types/src/qr_seed.rs` reads **"Microkernel is Brotli-compressed"** — and
+`SeedBuilder::compress_microkernel` in `rvf-runtime/src/qr_seed.rs` calls
+`compress::compress`, the zero-dependency **SCF-1** LZ77 codec that
+[ADR-034](./ADR-034-qr-cognitive-seed.md) §4.1 lists at `rvf-runtime/src/compress.rs`.
+The flag says Brotli, the bytes are SCF-1, and nothing on the wire lets a
+receiver notice. (The upstream Rust is not in this repository; the source
+locations above are as reported by the implementation of `proto2.js` and are the
+one claim here that could not be checked locally. The mirrored ADR's own
+disagreement about the same bit is checkable and is in
+[ADR-034](./ADR-034-qr-cognitive-seed.md) §1.1 and §4.1.)
 
-rvQR must not repeat that. Any format that can carry compressed payloads has to
-name the codec explicitly, because "compressed" is not a decoder.
+rvQR must not repeat that, in either direction. "Compressed" is not a decoder,
+and a doc comment is not a wire field.
 
 ## 2. Decision
 
 ### 2.1 A 28-byte binary header on every frame
 
-Frames become octet sequences carried in QR byte mode. All multi-byte integers
-are little-endian, stated here because the mnemonic-versus-wire-bytes confusion
-[ADR-009](./ADR-009-rvf-v1-wire-contract.md) exists to close is exactly the
-mistake a reader makes when byte order is left implicit.
+Frames are octet sequences carried in QR byte mode. All multi-byte fields are
+little-endian, stated explicitly because the mnemonic-versus-wire-bytes
+confusion [the mirrored ADR-009 wire contract](./ADR-009-rvf-v1-wire-contract.md)
+exists to close is exactly
+the mistake a reader makes when byte order is left implicit — and asserted by a
+test that reads the documented offsets directly.
 
 | Offset | Size | Field |
 |---|---|---|
-| 0 | 2 | Magic. The two octets `0x52 0x51`. |
-| 2 | 1 | Protocol version. `2` for this format. |
-| 3 | 1 | Type and flags. Bits 0–2: frame type (0 manifest, 1 source, 2 repair, 3 control). Bits 3–7: reserved, sender MUST zero. |
-| 4 | 4 | Transfer id, `uint32`. Replaces v1's 8 hex characters. |
-| 8 | 8 | Transport hash prefix — the first 8 bytes of the transport hash defined in 2.2. Binds a data frame to a transfer before its manifest has arrived, which is what v1's `h` did in 4 hex characters' worth of entropy. |
-| 16 | 4 | Frame index, or encoding symbol id in fountain mode, `uint32`. |
-| 20 | 4 | Frame count, or source block size K, `uint32`. |
-| 24 | 2 | Payload length in bytes, `uint16`. |
-| 26 | 2 | Reserved. Sender MUST zero; receiver MUST reject non-zero, so the field stays available. |
+| 0 | 4 | Magic `52 56 51 32`, ASCII `RVQ2`. Distinct from v1, whose frames are JSON text beginning `{` (`0x7B`), and from the delta magics. |
+| 4 | 1 | Version, `2`. A parser rejects any other value rather than guessing. |
+| 5 | 1 | Mode: 0 indexed, 1 fountain. Any other value rejected. |
+| 6 | 1 | **Codec id.** 0 none, 1 SCF-1, 2 deflate-raw, 3 Brotli. |
+| 7 | 1 | **Dictionary id.** 0 none. |
+| 8 | 4 | Transfer id, `u32`. |
+| 12 | 3 | Index, `u24` — frame number, or encoding symbol id in fountain mode. 0 is the manifest in both. |
+| 15 | 3 | Total, `u24` — frame count including the manifest, or K in fountain mode. |
+| 18 | 2 | Payload length, `u16`. Must equal the actual remainder of the frame; a frame that disagrees with itself is rejected, never trimmed. |
+| 20 | 4 | **Content hash prefix** — first 4 bytes of SHA-256 over the original artifact. Binds every frame to the artifact it claims to belong to; this is v1's `h`. |
+| 24 | 4 | **Transport hash prefix** — first 4 bytes of SHA-256 over *this frame's payload*, checked on parse. |
 
 28 bytes. At version 19 level L the symbol holds 792 bytes, leaving **764 for
-payload**; the sender's default chunk becomes **760**, keeping four bytes of
-slack. Against v1's 512 payload bytes in the same symbol that is **1.484×** more
-artifact per frame, and it raises wire efficiency from a measured 69% to 96%.
+payload**. Measured against v1 at the identical QR version: **1.492× v1's
+512-byte default**, and **1.389× the most v1 can carry at all** (550 bytes,
+because v1's own envelope eats the rest).
+
+**Codec id and dictionary id ride in every frame header, not only the manifest.**
+That is the decision the defect in §1 argues for, taken further than strictly
+necessary: 0 is a declared value meaning "none", never an absent field, and a
+receiver that meets a codec it does not know **refuses the transfer** rather than
+assuming the bytes are uncompressed and passing them on. A frame whose codec
+disagrees with the transfer it claims to join is refused.
 
 There is deliberately **no header checksum**. A QR symbol either passes its own
 Reed–Solomon check and yields the exact bytes encoded, or it fails and yields
 nothing — the link is an erasure channel, which is the premise the whole
-benchmark methodology rests on ([docs/benchmarks.md](../benchmarks.md),
-"The channel is an erasure channel"). A CRC over a header that arrived through
-Reed–Solomon protects against nothing and costs two bytes. This is *not* the
-same situation as `artifacts/p2p.js`'s four-byte SDP tag, which exists because a
-tokenised codec can decode a damaged payload into a *different valid* SDP; there
-the damage arrives through a channel with no integrity check of its own.
+benchmark methodology rests on ([docs/benchmarks.md](../benchmarks.md), "The
+channel is an erasure channel"). The per-frame transport hash exists for a
+different reason: it is checked *before the payload is used*, so a frame that
+arrives wrong is rejected without touching receiver state.
 
-### 2.2 The manifest body names the codec, the dictionary, both sizes and both hashes
+### 2.2 Both hashes, at the two scopes where each is checkable
 
-A manifest frame (type 0) carries this body after the 28-byte header:
+| Hash | Scope | Size | When |
+|---|---|---|---|
+| Transport | one frame's payload | 4 bytes, per frame | on parse, before the payload reaches receiver state |
+| Content | the whole original artifact | 32 bytes, in the manifest | on finalize, after decoding |
 
-| Offset | Size | Field |
-|---|---|---|
-| 0 | 2 | **Codec id**, `uint16`. Values are RuVector's, not rvQR's: `0x0000` none, `0x0001` LZ4, `0x0002` Zstd, `0x0003` Brotli ([ADR-004 §5.1](./ADR-004-rvf-format.md)). `0x00F1` names SCF-1 explicitly for RVQS interoperability. A receiver MUST reject an unknown codec id rather than guess. |
-| 2 | 2 | **Dictionary id**, `uint16`. `0x0000` means no dictionary. A payload compressed against a dictionary the receiver does not hold is undecodable, so this has to be on the wire and not implied by the codec. |
-| 4 | 8 | **Original size**, `uint64` — the length of the artifact after decoding. |
-| 12 | 8 | **Compressed size**, `uint64` — the number of octets actually carried. Equal to original size when the codec is `0x0000`. |
-| 20 | 32 | **Transport hash** — SHA-256 over the octets as carried, i.e. after compression. |
-| 52 | 32 | **Content hash** — SHA-256 over the original artifact, after decoding. This is v1's `m.sha256` and it remains the acceptance rule. |
-| 84 | 2 | Name length, `uint16`. |
-| 86 | var | Name, UTF-8, subject to v1's sanitisation and 255-byte ceiling. |
-| … | var | Optional TLVs: signature, segment inventory, sender public key. |
+The manifest body — the payload of frame 0, 47 bytes plus the name — carries
+`originalSize` (`u32`), `compressedSize` (`u32`), the full 32-byte
+`contentHash`, `chunkSize`, `k`, and the name length and name.
 
-**Two hashes, because they answer different questions at different times.** The
-content hash is the one that authorises storage and it cannot be checked until
-the payload has been decoded. The transport hash can be checked on the bytes as
-they arrive, *before* a receiver spends memory inflating them — which is what
-makes "reject a payload whose inflated length would exceed the declared original
-size" a bound and not a hope. Carrying only the content hash would mean the only
-way to find out whether a compressed stream was worth decompressing is to
-decompress it.
+**`originalSize` and `compressedSize` are separate fields on purpose**: with one
+of them, a receiver cannot tell a codec that expanded its input from a sender
+that is lying. With both, the decoder's output length is checked against a
+declaration — and a decoder returning the wrong length is refused rather than
+trusted, which has its own test.
 
-Both are 32 bytes and both are mandatory. When the codec is `0x0000` they are
-equal, and that redundancy is 32 bytes on one frame in the entire transfer.
+The content hash remains the acceptance rule and is unchanged from v1
+([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.2): a substituted chunk that
+somehow satisfied its frame's transport hash is still caught on finalize. The
+name is deliberately **not** covered by the content hash — it is the one
+sender-controlled field the hash cannot reach — so it is sanitised on the way
+out, and a manifest declaring `../../etc/passwd` stores as `_.._etc_passwd`.
 
-### 2.3 The ceilings from ADR-001 carry across unchanged
+### 2.3 An ASCII armour, because the bundled decoder cannot return bytes
 
-`n ≤ 65536`, `size ≤ 256 MB`, name ≤ 255 characters, and a per-frame payload
-that cannot exceed a version 40 symbol's capacity — all of these are bounds on
-attacker-controlled values applied before use, and none of them are affected by
-the framing changing ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.3). Two
-are added:
+This is the constraint that most shapes the result, and it is a property of
+rvQR's fallback decoder rather than of QR.
 
-- Compressed size MUST equal the sum of the payload lengths actually received.
-- Original size MUST be at most 256 MB and the decoder MUST stop at it, so a
-  decompression bomb costs a bounded allocation and a rejection.
+`vendor/qrdecode.js` collects byte-mode octets and hands them to a UTF-8
+decoder, so its only output is a JavaScript string: a frame that is not valid
+UTF-8 returns replacement characters and the original bytes are gone. The native
+`BarcodeDetector` path has the same shape — it yields `rawValue`, a string.
 
-### 2.4 Version 2 is a clean break, not a negotiation
+So v2 ships two transports for the same canonical frame. `encodeFrame()` returns
+the raw 28-byte-header octets, which go straight into a byte-mode segment with
+no expansion. `toTransport()` / `fromTransport()` repack the frame's bits **7 at
+a time** into bytes `0x00`–`0x7F`, which are single-byte UTF-8 and survive a
+`TextDecoder` exactly.
 
-A v1 receiver rejects unknown protocol versions already, and a v2 frame is not
-valid JSON, so the two formats cannot be confused for each other. Senders emit
-one or the other for a whole transfer. There is no mixed-version stream and no
-downgrade path, because a downgrade negotiated over a channel with no back
-channel is not a negotiation.
+The armour costs **8/7 = 14.3%** against base64url's 4/3 = 33.3%, both measured
+across payload sizes. At version 19-L that is **665 payload bytes** rather than
+764 — still **1.30× v1's default** and 1.209× v1's maximum. Widening the
+alphabet does not help: two-byte UTF-8 sequences carry 11 bits per 2 bytes, 5.5
+bits per byte against ASCII's 7.
+
+The honest reading: **the full 1.49× is available only where the raw octets can
+reach the parser**, which today means neither of the app's two decode paths. Any
+integration has to either recover the raw bytes from the decoder or take the
+armoured 1.30×.
+
+### 2.4 v1 and v2 refuse each other by name
+
+A v2 parser fed a v1 frame names it as v1; a v1 parser fed a v2 frame names it
+as v2. Both have tests, in both text and byte form. v1 frames still build
+byte-for-byte as they did, asserted against a frozen form.
+
+Senders emit one format for a whole transfer. There is no mixed stream and no
+downgrade negotiation, because a negotiation over a channel with no back channel
+is not a negotiation ([ADR-007](./ADR-007-rvqr-ultrasonic-control-channel.md) is
+where that changes, if it does).
+
+### 2.5 The ceilings from ADR-001 are inherited, not re-chosen
+
+`proto2.js` reads `MAX_FRAMES`, `MAX_RECEIVE_CHUNK` and the rest from `core.js`
+rather than picking its own, because a v2 receiver is exposed to exactly what a
+v1 receiver is: an unauthenticated frame from whatever is pointed at the camera
+([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.3). Where v2 differs it is
+stricter, never looser — 27 hostile frames are refused without any of them
+throwing, and declared sizes that disagree with the bytes are rejected rather
+than repaired.
 
 ## 3. Consequences
 
 ### What this buys
 
-- **1.484× payload per symbol at the operating point that survives blur.** Not
-  at a denser symbol: version 19 is the last one the blur measurement in
-  [docs/benchmarks.md](../benchmarks.md) §6 reads at every scale that fits a
-  720p frame, and this change buys throughput without moving off it. Projected
-  from the measured 2.44 KB/s default, v2 alone gives about 3.6 KB/s at the same
-  5 fps.
-- **A codec identifier that cannot drift from the bytes.** The defect described
-  in §1 becomes unrepresentable: a v2 manifest that says Zstd and carries Brotli
-  fails its transport hash.
-- **A bound on decompression before decompression.** The transport hash and the
-  declared original size are both checkable before the first inflated byte
-  exists.
-- **Room for the rest of the roadmap.** The type field has four values and five
-  spare bits; repair frames, control frames and segment inventories all have a
-  place to live without another format change.
+- **1.492× payload per symbol at the operating point that survives blur**, and
+  1.30× through the armour. Not at a denser symbol: version 19 is the last one
+  the blur sweep in [docs/benchmarks.md](../benchmarks.md) §6 reads at every
+  scale that fits a 720p frame, so this buys throughput without spending
+  robustness — the opposite of raising the chunk size.
+- **A codec identifier that cannot drift from the bytes.** The defect in §1
+  becomes unrepresentable, and an unknown codec is a refusal rather than a
+  guess.
+- **A frame is checked before it is used.** The per-frame transport hash keeps a
+  damaged payload out of receiver state entirely.
+- **Room for the rest of the roadmap.** Fountain mode is already in the header;
+  repair symbols above K are a documented, tested case rather than a future
+  format change.
 
 ### What it costs, honestly
 
+- **It is not wired in.** `app.js` and `index.html` contain no reference to
+  `proto2.js`. Every measured figure above is a property of the module, not of
+  a transfer anyone has performed.
+- **Neither decode path can carry the raw form today**, so the realistic
+  near-term gain is the armoured 1.30×, not 1.49×. §2.3.
 - **The paste-a-frame receive path stops being human-readable.** v1 frames are
-  JSON you can read in a text box; v2 frames are octets. The paste path
-  ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.7) has to accept a
-  base64url rendering of the binary frame instead, which is a strictly worse
-  debugging experience and a real regression for anyone diagnosing a transfer.
-- **Two formats to maintain, or a flag day.** Every receiver that has to
-  interoperate with an existing sender needs both parsers. rvQR is a static page
-  with no deployment coupling between the two devices, so "both sides update"
-  is not something the protocol can arrange.
-- **1.48× does not change the character of the channel.** 3.6 KB/s instead of
-  2.44 KB/s still makes 100 MB an overnight job. This is a necessary step
-  underneath [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
+  JSON you can read; v2 frames are octets or 7-bit-packed ASCII. That is a real
+  regression for anyone diagnosing a transfer by eye
+  ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.7).
+- **The compressed stream as a whole has no 32-byte digest.** The strong hash is
+  over the *reconstructed artifact*; the compressed bytes are covered at 32 bits
+  per frame. That is ample against corruption on an erasure channel and it is
+  not a strong statement about a sender that lies — which is unchanged from v1,
+  where authenticity does not exist either
+  ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.2,
+  [ADR-009](./ADR-009-rvqr-signature-admission.md)).
+- **The codec table is not RuVector's**, and that is a conflict rather than a
+  cost — see [ADR-003](./ADR-003-rvqr-adaptive-compression.md) §2.1 and §2.5.
+  `proto2.js` ships 1 = SCF-1, 2 = deflate-raw, 3 = Brotli where
+  [ADR-004 §5.1](./ADR-004-rvf-format.md) assigns 1 = LZ4, 2 = Zstd, 3 = Brotli.
+  Only Brotli coincides, and Zstd — ADR-003's default — has no id at all.
+- **Two formats to maintain, or a flag day.** rvQR is a static page with no
+  deployment coupling between the two devices, so "both sides update" is not
+  something the protocol can arrange.
+- **1.49× does not change the character of the channel.** It is a necessary
+  step underneath [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
   [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md), not a fix on its own.
-- **The 8-byte transport-hash prefix costs 4 bytes more than v1's `h`** and
-  buys binding strength nobody has complained about. It is the honest field to
-  shrink if a future version needs the room.
-- **None of this is implemented.** There is no v2 encoder, no v2 parser, and no
-  test vector. Everything above is a specification.
-
-### Still open
-
-Whether repair frames (type 2) carry the fountain codec's symbol id in the
-existing index field or need their own tuple; that depends on wiring
-`artifacts/fountain.js` into the transport, which has not happened
-([ADR-001](./ADR-001-rvqr-optical-transport.md), "Still roadmap").
 
 ## 4. Acceptance criteria
 
-1. **Golden byte vectors.** A manifest frame and a data frame for the 40,989-byte
-   demo module, checked in as hex, with a test that fails on any byte change.
-   Little-endianness is asserted explicitly by a vector whose fields differ under
-   the two byte orders.
-2. **Size.** The header is exactly 28 bytes; a default data frame is exactly
-   788 bytes and encodes to a version 19 level L symbol. Both asserted, not
-   assumed.
-3. **Codec honesty.** A manifest declaring codec `0x0002` whose payload is
-   Brotli is rejected at the transport hash, with a test that constructs exactly
-   that mismatch.
-4. **Unknown codec and unknown dictionary are rejected**, not skipped, not
-   treated as `0x0000`.
-5. **Reserved bytes.** A frame with non-zero reserved bits or a non-zero
-   reserved field is rejected.
-6. **Bomb bound.** A manifest declaring 256 MB original size with a 1 KB
-   payload allocates no more than the declared bound before failing, and a
-   payload that inflates past its declared original size is rejected mid-stream
-   rather than at the end.
-7. **Round trip through the existing receiver.** A v2 transfer of both demo
-   artifacts reassembles byte-identically and passes the same SHA-256 acceptance
-   rule as v1, with `core.admitArtifact` unchanged
-   ([ADR-009](./ADR-009-rvqr-signature-admission.md)).
-8. **Measured, not projected.** `bench/` reports v2 frames-per-artifact and
-   wire efficiency for both demo payloads alongside v1's, and the 1.484× figure
-   in this document is replaced by whatever the harness says.
+Items 1–7 are met by `artifacts/proto2.test.js` at 26/26. Items 8–11 are not.
+
+1. ✅ **Measured, not asserted.** Bytes per frame for v1 and v2 at a fixed QR
+   version are recomputed every run: 792 B capacity, v1 741 B at its default
+   (44.7% overhead), v2 764 B, armoured 665 B.
+2. ✅ **Size and layout.** 28-byte header, payload carried verbatim, every field
+   round-tripped, little-endianness asserted at the documented offsets.
+3. ✅ **Codec honesty.** All four codec ids and the dictionary id round-trip with
+   0 as a value; a compressed transfer is refused without a decoder and verified
+   byte-exact with one; a decoder returning the wrong length is refused.
+4. ✅ **Hostile input.** 27 malformed frames refused without throwing; declared
+   sizes that disagree with the bytes rejected rather than repaired; ceilings no
+   looser than v1's; oversized names refused at encode and clamped at build.
+5. ✅ **Both hashes do their own job.** A transport-hash mismatch is caught on
+   parse with receiver state untouched; a substituted chunk that gets past it is
+   caught by the content hash on finalize.
+6. ✅ **Cross-version refusal**, both directions, in text and byte form, with v1
+   frames still byte-identical to their frozen form.
+7. ✅ **Armour.** 8/7 measured against base64url's 4/3; non-ASCII and non-zero
+   padding refused.
+8. ⬜ **Golden byte vectors checked in as hex** for a manifest and a data frame
+   of the demo module, failing on any byte change. Round-trip tests do not catch
+   a layout change made consistently on both sides.
+9. ⬜ **Wired into the app**, with a decode path that can deliver either the raw
+   octets or the armoured form, and the resulting gain measured end to end
+   rather than at the module.
+10. ⬜ **Codec ids reconciled with [ADR-004 §5.1](./ADR-004-rvf-format.md)**, or
+    ADR-003 amended to match — one or the other, before anything depends on the
+    numbering.
+11. ⬜ **[ADR-010](./ADR-010-rvqr-acceptance-bar.md) passed on a v2 transfer.**

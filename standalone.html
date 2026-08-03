@@ -3546,6 +3546,49 @@ var RVQR_DEMOS = (function () {
    * Names arrive from unauthenticated frames, so this runs on receive as well
    * as on import.
    */
+
+  // --- Admission control -----------------------------------------------------
+  // Whether a verified-by-hash artifact may actually be written to the vault.
+  //
+  // Hash verification proves the bytes are the bytes the manifest described. It
+  // says nothing about WHO described them. When the operator has pinned a
+  // fingerprint they have stated which signer they will accept, and the UI
+  // promises a transfer signed by any other key is refused — so that promise
+  // has to be enforced at the point of storage, not merely rendered as a
+  // badge. A pin that only colours a label is worse than no pin, because it
+  // reads as a control while admitting exactly what it claims to stop.
+  //
+  // `verification` is the verdict object the signature check produces, or null
+  // while it is still outstanding. Returns { admit, code, reason }.
+  function admitArtifact(pin, verification) {
+    // No pin: the operator has not named a signer, so integrity is the whole
+    // contract and the surrounding UI is responsible for saying so.
+    if (!pin) return { admit: true, code: 'no-pin', reason: 'No fingerprint pinned; stored on hash alone.' };
+
+    // A pin is set but the verdict has not landed. Never admit on a pending
+    // check — that is the race this function exists to close.
+    if (!verification || !verification.state) {
+      return { admit: false, code: 'pending', reason: 'Signature check has not completed yet.' };
+    }
+
+    switch (verification.state) {
+      case 'pinned':
+        return { admit: true, code: 'pinned', reason: 'Signed by the pinned fingerprint.' };
+      case 'wrong-key':
+        return { admit: false, code: 'wrong-key', reason: 'Signed by a different key than the one pinned.' };
+      case 'bad':
+        return { admit: false, code: 'bad-signature', reason: 'The signature did not verify.' };
+      case 'unsigned':
+        return { admit: false, code: 'unsigned', reason: 'A fingerprint is pinned, but this transfer is unsigned.' };
+      case 'signed':
+        return { admit: false, code: 'unpinned-key', reason: 'Signed, but not by the pinned fingerprint.' };
+      default:
+        // An unrecognised verdict fails closed on purpose: a future state must
+        // not become an accidental bypass.
+        return { admit: false, code: 'unknown-verdict', reason: 'Unrecognised verification state: ' + verification.state };
+    }
+  }
+
   function sanitizeName(name, maxLength) {
     var limit = maxLength || SAFE_NAME_LENGTH;
     var out = String(name === undefined || name === null ? '' : name)
@@ -3660,8 +3703,17 @@ var RVQR_DEMOS = (function () {
     };
   }
 
+  // A v2 frame (see proto2.js) opens with the ASCII magic "RVQ2". v1 and v2
+  // senders will meet v1 and v2 receivers in the wild, so each protocol names
+  // the other rather than reporting it as noise — "this is a v2 frame and I
+  // only speak v1" is actionable, "not-a-frame" is not.
+  var PROTO2_MAGIC = 'RVQ2';
+
   /** Parses one frame string. Never throws; returns { ok:false, reason } instead. */
   function parseFrame(text) {
+    if (typeof text === 'string' && text.slice(0, 4) === PROTO2_MAGIC) {
+      return { ok: false, reason: 'v2-frame' };
+    }
     if (typeof text !== 'string' || text.length < 2 || text.charAt(0) !== '{') {
       return { ok: false, reason: 'not-a-frame' };
     }
@@ -4041,6 +4093,7 @@ var RVQR_DEMOS = (function () {
 
   return {
     PROTOCOL_VERSION: PROTOCOL_VERSION,
+    PROTO2_MAGIC: PROTO2_MAGIC,
     DEFAULT_CHUNK: DEFAULT_CHUNK,
     MIN_CHUNK: MIN_CHUNK,
     MAX_CHUNK: MAX_CHUNK,
@@ -4077,6 +4130,7 @@ var RVQR_DEMOS = (function () {
     gridPlan: gridPlan,
     cellForSequence: cellForSequence,
     sanitizeName: sanitizeName,
+    admitArtifact: admitArtifact,
     shouldAdoptNewTransfer: shouldAdoptNewTransfer,
     b64uEncode: b64uEncode,
     b64uDecode: b64uDecode,
@@ -10675,7 +10729,7 @@ var RVQR_DEMOS = (function () {
       renderVerification();
       return;
     }
-    Promise.resolve()
+    rx.verificationPromise = Promise.resolve()
       .then(function () {
         return lib.verifyManifest(
           { name: m.name, size: m.size, sha256: m.sha256 },
@@ -10735,11 +10789,22 @@ var RVQR_DEMOS = (function () {
     if (!send.sign || !lib) return Promise.resolve(null);
     return ensureIdentity().then(function (identity) {
       if (!identity) return null;
-      return Promise.resolve(lib.signManifest(manifestFields, identity.secret))
+      // signManifest takes (privateKey, manifest) — passing them the other way
+      // round throws inside the canonicaliser, and the catch below turned that
+      // into a silent "unsigned" for every transfer.
+      return Promise.resolve(lib.signManifest(identity.secret, manifestFields))
         .then(function (sig) {
           return { sig: typeof sig === 'string' ? sig : lib.b64uEncode(sig), pub: identity.pubEncoded };
         });
-    }).catch(function () { return null; });
+    }).catch(function (err) {
+      // Signing failing is a real fault, not a reason to quietly downgrade to
+      // unsigned — say so where it can be seen, then continue unsigned so the
+      // transfer still works.
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('rvQR: manifest signing failed, sending unsigned:', err && err.message);
+      }
+      return null;
+    });
   }
 
   // One key per browser, kept in local storage. This is a demonstration of the
@@ -10926,13 +10991,30 @@ var RVQR_DEMOS = (function () {
           s.manifest.sha256.slice(0, 16) + '…, got ' + digest.slice(0, 16) + '…');
         return;
       }
-      s.status = 'VERIFIED';
-      return storeArtifact(s.manifest.name, bytes, 'received').then(function () {
+      // The hash proves the bytes; it does not prove the signer. When a
+      // fingerprint is pinned the signature verdict has to be settled and
+      // admitting BEFORE anything reaches the vault — the check runs
+      // asynchronously, so waiting on it here is what makes the pin a control
+      // rather than a label.
+      return Promise.resolve(rx.pin ? rx.verificationPromise : null)
+        .catch(function () { return null; })
+        .then(function () {
+        var verdict = core.admitArtifact(rx.pin, rx.verification);
+        if (!verdict.admit) {
+          s.status = 'REJECTED';
+          showReceiveResult(false,
+            'Refused — ' + verdict.reason +
+            ' The bytes arrived intact, but nothing was stored.');
+          return;
+        }
+        s.status = 'VERIFIED';
+        return storeArtifact(s.manifest.name, bytes, 'received').then(function () {
         stopCamera();
         showReceiveResult(true,
           'Verified and stored: ' + s.manifest.name + ' (' + core.formatBytes(bytes.length) +
           '). SHA-256 matches the manifest. Nothing was executed.');
         renderVault();
+        });
       });
     }).catch(function (err) {
       showReceiveResult(false, 'Failed to store: ' + err.message);
