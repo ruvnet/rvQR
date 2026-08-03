@@ -5,8 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark light">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' file: 'wasm-unsafe-eval'; style-src 'self' file: 'unsafe-inline'; img-src 'self' file: blob: data:; media-src 'self' file: blob:; connect-src 'self' file:; base-uri 'none'; form-action 'none'">
-<meta name="description" content="rvQR — move RVF containers and WASM artifacts between devices with a screen and a camera.">
-<title>rvQR — Artifacts</title>
+<meta name="description" content="rvQR moves files between devices with a screen and a camera. RVF containers and WASM artifacts, offline — no network, no cables, no accounts.">
+<title>rvQR — move files with a screen and a camera</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230b0f14'/%3E%3Cg fill='%232dd4bf'%3E%3Crect x='6' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='6' width='8' height='8' rx='1.5'/%3E%3Crect x='6' y='18' width='8' height='8' rx='1.5'/%3E%3Crect x='18' y='18' width='3.5' height='3.5'/%3E%3Crect x='24' y='18' width='2' height='2'/%3E%3Crect x='18' y='24' width='2' height='2'/%3E%3Crect x='22.5' y='22.5' width='3.5' height='3.5'/%3E%3C/g%3E%3C/svg%3E">
 <style>
   :root {
@@ -69,8 +69,13 @@
     backdrop-filter: blur(12px);
     border-bottom: 1px solid var(--line);
   }
-  .wordmark { font-weight: 700; letter-spacing: -.02em; font-size: 1.05rem; }
+  .brand { min-width: 0; }
+  .wordmark { font-weight: 700; letter-spacing: -.03em; font-size: 1.15rem; line-height: 1.1; }
   .wordmark span { color: var(--accent); }
+  .scope {
+    font-size: .68rem; color: var(--muted); letter-spacing: .01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
   .chip {
     margin-left: auto; font-size: .72rem; color: var(--muted);
     border: 1px solid var(--line); border-radius: 999px; padding: .2rem .55rem;
@@ -201,7 +206,7 @@
 
   nav.tabbar {
     position: fixed; left: 0; right: 0; bottom: 0; z-index: 30;
-    display: grid; grid-template-columns: repeat(4, 1fr);
+    display: grid; grid-template-columns: repeat(5, 1fr);
     background: color-mix(in srgb, var(--surface) 94%, transparent);
     backdrop-filter: blur(12px);
     border-top: 1px solid var(--line);
@@ -214,6 +219,71 @@
   }
   nav.tabbar button[aria-selected="true"] { color: var(--accent); }
   nav.tabbar svg { width: 22px; height: 22px; }
+
+  table.seg { width: 100%; border-collapse: collapse; font-size: .8rem; }
+  table.seg th, table.seg td { text-align: left; padding: .35rem .4rem; border-bottom: 1px solid var(--line); }
+  table.seg th { color: var(--muted); font-weight: 600; font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; }
+  table.seg td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .scroll-x { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  .check { display: flex; gap: .5rem; align-items: flex-start; padding: .45rem 0; border-bottom: 1px solid var(--line); }
+  .check:last-child { border-bottom: 0; }
+  .check .mark { flex: 0 0 auto; width: 1.15rem; text-align: center; font-weight: 700; }
+  .check.pass .mark { color: var(--ok); }
+  .check.warn .mark { color: var(--warn); }
+  .check.fail .mark { color: var(--danger); }
+  .check.unavailable .mark { color: var(--muted); }
+  .check .body { min-width: 0; }
+  .check .body strong { font-size: .88rem; }
+  .check .body span { display: block; color: var(--muted); font-size: .8rem; }
+
+  .rank { display: flex; align-items: center; gap: .6rem; padding: .35rem 0; font-size: .88rem; }
+  .rank .bar2 { flex: 1 1 auto; height: 6px; border-radius: 999px; background: var(--surface-2); overflow: hidden; }
+  .rank .bar2 > i { display: block; height: 100%; background: var(--accent); }
+  .rank .id { font-weight: 600; min-width: 3.5rem; }
+  .rank .d { color: var(--muted); font-variant-numeric: tabular-nums; font-size: .8rem; }
+
+  .steps { counter-reset: step; padding: 0; margin: 0; list-style: none; }
+  .steps > li { position: relative; padding-left: 2.1rem; margin-bottom: 1rem; }
+  .steps > li::before {
+    counter-increment: step; content: counter(step);
+    position: absolute; left: 0; top: -.1rem;
+    width: 1.5rem; height: 1.5rem; border-radius: 50%;
+    background: var(--accent); color: var(--accent-ink);
+    display: grid; place-items: center; font-size: .78rem; font-weight: 700;
+  }
+  .steps h3 { margin: 0 0 .2rem; }
+  .steps p { margin: 0 0 .4rem; font-size: .88rem; color: var(--muted); }
+
+  #welcome { width: min(460px, 100%); }
+  #welcome .sheet-body { padding: 0 1rem 1rem; }
+  .welcome-stage {
+    display: block; width: 100%; height: auto; aspect-ratio: 8 / 3;
+    border-radius: 12px; background: var(--surface-2); border: 1px solid var(--line);
+    margin-top: 1rem;
+  }
+  .welcome-title { font-size: 1.45rem; letter-spacing: -.03em; margin: 1rem 0 .25rem; }
+  .welcome-title span { color: var(--accent); }
+  .welcome-tagline { font-size: .95rem; margin: 0 0 1rem; }
+  .beats { list-style: none; margin: 0 0 1.2rem; padding: 0; }
+  .beats li { display: flex; gap: .7rem; padding: .55rem 0; border-bottom: 1px solid var(--line); }
+  .beats li:last-child { border-bottom: 0; }
+  .beats .dot {
+    flex: 0 0 auto; width: 1.6rem; height: 1.6rem; border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 18%, transparent);
+    color: var(--accent); display: grid; place-items: center;
+    font-size: .75rem; font-weight: 700;
+  }
+  .beats strong { display: block; font-size: .92rem; }
+  .beats span { color: var(--muted); font-size: .85rem; }
+  dialog.enter { animation: sheetIn .22s ease-out; }
+  @keyframes sheetIn {
+    from { opacity: 0; transform: translateY(10px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    dialog.enter { animation: none; }
+  }
 
   .toast {
     position: fixed; left: 50%; transform: translateX(-50%);
@@ -229,7 +299,10 @@
 <body>
 
 <header>
-  <div class="wordmark">rv<span>QR</span></div>
+  <div class="brand">
+    <div class="wordmark">rv<span>QR</span></div>
+    <div class="scope">RVF containers and WASM artifacts</div>
+  </div>
   <div class="chip" id="statusChip">alpha</div>
 </header>
 
@@ -243,7 +316,11 @@
         <p style="margin:0 0 .7rem"><strong>Drop a file here</strong><br><span class="small">or</span></p>
         <div class="row" style="justify-content:center">
           <button class="btn-primary" id="importBtn">Import file</button>
-          <button id="demoBtn">Load demo artifact</button>
+        </div>
+        <p class="small" style="margin:.9rem 0 .4rem">or load a demo artifact</p>
+        <div class="row" style="justify-content:center">
+          <button class="btn-sm" id="demoRvfBtn">ruvnet demo .rvf (2.3 KB)</button>
+          <button class="btn-sm" id="demoWasmBtn">RVF runtime .wasm (40 KB)</button>
         </div>
       </div>
       <input type="file" id="fileInput" multiple>
@@ -317,6 +394,18 @@
         <button class="btn-primary grow" id="scanBtn">Start camera</button>
         <button id="resetRxBtn">Reset</button>
       </div>
+      <p class="small muted" id="scannerNote" style="margin:.7rem 0 0"></p>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-bottom:.3rem">No camera? Decode a picture</h3>
+      <p class="small muted">Take a photo or screenshot of the sending screen, then drop it here. Several frames in one picture are all read at once — and this works in any browser.</p>
+      <div class="dropzone" id="imageDrop">
+        <button class="btn-primary" id="imageBtn">Choose image</button>
+        <p class="small" style="margin:.6rem 0 0">or drop one here</p>
+      </div>
+      <input type="file" id="imageInput" accept="image/*" multiple>
+      <div id="imageResult" style="margin-top:.7rem"></div>
     </div>
 
     <div class="card" id="scanCard" hidden>
@@ -343,11 +432,93 @@
     </details>
   </section>
 
+  <!-- =========================== TUTORIAL ========================== -->
+  <section id="tab-guide" class="stack" hidden>
+    <div class="card">
+      <h2>How rvQR works</h2>
+      <p class="small">Two devices, a screen and a camera, and no network in between. One device turns a file into a stream of QR codes; the other watches, collects the frames, checks the hash, and stores the result. That is the whole idea — everything below is detail.</p>
+    </div>
+
+    <div class="card">
+      <h2>Try it in 60 seconds</h2>
+      <ol class="steps">
+        <li>
+          <h3>Load the demo container</h3>
+          <p>On the Vault tab, tap <em>ruvnet demo .rvf</em>. It is a real RVF container holding 24 vectors of 16 dimensions, and it fits in five QR frames.</p>
+          <button class="btn-sm" data-goto="vault">Go to Vault</button>
+        </li>
+        <li>
+          <h3>Send it</h3>
+          <p>Tap the artifact, then <em>Send this</em>. Frames start cycling immediately. Leave that screen showing.</p>
+        </li>
+        <li>
+          <h3>Receive it on the other device</h3>
+          <p>Open this same page on a second device, go to Receive, tap <em>Start camera</em> and point it at the first screen. No camera? Photograph the screen and drop the picture into the image box instead.</p>
+          <button class="btn-sm" data-goto="receive">Go to Receive</button>
+        </li>
+        <li>
+          <h3>Watch it land</h3>
+          <p>The bar fills and the grid lights up as frames arrive, in whatever order they happen to be caught. When the last one lands, the bytes are hashed and compared with the manifest. Match, and it is stored. Mismatch, and the whole transfer is thrown away.</p>
+        </li>
+        <li>
+          <h3>Open what you received</h3>
+          <p>Tap the new artifact. For an RVF container you get the real segment table, and then a search box: randomise a query vector and see the nearest ids ranked by distance. A vector database, delivered by camera.</p>
+        </li>
+      </ol>
+    </div>
+
+    <div class="card">
+      <h2>Sending well</h2>
+      <p class="small">Two settings decide whether the other device can keep up.</p>
+      <p class="small"><strong>Chunk size</strong> is how many bytes ride in each frame. Bigger chunks mean fewer frames but a denser symbol. 512 bytes suits a phone with native scanning; drop to 256 if the receiving device is struggling or is falling back to rvQR's own decoder.</p>
+      <p class="small"><strong>Speed</strong> is frames per second. Faster finishes sooner but gives the camera less time on each frame. Five is comfortable; drop to two or three in poor light.</p>
+      <p class="small muted" style="margin:0">Hold both devices steady, fill the camera with the QR code, and avoid glare — the same things that make any QR scan work.</p>
+    </div>
+
+    <div class="card">
+      <h2>Three ways to receive</h2>
+      <p class="small"><strong>Camera.</strong> The fastest route. Uses the browser's native barcode reader where there is one, and rvQR's own decoder where there is not.</p>
+      <p class="small"><strong>A picture.</strong> Photograph or screenshot the sending screen and drop the image in. Every frame visible in the picture is read at once. This works in every browser, and it is the answer when the page is embedded somewhere that blocks camera access.</p>
+      <p class="small" style="margin:0"><strong>Pasted text.</strong> If you can copy a frame's contents as text, paste it in. Mostly useful for debugging, and it drives exactly the same receiving logic as the other two.</p>
+    </div>
+
+    <div class="card">
+      <h2>Reading the progress display</h2>
+      <p class="small">The <strong>ring</strong> on the sending side shows where the sender is in its loop. It is not the receiver's progress — the sender has no idea what the receiver has.</p>
+      <p class="small">The <strong>bar and grid</strong> on the receiving side are the real progress. Each cell is one frame, lit once that frame has been read. Gaps fill in as the sender loops around again. On a very large transfer, one cell stands for several frames.</p>
+      <p class="small" style="margin:0">The counters show duplicates (harmless and expected) and rejected frames (unreadable, or belonging to a different transfer).</p>
+    </div>
+
+    <div class="card">
+      <h2>Inspecting what you got</h2>
+      <p class="small"><strong>RVF containers</strong> are parsed by the real RVF WebAssembly microkernel — the same one published as <code>@ruvector/rvf-wasm</code>. You get the header, every segment with its type and size, a CRC fingerprint per segment, and for containers with vectors, the count, the dimensionality and a working nearest-neighbour search.</p>
+      <p class="small"><strong>WASM modules</strong> are compiled but never instantiated, which is enough to list their exports and imports without running a single instruction.</p>
+      <p class="small muted" style="margin:0">Where a check cannot be made honestly, rvQR says so instead of showing a green tick. Some entry points in the published kernel do less than their names suggest, and the detail view spells out which.</p>
+    </div>
+
+    <div class="card">
+      <h2>What is actually guaranteed</h2>
+      <p class="small"><strong>Integrity: yes.</strong> Nothing enters the vault unless the reassembled bytes hash to exactly the SHA-256 in the manifest frame. One wrong bit discards the entire transfer.</p>
+      <p class="small"><strong>Authenticity: no.</strong> The manifest travels in the same unauthenticated stream as the data, so anyone who can put a screen in front of your camera can send you a perfectly valid transfer of anything at all. Treat what arrives like a download from a stranger. Signed manifests are on the roadmap.</p>
+      <p class="small" style="margin:0"><strong>Execution: never.</strong> Receiving a file does not run it, and rvQR has no mechanism that would.</p>
+    </div>
+
+    <div class="card">
+      <h2>Browser reality</h2>
+      <p class="small">Sending works anywhere with a canvas. For receiving, Chrome and Edge — and Safari 17 and later — have a native barcode reader that rvQR uses when it is there. Everywhere else, including Firefox and older Safari, rvQR falls back to its own decoder, which is dependable on smaller symbols and wants a steadier hand on the largest ones. The image and paste routes always work.</p>
+      <div class="row" style="margin-top:.8rem">
+        <button class="btn-sm" data-goto="about">Security details</button>
+        <button class="btn-sm" id="showWelcome">Show the intro again</button>
+        <a class="btn btn-sm" href="https://github.com/ruvnet/rvQR/blob/main/docs/tutorial.md">Full written guide</a>
+      </div>
+    </div>
+  </section>
+
   <!-- ============================ ABOUT ============================ -->
   <section id="tab-about" class="stack" hidden>
     <div class="card">
       <h2>What this is</h2>
-      <p class="small">rvQR moves RVF cognitive containers and WASM artifacts between devices over an optical channel: one screen animates QR frames, one camera reads them. No network, no cable, no account. You can watch the whole transfer happen.</p>
+      <p class="small"><strong>Move files between devices with a screen and a camera.</strong> rvQR carries RVF containers and WASM artifacts: one screen shows the file as QR frames, one camera reads them back. No network, no cable, no account — and you can watch the whole transfer happen.</p>
     </div>
 
     <div class="card">
@@ -401,11 +572,51 @@
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 8V5a2 2 0 0 1 2-2h3M16 3h3a2 2 0 0 1 2 2v3M21 16v3a2 2 0 0 1-2 2h-3M8 21H5a2 2 0 0 1-2-2v-3"/><circle cx="12" cy="12" r="3.2"/></svg>
     Receive
   </button>
+  <button role="tab" data-tab="guide" aria-selected="false">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H19v15H6.5A2.5 2.5 0 0 0 4 20.5z"/><path d="M8 7.5h7M8 11h5"/></svg>
+    Guide
+  </button>
   <button role="tab" data-tab="about" aria-selected="false">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 7.6v.6"/></svg>
     About
   </button>
 </nav>
+
+<dialog id="welcome" aria-labelledby="welcomeTitle">
+  <div class="sheet-body">
+    <canvas class="welcome-stage" id="welcomeStage" width="640" height="240" aria-hidden="true"></canvas>
+    <h2 class="welcome-title" id="welcomeTitle">rv<span>QR</span></h2>
+    <p class="welcome-tagline">Move files between devices with a screen and a camera.</p>
+    <ul class="beats">
+      <li>
+        <div class="dot">1</div>
+        <div>
+          <strong>Two devices, no network</strong>
+          <span>One screen shows the file as QR codes. One camera reads them. No cables, no accounts, nothing to install.</span>
+        </div>
+      </li>
+      <li>
+        <div class="dot">2</div>
+        <div>
+          <strong>Try it right now</strong>
+          <span>The demo container is 2.3 KB — about five frames, a couple of seconds. Send it, scan it on another device, then search the vectors inside it in the browser.</span>
+        </div>
+      </li>
+      <li>
+        <div class="dot">3</div>
+        <div>
+          <strong>Nothing runs on arrival</strong>
+          <span>Received bytes are inert data, and every transfer is checked against its hash. Integrity is verified; who sent it is not — treat what arrives like a download from a stranger.</span>
+        </div>
+      </li>
+    </ul>
+    <div class="row">
+      <button class="btn-primary grow" id="welcomeStart">Load the demo and send it</button>
+      <button id="welcomeClose">Look around first</button>
+    </div>
+    <p class="small muted" style="margin:.8rem 0 0">The <strong>Guide</strong> tab has the full walkthrough whenever you want it.</p>
+  </div>
+</dialog>
 
 <dialog id="detail">
   <div class="sheet-head">
@@ -418,7 +629,9 @@
 <div class="toast" id="toast"></div>
 
 <script src="./vendor/qrcode.js"></script>
+<script src="./vendor/qrdecode.js"></script>
 <script src="./core.js"></script>
+<script src="./rvf.js"></script>
 <script src="./app.js"></script>
 </body>
 </html>

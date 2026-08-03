@@ -14,7 +14,18 @@ point into the upstream ADR set — ADR-057, for instance, links to ADR-059, whi
 is not mirrored here because it is not about RVF transfer. Follow those links
 upstream rather than expecting them to resolve locally.
 
-## Wire format and contract
+## rvQR's own decisions
+
+These are rvQR's, written here rather than mirrored. **rvQR-local ADRs have
+their own numbering starting at 001**, because the mirrored files below keep
+their upstream numbers — so an ADR-009 in this directory is RuVector's wire
+contract, not rvQR's ninth decision. Local ADRs say so in their header.
+
+| ADR | What it decides |
+|-----|-----------------|
+| [ADR-001 — rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md) | The decisions this project has actually made and shipped: fixed indexed chunks before erasure coding, integrity without authenticity as a stated position, the hostile-input ceilings and why the renderer is capped independently of them, the stall-based transfer switching rule, native scanning with a vendored decoder fallback, the iframe camera constraint, the keyframe gate, and the line between parsing an untrusted container with WebAssembly and executing it. Includes an honest cost list. |
+
+## Mirrored: wire format and contract
 
 | ADR | What it decides |
 |-----|-----------------|
@@ -23,7 +34,7 @@ upstream rather than expecting them to resolve locally.
 | [ADR-005 — RVF Cognitive Container Format](./ADR-005-rvf-cognitive-container.md) | The companion container decision, same vintage and the same caveat. **Superseded by ADR-009 for wire layout only**; banner preserved. Its non-wire reasoning still stands. |
 | [ADR-029 — RVF as Canonical Binary Format](./ADR-029-rvf-canonical-format.md) | Makes RVF the one binary format across 70+ Rust crates and 50+ npm packages, ending the format fragmentation between ruvector-core, agentdb, claude-flow and friends. Why an artifact from any of them is a thing rvQR can carry. |
 
-## Cognitive containers and WASM
+## Mirrored: cognitive containers and WASM
 
 | ADR | What it decides |
 |-----|-----------------|
@@ -31,14 +42,14 @@ upstream rather than expecting them to resolve locally.
 | [ADR-032 — RVF WASM Integration](./ADR-032-rvf-wasm-integration.md) | How RVF ships to browsers and edges through the npm packages, including `@ruvector/rvf-wasm` — the very binary rvQR bundles as its demo artifact. |
 | [ADR-280 — Durable Self-Contained Metadata](./ADR-280-rvf-durable-self-contained-metadata.md) | Makes application metadata survive close-and-reopen alongside the vectors, via the `Meta`/`MetaIdx` segment types. Matters for optical transfer because a received container should arrive complete, not merely byte-identical. Accepted on a branch; merge pending. |
 
-## Transfer and federation
+## Mirrored: transfer and federation
 
 | ADR | What it decides |
 |-----|-----------------|
 | [ADR-057 — Federated RVF Transfer Learning](./ADR-057-federated-rvf-transfer-learning.md) | Learning artifacts (SONA trajectories, policy kernels, transfer priors) move between deployments as RVF segments instead of being rediscovered independently. rvQR is one possible courier for exactly that traffic — one with no network at all. |
 | [RVM ADR-149 — RVF Integration for RVM](./RVM-ADR-149-rvf-integration.md) | How RVM consumes RVF for boot images, dormant memory checkpoints, witness archives and GPU kernel distribution. Mirrored from a different repository with its own ADR numbering, hence the `RVM-` prefix. |
 
-## QR and optical
+## Mirrored: QR and optical
 
 | ADR | What it decides |
 |-----|-----------------|

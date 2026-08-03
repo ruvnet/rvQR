@@ -9,6 +9,8 @@
 
   var core = window.RVQRCore;
   var qrlib = window.RVQRCode;
+  var qrdec = window.RVQRDecode;
+  var rvflib = window.RVQRRvf;
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -227,6 +229,16 @@
       kv('First bytes', core.hexPreview(bytes, 32), 'mono');
       body.appendChild(dl);
 
+      if (row.kind === 'rvf') {
+        var rvfBox = el('div', 'card tight');
+        rvfBox.style.marginTop = '1rem';
+        rvfBox.appendChild(el('h3', '', 'Container contents'));
+        var rvfStatus = el('p', 'small muted', 'Loading the RVF microkernel\u2026');
+        rvfBox.appendChild(rvfStatus);
+        body.appendChild(rvfBox);
+        renderRvf(rvfBox, rvfStatus, bytes);
+      }
+
       if (row.kind === 'wasm') {
         var wasmBox = el('div', 'card tight');
         wasmBox.style.marginTop = '1rem';
@@ -282,6 +294,178 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // RVF container inspection
+  //
+  // The microkernel is instantiated to parse the container. That is this app
+  // loading a tool, not the artifact running: the kernel imports nothing, and
+  // the container is data passed to it.
+  // ---------------------------------------------------------------------------
+
+  function renderRvf(box, status, bytes) {
+    if (!rvflib) {
+      status.textContent = 'The RVF binding failed to load.';
+      return;
+    }
+    rvflib.load('./demo/rvf_wasm_bg.wasm').then(function (kernel) {
+      var report = rvflib.inspect(kernel, bytes);
+      status.textContent = report.header
+        ? 'Parsed by the RVF microkernel \u2014 ' + report.segmentCount +
+          ' segments, first segment ' + report.header.typeName + '.'
+        : 'The kernel could not read a segment header here.';
+
+      if (report.header) {
+        var dl = el('dl', 'kv small');
+        function kv(k, v) {
+          dl.appendChild(el('dt', '', k));
+          dl.appendChild(el('dd', '', v));
+        }
+        kv('Magic', report.header.magicBytes + '  (v1 segment magic)');
+        kv('Version', String(report.header.version));
+        kv('First segment', report.header.typeName + ' (type ' + report.header.type + ')');
+        box.appendChild(dl);
+      }
+
+      if (report.segments.length) {
+        var wrap = el('div', 'scroll-x');
+        wrap.style.marginTop = '.8rem';
+        var table = el('table', 'seg');
+        var thead = el('tr');
+        ['#', 'Type', 'Size', 'Offset', 'CRC32C'].forEach(function (h) {
+          thead.appendChild(el('th', '', h));
+        });
+        table.appendChild(thead);
+        report.segments.forEach(function (seg) {
+          var tr = el('tr');
+          tr.appendChild(el('td', 'num', String(seg.index)));
+          tr.appendChild(el('td', '', seg.typeName));
+          tr.appendChild(el('td', 'num', core.formatBytes(seg.size)));
+          tr.appendChild(el('td', 'num', String(seg.offset)));
+          tr.appendChild(el('td', 'mono', seg.crc32c || '\u2014'));
+          table.appendChild(tr);
+        });
+        wrap.appendChild(table);
+        box.appendChild(wrap);
+      }
+
+      if (report.checks.length) {
+        var checks = el('div');
+        checks.style.marginTop = '.8rem';
+        report.checks.forEach(function (c) {
+          var row = el('div', 'check ' + c.status);
+          var marks = { pass: '\u2713', warn: '!', fail: '\u2717', unavailable: '\u2013' };
+          row.appendChild(el('div', 'mark', marks[c.status] || '\u2013'));
+          var b = el('div', 'body');
+          b.appendChild(el('strong', '', c.name));
+          b.appendChild(el('span', '', c.detail));
+          row.appendChild(b);
+          checks.appendChild(row);
+        });
+        box.appendChild(checks);
+      }
+
+      if (report.vectors && report.vectors.ok) {
+        buildQueryPanel(box, kernel, bytes, report);
+      }
+    }, function (err) {
+      status.textContent = 'Could not load the RVF microkernel: ' + err.message +
+        (window.location.protocol === 'file:'
+          ? ' (opening the page over http rather than from disk will fix this)'
+          : '');
+    });
+  }
+
+  /** Live nearest-neighbour search over the vectors in the container. */
+  function buildQueryPanel(box, kernel, bytes, report) {
+    var vectors = report.vectors;
+    var panel = el('div');
+    panel.style.marginTop = '1rem';
+    panel.appendChild(el('h3', '', 'Search these vectors'));
+    panel.appendChild(el('p', 'small muted',
+      vectors.count + ' vectors of ' + vectors.dim + ' dimensions. Pick a stored ' +
+      'vector as the query, or roll a random one, and rvQR ranks the rest by distance.'));
+
+    var controls = el('div', 'row');
+    var metricSel = el('select');
+    ['cosine', 'euclidean', 'inner product'].forEach(function (m) {
+      var o = el('option', '', m);
+      o.value = m;
+      metricSel.appendChild(o);
+    });
+    metricSel.style.flex = '1 1 8rem';
+    var randomBtn = el('button', 'btn-sm', 'Random query');
+    var storedBtn = el('button', 'btn-sm', 'Use a stored vector');
+    controls.appendChild(metricSel);
+    controls.appendChild(randomBtn);
+    controls.appendChild(storedBtn);
+    panel.appendChild(controls);
+
+    var queryLabel = el('p', 'small muted');
+    queryLabel.style.margin = '.6rem 0 .2rem';
+    panel.appendChild(queryLabel);
+    var results = el('div');
+    panel.appendChild(results);
+    box.appendChild(panel);
+
+    var current = null;
+    var currentLabel = '';
+
+    function run() {
+      if (!current) return;
+      var metric = metricSel.value;
+      var ranked = rvflib.queryVectors(vectors, current, 5, metric);
+      results.textContent = '';
+      queryLabel.textContent = 'Query: ' + currentLabel + ' \u00b7 metric ' + metric;
+      if (!ranked.length) {
+        results.appendChild(el('p', 'small muted', 'No results.'));
+        return;
+      }
+      var worst = Math.max.apply(null, ranked.map(function (r) { return Math.abs(r.distance); })) || 1;
+      ranked.forEach(function (r) {
+        var row = el('div', 'rank');
+        row.appendChild(el('span', 'id', 'id ' + r.id));
+        var bar = el('div', 'bar2');
+        var fill = el('i');
+        // Nearer means a longer bar, so the eye reads it the right way round.
+        fill.style.width = Math.max(3, 100 - (Math.abs(r.distance) / worst) * 92) + '%';
+        bar.appendChild(fill);
+        row.appendChild(bar);
+        row.appendChild(el('span', 'd', r.distance.toFixed(4)));
+        results.appendChild(row);
+      });
+
+      // Show the kernel's own answer too when it disagrees, rather than
+      // quietly presenting one engine's numbers as the truth.
+      if (report.store && report.store.agrees === false) {
+        var note = el('p', 'small muted');
+        note.style.marginTop = '.5rem';
+        note.textContent = 'Ranking comes from rvQR\u2019s reader. The bundled 0.1.9 ' +
+          'kernel reads this container\u2019s vector header transposed, so its own ' +
+          'store query returns ids that do not match the file.';
+        results.appendChild(note);
+      }
+    }
+
+    randomBtn.addEventListener('click', function () {
+      current = rvflib.randomUnitVector(vectors.dim);
+      currentLabel = 'random unit vector';
+      run();
+    });
+    storedBtn.addEventListener('click', function () {
+      var i = Math.floor(Math.random() * vectors.count);
+      current = vectors.vectors[i];
+      currentLabel = 'stored vector id ' + vectors.ids[i];
+      run();
+    });
+    metricSel.addEventListener('change', run);
+
+    // Start with a stored vector: its own id coming back at distance zero is
+    // the clearest possible demonstration that the search is real.
+    current = vectors.vectors[0];
+    currentLabel = 'stored vector id ' + vectors.ids[0];
+    run();
+  }
+
   // Compile-only: WebAssembly.compile validates and reads the module's shape.
   // It never runs code — instantiation is what would run a start function.
   function inspectWasm(bytes) {
@@ -330,18 +514,18 @@
     });
   }
 
-  function loadDemo() {
-    fetch('./demo/rvf_wasm_bg.wasm')
+  function loadDemo(file) {
+    return fetch('./demo/' + file)
       .then(function (res) {
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return res.arrayBuffer();
       })
       .then(function (buf) {
-        return storeArtifact('rvf_wasm_bg.wasm', new Uint8Array(buf), 'demo');
+        return storeArtifact(file, new Uint8Array(buf), 'demo');
       })
-      .then(function () {
-        toast('Demo artifact loaded');
-        renderVault();
+      .then(function (record) {
+        toast('Loaded ' + file);
+        return renderVault().then(function () { return record; });
       })
       .catch(function (err) {
         toast('Could not load demo: ' + err.message);
@@ -465,6 +649,7 @@
   // ---------------------------------------------------------------------------
 
   var rx = {
+    gate: core.createFrameGate(),
     state: core.createReceiver(),
     stream: null,
     detector: null,
@@ -473,29 +658,79 @@
     finalizing: false
   };
 
-  function barcodeSupported() {
+  // Two decoding engines. The native one is faster and better tested, so it
+  // wins when present; the bundled decoder means "no BarcodeDetector" is no
+  // longer the same as "cannot scan".
+  function nativeScannerAvailable() {
     return typeof window.BarcodeDetector !== 'undefined';
+  }
+  function scannerKind() {
+    if (nativeScannerAvailable()) return 'native';
+    return qrdec ? 'fallback' : 'none';
+  }
+  function isFramed() {
+    try {
+      return window.self !== window.top;
+    } catch (e) {
+      return true; // cross-origin frame: even asking throws
+    }
+  }
+  // A cross-origin frame must be granted camera access explicitly by its host
+  // page. Without allow="camera" the request is refused no matter what the
+  // user does, so it is worth saying that plainly instead of blaming them.
+  function cameraBlockedByFrame() {
+    if (!isFramed()) return false;
+    try {
+      if (document.featurePolicy && document.featurePolicy.allowsFeature) {
+        return !document.featurePolicy.allowsFeature('camera');
+      }
+    } catch (e) { /* fall through */ }
+    return true;
   }
 
   function renderCapabilityNotice() {
     var box = $('capabilityNotice');
     box.textContent = '';
-    if (barcodeSupported()) return;
-    var n = el('div', 'notice');
-    n.appendChild(el('strong', '', 'This browser cannot scan. '));
-    n.appendChild(document.createTextNode('rvQR uses the native '));
-    n.appendChild(el('code', '', 'BarcodeDetector'));
-    n.appendChild(document.createTextNode(
-      ' API rather than bundling a megabyte of decoder. It is available in ' +
-      'Chrome and Edge on Android and desktop, and in Safari 17 and later. ' +
-      'You can still send from this device, or paste frames by hand below.'
-    ));
-    box.appendChild(n);
-    $('scanBtn').disabled = true;
+    var kind = scannerKind();
+
+    if (cameraBlockedByFrame()) {
+      var f = el('div', 'notice');
+      f.appendChild(el('strong', '', 'This page is embedded in a frame that does not grant camera access. '));
+      f.appendChild(document.createTextNode(
+        'That is a decision made by the surrounding page, not by rvQR or by you, ' +
+        'and no permission prompt can override it. Open rvQR directly to scan — '
+      ));
+      var link = el('a', '', 'open in its own tab');
+      link.href = window.location.href;
+      link.target = '_blank';
+      link.rel = 'noopener';
+      f.appendChild(link);
+      f.appendChild(document.createTextNode(
+        ' — or use the picture and paste options below, which work anywhere.'
+      ));
+      box.appendChild(f);
+    }
+
+    if (kind === 'none') {
+      var n = el('div', 'notice bad');
+      n.appendChild(el('strong', '', 'No decoder available. '));
+      n.appendChild(document.createTextNode('The bundled decoder failed to load.'));
+      box.appendChild(n);
+      $('scanBtn').disabled = true;
+    }
+
+    $('scannerNote').textContent = kind === 'native'
+      ? 'Scanning with this browser\u2019s native barcode reader.'
+      : kind === 'fallback'
+        ? 'This browser has no native barcode reader, so rvQR is using its own decoder. ' +
+          'It reads the smaller symbols comfortably; on the densest frames, hold steady ' +
+          'or ask the sender to drop the chunk size to 256 bytes.'
+        : '';
   }
 
   function resetReceiver() {
     rx.state = core.createReceiver();
+    rx.gate = core.createFrameGate();
     rx.finalizing = false;
     rx.lastText = null;
     $('rxCard').hidden = true;
@@ -523,12 +758,24 @@
       $('rxCard').hidden = false;
       $('scanBtn').textContent = 'Stop camera';
       rx.running = true;
-      rx.detector = new window.BarcodeDetector({ formats: ['qr_code'] });
+      rx.detector = nativeScannerAvailable()
+        ? new window.BarcodeDetector({ formats: ['qr_code'] })
+        : null;
       return v.play().catch(function () { /* autoplay policies */ });
     }).then(function () {
       scanLoop();
     }).catch(function (err) {
-      toast('Camera error: ' + err.message);
+      var name = err && err.name ? err.name : '';
+      if (name === 'NotAllowedError' && isFramed()) {
+        toast('The surrounding page blocks camera access — use a picture instead');
+      } else if (name === 'NotAllowedError') {
+        toast('Camera permission denied');
+      } else if (name === 'NotFoundError') {
+        toast('No camera on this device — use a picture instead');
+      } else {
+        toast('Camera error: ' + (err && err.message ? err.message : name));
+      }
+      renderCapabilityNotice();
     });
   }
 
@@ -542,17 +789,117 @@
     $('scanBtn').textContent = 'Start camera';
   }
 
+  var grabCanvas = null;
+
+  /** Pulls the current video frame out as ImageData for the bundled decoder. */
+  function grabFrame(video) {
+    if (!grabCanvas) grabCanvas = document.createElement('canvas');
+    var w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return null;
+    // Downscale very large frames: the decoder does not need 4K, and the
+    // scan loop has to keep up with the camera.
+    var maxSide = 1024;
+    var scale = Math.min(1, maxSide / Math.max(w, h));
+    grabCanvas.width = Math.round(w * scale);
+    grabCanvas.height = Math.round(h * scale);
+    var ctx = grabCanvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, grabCanvas.width, grabCanvas.height);
+    return ctx.getImageData(0, 0, grabCanvas.width, grabCanvas.height);
+  }
+
   function scanLoop() {
     if (!rx.running) return;
     var v = $('video');
-    if (v.readyState >= 2) {
+    if (v.readyState < 2) {
+      requestAnimationFrame(scanLoop);
+      return;
+    }
+    if (rx.detector) {
       rx.detector.detect(v).then(function (codes) {
         for (var i = 0; i < codes.length; i++) feedFrame(codes[i].rawValue);
       }).catch(function () { /* transient detector errors are normal */ })
         .then(function () { requestAnimationFrame(scanLoop); });
-    } else {
-      requestAnimationFrame(scanLoop);
+      return;
     }
+    // Fallback decoder: synchronous and heavier, so yield between frames
+    // rather than pinning the main thread — and skip frames that cannot pay
+    // for themselves. The gate is applied only on this path: the native
+    // detector is cheap and handles motion better than a gate would, so
+    // throttling it would cost frames for no saving.
+    try {
+      var image = grabFrame(v);
+      if (image) {
+        var decision = core.gateFrame(rx.gate, core.frameSignature(image));
+        if (decision.decode) {
+          var results = qrdec.decodeImage(image, { all: true, invert: false });
+          for (var r = 0; r < results.length; r++) feedFrame(results[r].text);
+        }
+        rx.gateStats = rx.gate;
+      }
+    } catch (e) { /* keep scanning */ }
+    setTimeout(function () { requestAnimationFrame(scanLoop); }, 60);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Decoding frames out of a still picture
+  // ---------------------------------------------------------------------------
+
+  function decodeImageFiles(files) {
+    var list = Array.prototype.slice.call(files);
+    if (!list.length) return;
+    var box = $('imageResult');
+    box.textContent = '';
+    box.appendChild(el('div', 'notice', 'Reading ' + list.length + ' image' +
+      (list.length === 1 ? '' : 's') + '\u2026'));
+
+    var totalFound = 0, totalAccepted = 0, processed = 0;
+    list.forEach(function (file) {
+      var url = URL.createObjectURL(file);
+      var img = new Image();
+      img.onload = function () {
+        try {
+          if (!grabCanvas) grabCanvas = document.createElement('canvas');
+          // Big photos get scaled down, but not so far that modules vanish.
+          var maxSide = 1600;
+          var scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+          grabCanvas.width = Math.round(img.width * scale);
+          grabCanvas.height = Math.round(img.height * scale);
+          var ctx = grabCanvas.getContext('2d', { willReadFrequently: true });
+          ctx.drawImage(img, 0, 0, grabCanvas.width, grabCanvas.height);
+          var data = ctx.getImageData(0, 0, grabCanvas.width, grabCanvas.height);
+          var results = qrdec.decodeImage(data, { all: true });
+          totalFound += results.length;
+          for (var i = 0; i < results.length; i++) {
+            rx.lastText = null; // a still image may legitimately repeat a frame
+            var before = rx.state.received;
+            feedFrame(results[i].text);
+            if (rx.state.received > before) totalAccepted++;
+          }
+        } catch (e) { /* report below */ }
+        URL.revokeObjectURL(url);
+        if (++processed === list.length) reportImageDecode(totalFound, totalAccepted);
+      };
+      img.onerror = function () {
+        URL.revokeObjectURL(url);
+        if (++processed === list.length) reportImageDecode(totalFound, totalAccepted);
+      };
+      img.src = url;
+    });
+  }
+
+  function reportImageDecode(found, accepted) {
+    var box = $('imageResult');
+    box.textContent = '';
+    if (!found) {
+      box.appendChild(el('div', 'notice bad',
+        'No QR codes found. Fill more of the picture with the code, keep it in ' +
+        'focus, and avoid glare across the screen.'));
+      return;
+    }
+    box.appendChild(el('div', 'notice good',
+      'Read ' + found + ' code' + (found === 1 ? '' : 's') + ', ' + accepted +
+      ' new frame' + (accepted === 1 ? '' : 's') + ' accepted.'));
+    $('rxCard').hidden = false;
   }
 
   function feedFrame(text) {
@@ -660,10 +1007,259 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Welcome
+  //
+  // Shown once, re-openable from About, and never on the critical path: the
+  // vault renders and the app is usable whether or not this ever appears.
+  // ---------------------------------------------------------------------------
+
+  var welcomeDialog = $('welcome');
+  var welcomeReturnFocus = null;
+  var stage = null;
+
+  function safeStorage() {
+    try {
+      return window.localStorage;
+    } catch (e) {
+      return null; // private mode, or an embedded frame denying storage
+    }
+  }
+
+  function openWelcome(opener) {
+    welcomeReturnFocus = opener || null;
+    welcomeDialog.classList.add('enter');
+    if (welcomeDialog.showModal) welcomeDialog.showModal();
+    else welcomeDialog.setAttribute('open', '');
+    startStage();
+    // Focus the primary action, not the dialog, so Enter does the useful thing.
+    var primary = $('welcomeStart');
+    if (primary && primary.focus) primary.focus();
+  }
+
+  function closeWelcome() {
+    // Native dialogs fire 'close' for every dismissal route — button, Escape,
+    // backdrop — so the bookkeeping lives in that one handler. Only the
+    // no-showModal fallback has to do it here.
+    if (welcomeDialog.close && welcomeDialog.open) {
+      welcomeDialog.close();
+      return;
+    }
+    stopStage();
+    core.markWelcomeSeen(safeStorage());
+    welcomeDialog.removeAttribute('open');
+    if (welcomeReturnFocus && welcomeReturnFocus.focus) welcomeReturnFocus.focus();
+    welcomeReturnFocus = null;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Welcome animation
+  //
+  // The subject is its own illustration: frames leaving a screen, crossing a
+  // gap, and filling a receiver's grid. It is decorative, so it yields to
+  // everything — a reduced-motion preference renders one composed still frame
+  // instead, and it stops entirely whenever the dialog is not on screen.
+  // ---------------------------------------------------------------------------
+
+  var STAGE_FPS = 30;
+
+  function stageColors() {
+    var css = getComputedStyle(document.documentElement);
+    var read = function (name, fallback) {
+      var v = css.getPropertyValue(name);
+      return v && v.trim() ? v.trim() : fallback;
+    };
+    return {
+      accent: read('--accent', '#2dd4bf'),
+      line: read('--line', '#24303f'),
+      muted: read('--muted', '#8b9bb0'),
+      surface: read('--surface', '#121821')
+    };
+  }
+
+  // A fixed pseudo-random matrix with finder-like corners: unmistakably a QR
+  // code at a glance without pretending to be a scannable one.
+  function stageMatrix(n) {
+    var cells = [];
+    var seed = 0x5eed;
+    for (var y = 0; y < n; y++) {
+      var row = [];
+      for (var x = 0; x < n; x++) {
+        var corner = (x < 3 && y < 3) || (x >= n - 3 && y < 3) || (x < 3 && y >= n - 3);
+        if (corner) {
+          var lx = x >= n - 3 ? n - 1 - x : x;
+          var ly = y >= n - 3 ? n - 1 - y : y;
+          row.push(lx === 1 && ly === 1 ? 0 : 1);
+        } else {
+          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+          row.push((seed >>> 17) & 1);
+        }
+      }
+      cells.push(row);
+    }
+    return cells;
+  }
+
+  function createStage(canvas) {
+    return {
+      canvas: canvas,
+      ctx: canvas.getContext('2d'),
+      matrix: stageMatrix(9),
+      n: 9,
+      model: core.createStageModel(),
+      raf: 0,
+      running: false
+    };
+  }
+
+  function stageGeometry(st) {
+    var w = st.canvas.width, h = st.canvas.height;
+    var pad = Math.round(h * 0.12);
+    var side = h - pad * 2;
+    return {
+      w: w, h: h, pad: pad, side: side,
+      senderX: pad, senderY: pad,
+      recvX: w - pad - side, recvY: pad,
+      travel: (w - pad - side) - (pad + side)
+    };
+  }
+
+  function drawStage(st, phase) {
+    var ctx = st.ctx, c = stageColors(), g = stageGeometry(st);
+    ctx.clearRect(0, 0, g.w, g.h);
+
+    // Sender: the QR matrix.
+    var cell = g.side / st.n;
+    ctx.fillStyle = c.accent;
+    for (var y = 0; y < st.n; y++) {
+      for (var x = 0; x < st.n; x++) {
+        if (!st.matrix[y][x]) continue;
+        ctx.globalAlpha = 0.85;
+        ctx.fillRect(
+          g.senderX + x * cell + 0.5, g.senderY + y * cell + 0.5,
+          Math.ceil(cell) - 1, Math.ceil(cell) - 1
+        );
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // The gap the data crosses.
+    ctx.strokeStyle = c.line;
+    ctx.lineWidth = Math.max(1, g.h * 0.008);
+    ctx.setLineDash([g.h * 0.03, g.h * 0.05]);
+    ctx.beginPath();
+    ctx.moveTo(g.senderX + g.side + g.pad * 0.6, g.h / 2);
+    ctx.lineTo(g.recvX - g.pad * 0.6, g.h / 2);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Receiver: a grid that fills as frames land.
+    var cols = 4, rows = 3;
+    var rcw = g.side / cols, rch = g.side / rows;
+    for (var i = 0; i < st.cells; i++) {
+      var cx = g.recvX + (i % cols) * rcw;
+      var cy = g.recvY + Math.floor(i / cols) * rch;
+      var filled = i < st.landed;
+      ctx.fillStyle = filled ? c.accent : c.line;
+      ctx.globalAlpha = filled ? 0.9 : 0.5;
+      roundRect(ctx, cx + 1.5, cy + 1.5, rcw - 3, rch - 3, Math.min(rcw, rch) * 0.18);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // Frames in flight.
+    var size = Math.max(6, g.side * 0.2);
+    for (var p = 0; p < st.packets.length; p++) {
+      var pk = st.packets[p];
+      var px = g.senderX + g.side + pk.progress * g.travel;
+      var py = g.h / 2 - size / 2 + Math.sin(pk.progress * Math.PI) * pk.drift;
+      ctx.globalAlpha = pk.progress > 0.9 ? (1 - pk.progress) * 10 : 1;
+      ctx.fillStyle = c.accent;
+      roundRect(ctx, px, py, size, size, size * 0.22);
+      ctx.fill();
+      // A couple of dark notches so it reads as a frame, not a dot.
+      ctx.globalAlpha *= 0.55;
+      ctx.fillStyle = c.surface;
+      ctx.fillRect(px + size * 0.18, py + size * 0.18, size * 0.22, size * 0.22);
+      ctx.fillRect(px + size * 0.6, py + size * 0.6, size * 0.22, size * 0.22);
+    }
+    ctx.globalAlpha = 1;
+    if (phase === 'static') return;
+  }
+
+  function roundRect(ctx, x, y, w, h, r) {
+    var rr = Math.min(r, w / 2, h / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + rr, y);
+    ctx.arcTo(x + w, y, x + w, y + h, rr);
+    ctx.arcTo(x + w, y + h, x, y + h, rr);
+    ctx.arcTo(x, y + h, x, y, rr);
+    ctx.arcTo(x, y, x + w, y, rr);
+    ctx.closePath();
+  }
+
+  function startStage() {
+    var canvas = $('welcomeStage');
+    if (!canvas || !canvas.getContext) return;
+    if (!stage) stage = createStage(canvas);
+
+    // Whatever happens next, paint something correct first. A decorative loop
+    // that fails to start must degrade to a still picture, never to a blank
+    // panel — the panel has to carry its meaning on its own.
+    stage.model = core.stageStillModel(core.createStageModel());
+    safeDraw();
+
+    var reduced = core.prefersReducedMotion(
+      window.matchMedia ? window.matchMedia.bind(window) : null
+    );
+    if (reduced) return; // the still above is the whole story
+
+    stopStage();
+    stage.model = core.createStageModel();
+    stage.running = true;
+
+    var tick = function (now) {
+      if (!stage.running) return;
+      // Re-check the world every frame rather than trusting a flag set once:
+      // the dialog can be closed by routes this loop never hears about.
+      var env = {
+        open: !!welcomeDialog.open,
+        visible: !document.hidden,
+        reduced: false
+      };
+      if (!env.open) { stopStage(); return; }
+      stage.raf = requestAnimationFrame(tick);
+      var step = core.stageAdvance(stage.model, now, env);
+      if (step.draw) safeDraw();
+    };
+    stage.raf = requestAnimationFrame(tick);
+  }
+
+  // A decorative animation must never become a source of console noise or a
+  // half-painted panel: one failure stops the loop and leaves the still.
+  function safeDraw() {
+    try {
+      drawStage(stage);
+    } catch (e) {
+      stopStage();
+      try {
+        stage.model = core.stageStillModel(core.createStageModel());
+        drawStage(stage);
+      } catch (e2) { /* nothing further to try */ }
+    }
+  }
+
+  function stopStage() {
+    if (!stage) return;
+    stage.running = false;
+    if (stage.raf) cancelAnimationFrame(stage.raf);
+    stage.raf = 0;
+  }
+
+  // ---------------------------------------------------------------------------
   // Tabs and wiring
   // ---------------------------------------------------------------------------
 
-  var TABS = ['vault', 'send', 'receive', 'about'];
+  var TABS = ['vault', 'send', 'receive', 'guide', 'about'];
 
   function selectTab(name) {
     TABS.forEach(function (t) {
@@ -687,7 +1283,26 @@
       importFiles(e.target.files);
       e.target.value = '';
     });
-    $('demoBtn').addEventListener('click', loadDemo);
+    $('demoRvfBtn').addEventListener('click', function () { loadDemo('ruvnet-demo.rvf'); });
+    $('demoWasmBtn').addEventListener('click', function () { loadDemo('rvf_wasm_bg.wasm'); });
+
+    $('imageBtn').addEventListener('click', function () { $('imageInput').click(); });
+    $('imageInput').addEventListener('change', function (e) {
+      decodeImageFiles(e.target.files);
+      e.target.value = '';
+    });
+    $('imageDrop').addEventListener('drop', function (e) {
+      // Handled here as well as globally so a dropped picture on the Receive
+      // tab is decoded rather than imported into the vault.
+      e.preventDefault();
+      e.stopPropagation();
+      document.body.classList.remove('dragging');
+      if (e.dataTransfer && e.dataTransfer.files.length) decodeImageFiles(e.dataTransfer.files);
+    });
+
+    Array.prototype.forEach.call(document.querySelectorAll('[data-goto]'), function (b) {
+      b.addEventListener('click', function () { selectTab(b.dataset.goto); });
+    });
     $('refreshBtn').addEventListener('click', function () { renderVault(); });
     $('detailClose').addEventListener('click', hideSheet);
 
@@ -705,6 +1320,7 @@
       });
     });
     document.addEventListener('drop', function (e) {
+      if (e.defaultPrevented) return; // the Receive drop zone already took it
       if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
         selectTab('vault');
         importFiles(e.dataTransfer.files);
@@ -758,8 +1374,50 @@
     });
 
     document.addEventListener('visibilitychange', function () {
-      if (document.hidden) { play(false); }
+      if (document.hidden) { play(false); stopStage(); }
+      else if (welcomeDialog.open) startStage();
     });
+
+    // --- welcome ---
+    $('welcomeStart').addEventListener('click', function () {
+      closeWelcome();
+      // The primary action does something: load the demo and land the user on
+      // Send, ready to go. A first-run modal whose only outcome is vanishing
+      // has wasted the one moment it had.
+      loadDemo('ruvnet-demo.rvf').then(function (record) {
+        selectTab('send');
+        if (record && record.id) {
+          $('sendPick').value = record.id;
+          startSend(record.id);
+        }
+      });
+    });
+    $('welcomeClose').addEventListener('click', closeWelcome);
+    $('showWelcome').addEventListener('click', function (e) { openWelcome(e.currentTarget); });
+    // Escape and the backdrop both route through the dialog's own close event,
+    // so dismissal is recorded however it happened.
+    welcomeDialog.addEventListener('close', function () {
+      stopStage();
+      core.markWelcomeSeen(safeStorage());
+      if (welcomeReturnFocus && welcomeReturnFocus.focus) welcomeReturnFocus.focus();
+      welcomeReturnFocus = null;
+    });
+    welcomeDialog.addEventListener('keydown', function (e) {
+      if (e.key !== 'Tab' || welcomeDialog.showModal) return;
+      // Manual focus trap only for browsers without showModal, which traps
+      // focus natively.
+      var focusable = welcomeDialog.querySelectorAll('button, [href], input, select, textarea');
+      if (!focusable.length) return;
+      var first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    });
+    welcomeDialog.addEventListener('cancel', function () { stopStage(); });
   }
 
   // ---------------------------------------------------------------------------
@@ -769,7 +1427,16 @@
   wire();
   renderCapabilityNotice();
   resetReceiver();
+  // Deliberately after the vault render resolves: the welcome is an
+  // enhancement, and the app must be usable whether or not it ever appears.
+  if (core.shouldShowWelcome(safeStorage())) {
+    setTimeout(function () { openWelcome(null); }, 0);
+  }
+
   renderVault().then(function () {
-    $('statusChip').textContent = barcodeSupported() ? 'alpha · scan ready' : 'alpha · send only';
+    var kind = scannerKind();
+    $('statusChip').textContent = kind === 'native'
+      ? 'alpha \u00b7 native scan'
+      : kind === 'fallback' ? 'alpha \u00b7 built-in scan' : 'alpha \u00b7 send only';
   });
 })();

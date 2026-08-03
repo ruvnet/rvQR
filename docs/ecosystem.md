@@ -48,51 +48,71 @@ Neither replaces the other.
 
 ## Client-side RVF parsing
 
-### Today
+### What runs today
 
-`artifacts/core.js` identifies artifacts with a deliberately dumb heuristic:
+rvQR parses RVF containers in the browser with the real microkernel. When you
+open an `.rvf` artifact in the vault, the app instantiates
+`rvf_wasm_bg.wasm` — the published `@ruvector/rvf-wasm` 0.1.9 binary, which
+imports nothing, so an empty import object is the whole contract — and uses it
+to walk the container:
 
-- a file starting `00 61 73 6d` is a WASM module;
-- a file starting `53 46 56 52` is an RVF segment stream;
-- a file whose final 4096 bytes contain `30 4D 56 52` is treated as having a
-  root manifest;
-- anything else is generic.
+| Call | What rvQR does with it |
+|------|------------------------|
+| `rvf_parse_header` | Header magic, version, and the type of the first segment. |
+| `rvf_verify_header` | Confirms the v1 segment magic `53 46 56 52` at offset 0. |
+| `rvf_segment_count` / `rvf_segment_info` | The full segment table: index, id, type, size and offset for every segment. |
+| `rvf_crc32c` | A CRC fingerprint per segment payload. |
+| `rvf_store_open` / `rvf_store_count` / `rvf_store_dimension` | The kernel's own reading of the container, kept as a cross-check. |
+| `rvf_store_close`, `rvf_free` | Every handle closed, every buffer freed. |
 
-This is a *label*, not a parse. It never reads a segment header, never verifies
-a checksum, and never enumerates anything. It is honest about being a
-heuristic, and it is why the vault says "detected because…" rather than
-"contains".
+Alongside that, `artifacts/rvf.js` reads `Vec` segment payloads directly. The
+layout is `u16 dim | u16 count | u16 flags`, then `count` records of
+`u64 id` followed by `dim` little-endian floats. That accounts for the demo
+container's 1,734-byte vector segment exactly: 6 + 24 × (8 + 16 × 4).
 
-### Planned
+On top of that the app runs an exhaustive nearest-neighbour search with cosine,
+euclidean and inner-product metrics. Query a container with one of its own
+stored vectors and its id comes back at distance zero.
 
-The upgrade path is unusually short, because the demo artifact already contains
-the functions needed. `rvf_wasm_bg.wasm` exports, among its 35 entries:
+The demo container parses as: four segments — `Manifest`, `Vec`, `Witness`,
+`Manifest` — accounting for all 2,304 bytes, holding 24 unit-length vectors of
+16 dimensions with ids 1 through 24.
 
-```
-rvf_parse_header      rvf_verify_header     rvf_verify_checksum
-rvf_segment_count     rvf_segment_info      rvf_crc32c
-rvf_witness_verify    rvf_witness_count     rvf_store_open
-```
+### What the kernel does not do
 
-The intended flow, once the app instantiates the runtime as a *tool* (kept
-strictly separate from artifacts it merely stores):
+Three findings from testing the published 0.1.9 build against real and
+deliberately corrupted input. All three are surfaced in the UI rather than
+papered over.
 
-1. Read the tail 4096 bytes of the candidate artifact.
-2. Compare the leading four bytes against `ROOT_MANIFEST_MAGIC_BYTES` exported
-   by the runtime, rather than the byte literal currently inlined in `core.js`.
-   The constant is the contract; the literal is a copy that can rot.
-3. Call `rvf_parse_header` on the discovered manifest, then `rvf_segment_count`
-   and `rvf_segment_info` to enumerate the container.
-4. Call `rvf_verify_checksum` per segment, and `rvf_witness_verify` where a
-   witness chain is present.
-5. Show the vault detail sheet real structure — segment types, counts, sizes,
-   verification state — instead of a magic-byte guess.
+**`rvf_verify_checksum` does not detect corruption.** It returns success for a
+pristine container, for a container with a flipped payload byte, for a
+container with a mangled header, and for 2,304 bytes of random noise. Only an
+empty buffer produces an error. rvQR therefore reports checksum verification as
+`unavailable` and shows per-segment CRC32C values as fingerprints, which is what
+they honestly are — the container carries no reference checksum to compare them
+against.
 
-The security posture does not change: the RVF runtime is a dependency the app
-chooses to load, and a received artifact is data passed *to* it. A scanned file
-never becomes code because it was scanned.
+**`rvf_witness_count` rejects every chain length.** The demo container has a
+68-byte `Witness` segment, but no length passed to `rvf_witness_count` returns
+anything but `-1`. The segment is listed in the table; the chain is reported as
+unverifiable here.
 
----
+**`rvf_store_open` transposes the vector header.** It reports 16 vectors of 24
+dimensions for a container that holds 24 of 16, and its `rvf_store_query`
+consequently strides through the records at the wrong size and returns ids that
+are fragments of vector data. The container is unambiguous — ids 1..24 in
+sequence, unit norms, and a byte count that only works out at 24 × 16 — so
+rvQR uses its own reader for ids, dimensions and search, and displays the
+disagreement as a warning next to the segment table.
+
+`rvf_store_open` also returns a valid-looking handle for *any* input, including
+random noise and the wasm binary itself, so nothing in rvQR treats opening a
+store as evidence that a file is a container.
+
+### Still planned
+
+Signature verification through `rvf-crypto`, and using the kernel's witness
+machinery once a build lands where those entry points work on real chains.
 
 ## Delta transfer and segment enumeration
 
@@ -170,16 +190,53 @@ whether bytes are *stored*, the signature decides whether they may be
 
 ---
 
+### 4. rupixel — the sibling browser-first project
+
+[rupixel](https://github.com/ruvnet/rupixel) is the other browser-first project
+on this substrate: pixel-native visual RAG. It embeds document *images* with
+CLIP rather than extracting their text, runs the model in the browser over
+WebGPU, ships from GitHub Pages, and carries its own metaharness benchmark CLI.
+It self-badges as early-stage work in progress; read its numbers accordingly.
+
+**What rvQR borrowed.** The keyframe gate. rupixel downsamples each camera frame
+to a 16×16 grayscale signature and compares successive signatures by mean
+absolute difference, skipping work when the scene has not meaningfully changed
+(`docs/live.js`, MIT, threshold 9 on a 0-255 mean-absolute scale). rvQR uses the
+same signature and the same threshold to decide when to spend a decode, with the
+sense inverted — see [ADR-001 §2.8](./adr/ADR-001-rvqr-optical-transport.md).
+
+**The natural pairing.** rupixel *produces* vector indexes; rvQR *moves* them.
+Index a corpus on a laptop, carry the resulting RVF container to an air-gapped
+machine by pointing one screen at another camera, and search it there. That is
+the payload story with real stakes: the reason to care about moving a vector
+index optically is that the destination is somewhere a network cannot reach,
+which is exactly where an index is otherwise unobtainable.
+
+**Deliberately not a code dependency.** rupixel needs CLIP, WebGPU and hundreds
+of megabytes of model weights. rvQR's whole property is a ~150 KB page that
+works with nothing installed, on a phone, offline, from a filesystem. Importing
+either into the other would destroy the thing that makes it worth having. The
+relationship is at the level of file formats and documentation: both speak RVF,
+and that is enough.
+
+---
+
 ## metaharness: gating the acceptance bar
 
 [metaharness](https://github.com/ruvnet/metaharness) is the evaluation and
 governance layer — benchmark definitions, scoring, drift detection, audit
 trails.
 
-**This is design intent. There is no metaharness integration in this
-repository today: no gate definitions, no scoring hooks, no emitted witnesses.**
-What follows is the shape it should take, written down so it can be argued with
-before it is built.
+**There is no metaharness integration in this repository today: no gate
+definitions, no scoring hooks, no emitted witnesses.** What follows is the shape
+it should take, written down so it can be argued with before it is built.
+
+That shape does not have to be imagined from scratch. rupixel already ships a
+metaharness benchmark CLI on this same substrate, so there is a working
+reference for what benchmarks defined, scored and tracked by metaharness look
+like in a browser-first ruvector project — including how a project whose quality
+is genuinely hard to measure structures the measurement. rvQR's gates below
+should follow that precedent rather than invent one.
 
 ### The bar, as gates
 
@@ -189,7 +246,7 @@ gate with a pass condition that a harness can evaluate mechanically:
 | Gate | Pass condition | Notes |
 |------|----------------|-------|
 | `rvqr.integrity.no_false_accept` | 100 transfers of 100 MB, **zero** incorrectly accepted files | The only gate with a zero tolerance. A single false accept is a hard fail, not a score reduction — accepting corrupt bytes is categorically worse than accepting none. |
-| `rvqr.resilience.frame_loss_20pct` | Successful reconstruction with 20% of frames dropped | Meaningless until RaptorQ lands; today's loop-until-complete behaviour passes it only by taking longer, which the gate should measure separately as time-to-complete rather than credit as resilience. |
+| `rvqr.resilience.frame_loss_20pct` | Successful reconstruction with 20% of frames dropped | Meaningless until erasure-coded frames are wired into the transport; today's loop-until-complete behaviour passes it only by taking longer, which the gate should measure separately as time-to-complete rather than credit as resilience. |
 | `rvqr.durability.resume` | Transfer resumes after browser termination | Requires persisted receiver state. |
 | `rvqr.throughput.effective_rate` | Sustained bytes/second at a fixed frame rate and chunk size | Scored, not pass/fail. Today's baseline is 2.5 KB/s at the defaults and 10 KB/s at the ceiling — the number that makes delta transfer worth building. |
 

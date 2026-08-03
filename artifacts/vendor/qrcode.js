@@ -623,6 +623,12 @@
     getAlignmentPatternPositions: getAlignmentPatternPositions,
     drawOnCanvas: drawOnCanvas,
     MIN_VERSION: MIN_VERSION,
-    MAX_VERSION: MAX_VERSION
+    MAX_VERSION: MAX_VERSION,
+    // Shared with the decoder so the block structure lives in exactly one
+    // place. These tables are verified bit-exact against a reference encoder
+    // across all 40 versions and 4 levels; a second copy could drift.
+    ECC_CODEWORDS_PER_BLOCK: ECC_CODEWORDS_PER_BLOCK,
+    NUM_ERROR_CORRECTION_BLOCKS: NUM_ERROR_CORRECTION_BLOCKS,
+    gfMultiply: gfMultiply
   };
 });

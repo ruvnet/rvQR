@@ -123,7 +123,7 @@ roadmap rather than nice-to-haves.
 
 ### Loss Handling Today
 
-v1 has no forward error correction of its own above the QR layer, and no back channel. It compensates the cheap way: the sender loops its frame stream forever, so a receiver that missed frame 37 on the first pass simply picks it up on the next one. Duplicates cost nothing — the receiver stores each sequence once and counts the rest. This is why a transfer can start mid-stream, survive a hand wobble, and still complete, at the price of taking longer the more frames were missed. RaptorQ (below) replaces this with something far better.
+v1 has no forward error correction of its own above the QR layer, and no back channel. It compensates the cheap way: the sender loops its frame stream forever, so a receiver that missed frame 37 on the first pass simply picks it up on the next one. Duplicates cost nothing — the receiver stores each sequence once and counts the rest. This is why a transfer can start mid-stream, survive a hand wobble, and still complete, at the price of taking longer the more frames were missed. Erasure-coded frames (below) replace this with something far better.
 
 ### Transfer Switching
 
@@ -174,17 +174,38 @@ exactly what it is.
 
 ### Protocol Version Semantics
 
-Protocol version 1 is the current, stable version. New major features (RaptorQ, encryption, signature verification) will be introduced in protocol version 2 and beyond. Receivers MUST reject frames with an unknown protocol version; senders MUST advertise the minimum version that carries all their features.
+Protocol version 1 is the current, stable version. New major features (erasure-coded frames, encryption, signature verification) will be introduced in protocol version 2 and beyond. Receivers MUST reject frames with an unknown protocol version; senders MUST advertise the minimum version that carries all their features.
 
 ## Roadmap
 
 The following features are designed but not yet implemented. They represent the next phases of rvQR development.
 
-### RaptorQ Fountain Coding (RFC 6330)
+### Erasure-coded frames (RaptorQ-structured)
 
-**Status:** Designed; implementation pending.
+**Status:** The codec is implemented in `artifacts/fountain.js` and passing its
+own tests; it is **not yet wired into the transport**, which still sends fixed
+indexed chunks.
 
-The current protocol requires every frame to arrive intact and in roughly the right order (or buffered for out-of-order reassembly). RaptorQ replaces fixed chunks with an unbounded stream of encoding symbols.
+**Nomenclature, precisely.** It is a systematic GF(256) fountain code that
+follows RaptorQ's block structure. It is **not RFC 6330 conformant and will not
+interoperate with a conformant RaptorQ codec.** Three things the RFC pins with
+published tables — the Table 2 parameters across 477 K′ values, the systematic
+index J(K′), and the `Rand[]`/`G_HDPC` construction — are derived here rather
+than tabulated, because a misremembered table yields a subtly broken codec that
+still appears to work. Describe it as "RaptorQ-structured" or "RaptorQ-style",
+never as "RaptorQ" unqualified or "standards-compliant".
+
+What is true of it, measured: any K+ε symbols reconstruct the object regardless
+of which ones arrive; 98.2% of decodes succeed at exactly K symbols with zero
+overhead and 100% by K+2 across 2,000 trials at 45% loss; reconstruction from
+repair symbols alone works; and a sender restarting mid-stream emits
+byte-identical symbols. On a phone-class budget the 2.3 KB demo container
+decodes in 0.11 ms and the 40 KB module in 2.7 ms, as a single source block with
+no partitioning.
+
+The current protocol requires every frame to arrive intact (though in any
+order). An erasure-coded stream replaces fixed chunks with an unbounded stream
+of encoding symbols.
 
 **How it works:**
 - The sender emits an unbounded stream of encoding symbols derived from the K source symbols, and simply keeps going.
@@ -305,7 +326,7 @@ to clear, written down so it can be argued with and later measured — not a
 report of results. Nothing in this repository has been benchmarked against it.
 
 1. **100 transfers of 100 MB each, zero incorrectly accepted files.** Every transferred byte must match the source: no false accepts, no silent corruption. This is the one gate with zero tolerance — a single wrongly accepted file is a hard fail, not a lower score.
-2. **Successful recovery under 20% frame loss.** Requires RaptorQ. Today's loop-until-complete behaviour survives loss but pays for it in time, which should be measured as throughput rather than credited as resilience.
+2. **Successful recovery under 20% frame loss.** Requires the erasure-coded frames above to be wired into the transport. Today's loop-until-complete behaviour survives loss but pays for it in time, which should be measured as throughput rather than credited as resilience.
 3. **Resume after browser termination.** Requires persisted receiver state.
 
 The first line is also a useful reality check on the optical channel. At the
@@ -325,7 +346,7 @@ finishes in minutes.
 ## References
 
 - RFC 4648 — Base Encoding Data Formats (base64url)
-- RFC 6330 — RaptorQ Forward Error Correction for Object Delivery
+- RFC 6330 — RaptorQ Forward Error Correction for Object Delivery. Cited as the structural reference for the fountain layer, which is deliberately **not** conformant to it.
 - HKDF-SHA256 — HMAC-based Extract-and-Expand Key Derivation Function
 - X25519 — Elliptic Curve Diffie-Hellman (Curve25519)
 - ChaCha20-Poly1305 — AEAD cipher (RFC 8439)

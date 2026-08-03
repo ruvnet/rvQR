@@ -7,10 +7,63 @@
 (function () {
   'use strict';
   var core = window.RVQRCore, qrlib = window.RVQRCode;
-  var results = window.RVQRTests.runAll(core, qrlib);
+  var qrdec = window.RVQRDecode, rvflib = window.RVQRRvf;
+  var results = window.RVQRTests.runAll(core, qrlib, qrdec);
   var sum = window.RVQRTests.summarize(results);
 
   var list = document.getElementById('results');
+
+  function addRow(r) {
+    var li = document.createElement('li');
+    var tag = document.createElement('span');
+    tag.className = 'tag ' + (r.ok ? 'ok' : 'bad');
+    tag.textContent = r.ok ? 'PASS' : 'FAIL';
+    var name = document.createElement('span');
+    name.className = 'name';
+    name.textContent = r.name;
+    if (r.detail) {
+      var d = document.createElement('div');
+      d.className = 'detail';
+      d.textContent = r.detail;
+      name.appendChild(d);
+    }
+    li.appendChild(tag);
+    li.appendChild(name);
+    list.appendChild(li);
+  }
+
+  function setSummary(all) {
+    var s2 = window.RVQRTests.summarize(all);
+    var el = document.getElementById('summary');
+    el.textContent = s2.passed + ' / ' + s2.total + ' passed' +
+      (s2.failed ? ' — ' + s2.failed + ' FAILED' : '');
+    el.className = 'summary ' + (s2.failed ? 'fail' : 'pass');
+  }
+
+  // The RVF suite needs the microkernel and the demo container, so it runs
+  // after the synchronous tests and appends its rows when it lands.
+  if (rvflib) {
+    Promise.all([
+      fetch('./demo/rvf_wasm_bg.wasm').then(function (r) { return r.arrayBuffer(); }),
+      fetch('./demo/ruvnet-demo.rvf').then(function (r) { return r.arrayBuffer(); })
+    ]).then(function (buffers) {
+      return window.RVQRTests.runRvfTests(
+        rvflib, new Uint8Array(buffers[0]), new Uint8Array(buffers[1])
+      );
+    }).then(function (extra) {
+      extra.forEach(addRow);
+      setSummary(results.concat(extra));
+    }, function (err) {
+      addRow({
+        name: 'RVF suite',
+        ok: false,
+        detail: 'could not load the demo files (' + err.message +
+          '). Serving the page over http rather than from disk will fix this.'
+      });
+      setSummary(results.concat([{ ok: false }]));
+    });
+  }
+
   results.forEach(function (r) {
     var li = document.createElement('li');
     var tag = document.createElement('span');

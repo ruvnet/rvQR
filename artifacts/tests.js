@@ -17,17 +17,40 @@
     if (typeof require === 'function' && require.main === module) {
       var core = require('./core.js');
       var qrlib = require('./vendor/qrcode.js');
-      var results = api.runAll(core, qrlib);
-      results.forEach(function (r) {
+      var qrdec = require('./vendor/qrdecode.js');
+      var rvflib = require('./rvf.js');
+      var fs = require('fs');
+      var path = require('path');
+      var print = function (r) {
         console.log(
           (r.ok ? 'ok   ' : 'FAIL ') + r.name + (r.detail ? '  [' + r.detail + ']' : '')
         );
-      });
-      var summary = api.summarize(results);
-      console.log(
-        '\n' + summary.passed + '/' + summary.total + ' passed, ' + summary.failed + ' failed'
-      );
-      if (typeof process !== 'undefined') process.exit(summary.failed ? 1 : 0);
+      };
+      var results = api.runAll(core, qrlib, qrdec);
+      results.forEach(print);
+
+      var kernelPath = path.join(__dirname, 'demo', 'rvf_wasm_bg.wasm');
+      var containerPath = path.join(__dirname, 'demo', 'ruvnet-demo.rvf');
+      var finish = function (extra) {
+        (extra || []).forEach(print);
+        var all = results.concat(extra || []);
+        var summary = api.summarize(all);
+        console.log(
+          '\n' + summary.passed + '/' + summary.total + ' passed, ' + summary.failed + ' failed'
+        );
+        if (typeof process !== 'undefined') process.exit(summary.failed ? 1 : 0);
+      };
+      if (fs.existsSync(kernelPath) && fs.existsSync(containerPath)) {
+        api.runRvfTests(
+          rvflib,
+          new Uint8Array(fs.readFileSync(kernelPath)),
+          new Uint8Array(fs.readFileSync(containerPath))
+        ).then(finish, function (err) {
+          finish([{ name: 'RVF suite', ok: false, detail: String(err) }]);
+        });
+      } else {
+        finish([]);
+      }
     }
   } else {
     root.RVQRTests = api;
@@ -35,7 +58,7 @@
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
 
-  function runAll(core, qrlib) {
+  function runAll(core, qrlib, qrdec) {
     var results = [];
     function test(name, fn) {
       try {
@@ -642,6 +665,393 @@
       });
     }
 
+    // -- keyframe gate -------------------------------------------------------
+
+    // Builds a flat grey ImageData-like frame, optionally with a bright patch,
+    // so signatures can be steered precisely.
+    function makeFrame(w, h, base, patch) {
+      var data = new Uint8ClampedArray(w * h * 4);
+      for (var i = 0; i < w * h; i++) {
+        data[i * 4] = data[i * 4 + 1] = data[i * 4 + 2] = base;
+        data[i * 4 + 3] = 255;
+      }
+      if (patch) {
+        for (var y = patch.y; y < Math.min(h, patch.y + patch.h); y++) {
+          for (var x = patch.x; x < Math.min(w, patch.x + patch.w); x++) {
+            var p = (y * w + x) * 4;
+            data[p] = data[p + 1] = data[p + 2] = patch.value;
+          }
+        }
+      }
+      return { data: data, width: w, height: h };
+    }
+
+    test('keyframe gate: identical frames have zero difference', function () {
+      var a = makeFrame(64, 64, 120, { x: 8, y: 8, w: 24, h: 24, value: 240 });
+      var b = makeFrame(64, 64, 120, { x: 8, y: 8, w: 24, h: 24, value: 240 });
+      var sigA = core.frameSignature(a);
+      var sigB = core.frameSignature(b);
+      assertEqual(sigA.length, core.SIGNATURE_SIZE * core.SIGNATURE_SIZE, 'signature size');
+      assertEqual(core.signatureDiff(sigA, sigB), 0, 'identical frames');
+      assertEqual(core.signatureDiff(sigA, sigA), 0, 'self comparison');
+      return core.SIGNATURE_SIZE + 'x' + core.SIGNATURE_SIZE + ' signature, diff 0';
+    });
+
+    test('keyframe gate: a changed frame registers a difference', function () {
+      var plain = core.frameSignature(makeFrame(64, 64, 120));
+      var marked = core.frameSignature(makeFrame(64, 64, 120, { x: 0, y: 0, w: 64, h: 64, value: 255 }));
+      var diff = core.signatureDiff(plain, marked);
+      assert(diff > core.CHANGE_THRESHOLD, 'a full repaint should exceed the threshold, got ' + diff);
+      // Mismatched or absent signatures must read as maximally different
+      // rather than accidentally comparing equal.
+      assertEqual(core.signatureDiff(null, plain), 255, 'null signature');
+      assertEqual(core.signatureDiff(plain, new Uint8Array(4)), 255, 'length mismatch');
+      return 'full repaint diff ' + diff.toFixed(1);
+    });
+
+    test('keyframe gate: decodes only when changed and settled', function () {
+      var gate = core.createFrameGate();
+      var still = core.frameSignature(makeFrame(64, 64, 100));
+      var first = core.gateFrame(gate, still);
+      assert(first.decode, 'the first frame must always be attempted');
+      assertEqual(first.reason, 'first-frame', 'first reason');
+
+      // Same picture again: settled, but nothing new to read.
+      var second = core.gateFrame(gate, core.frameSignature(makeFrame(64, 64, 100)));
+      assert(!second.decode, 'an identical frame should be skipped');
+      assertEqual(second.reason, 'unchanged', 'skip reason');
+
+      // A big change arriving in one step reads as motion, not as a new frame:
+      // the picture is different from the previous frame, so the camera is
+      // still moving and a decode would be wasted.
+      var moved = core.gateFrame(gate, core.frameSignature(makeFrame(64, 64, 200)));
+      assert(!moved.decode, 'a frame mid-motion should be skipped');
+      assertEqual(moved.reason, 'moving', 'motion reason');
+
+      // Hold that new picture still, and now it is worth decoding.
+      var settled = core.gateFrame(gate, core.frameSignature(makeFrame(64, 64, 200)));
+      assert(settled.decode, 'a settled new picture should be decoded: ' + settled.reason);
+      assertEqual(settled.reason, 'changed-and-settled', 'decode reason');
+      return 'first, unchanged, moving, changed-and-settled';
+    });
+
+    test('keyframe gate: threshold boundaries behave as documented', function () {
+      // Signatures differing by a known constant, so the mean absolute
+      // difference is exactly that constant.
+      function flat(value) {
+        var n = core.SIGNATURE_SIZE * core.SIGNATURE_SIZE;
+        var sig = new Uint8Array(n);
+        for (var i = 0; i < n; i++) sig[i] = value;
+        return sig;
+      }
+      assertEqual(core.signatureDiff(flat(100), flat(109)), 9, 'exact difference');
+
+      // change === threshold decodes (the comparison is < threshold to skip);
+      // one below it does not.
+      var gate = core.createFrameGate({ settleThreshold: 100 });
+      core.gateFrame(gate, flat(100));
+      var atThreshold = core.gateFrame(gate, flat(100 + core.CHANGE_THRESHOLD));
+      assert(atThreshold.decode, 'a change of exactly the threshold should decode');
+
+      var gate2 = core.createFrameGate({ settleThreshold: 100 });
+      core.gateFrame(gate2, flat(100));
+      var below = core.gateFrame(gate2, flat(100 + core.CHANGE_THRESHOLD - 1));
+      assert(!below.decode, 'one below the threshold should skip');
+
+      // The settle threshold gates on movement from the previous frame.
+      var gate3 = core.createFrameGate();
+      core.gateFrame(gate3, flat(0));
+      var jumpy = core.gateFrame(gate3, flat(core.SETTLE_THRESHOLD + 1));
+      assertEqual(jumpy.reason, 'moving', 'just over the settle threshold');
+      return 'change ' + core.CHANGE_THRESHOLD + ', settle ' + core.SETTLE_THRESHOLD;
+    });
+
+    test('keyframe gate: a starved decoder is let through anyway', function () {
+      // A scene creeping just under the settle threshold would otherwise skip
+      // for ever; the skip limit guarantees forward progress.
+      var gate = core.createFrameGate({ maxSkips: 5 });
+      var n = core.SIGNATURE_SIZE * core.SIGNATURE_SIZE;
+      function drifting(step) {
+        var sig = new Uint8Array(n);
+        for (var i = 0; i < n; i++) sig[i] = (step * (core.SETTLE_THRESHOLD + 2)) % 256;
+        return sig;
+      }
+      core.gateFrame(gate, drifting(0));
+      var forced = 0;
+      for (var i = 1; i <= 20; i++) {
+        var d = core.gateFrame(gate, drifting(i));
+        if (d.reason === 'skip-limit') forced++;
+      }
+      assert(forced > 0, 'the skip limit never fired across 20 moving frames');
+      return forced + ' forced attempts in 20 frames';
+    });
+
+    test('keyframe gate: skips the bulk of a mostly-static sequence', function () {
+      // 100 frames of a camera pointed at a sending screen: the picture only
+      // actually changes when the sender advances a frame.
+      var gate = core.createFrameGate();
+      var frames = [];
+      var distinct = 12;
+      for (var i = 0; i < 100; i++) {
+        // A new picture every 100/12 frames, held still in between.
+        var epoch = Math.floor(i / Math.ceil(100 / distinct));
+        frames.push(makeFrame(64, 64, 40 + epoch * 17));
+      }
+      for (var f = 0; f < frames.length; f++) {
+        core.gateFrame(gate, core.frameSignature(frames[f]));
+      }
+      assertEqual(gate.seen, 100, 'frames seen');
+      assert(gate.attempts < 40, 'expected far fewer than 40 attempts, got ' + gate.attempts);
+      var saved = Math.round((1 - gate.attempts / gate.seen) * 100);
+      return gate.attempts + ' decode attempts for 100 frames (' + saved + '% skipped)';
+    });
+
+    // -- first-run state -----------------------------------------------------
+
+    test('welcome: shows once, then stays dismissed', function () {
+      var store = (function () {
+        var data = {};
+        return {
+          getItem: function (k) { return Object.prototype.hasOwnProperty.call(data, k) ? data[k] : null; },
+          setItem: function (k, v) { data[k] = String(v); }
+        };
+      })();
+      assert(core.shouldShowWelcome(store), 'a fresh visitor should see it');
+      assert(core.markWelcomeSeen(store), 'marking should succeed');
+      assert(!core.shouldShowWelcome(store), 'it should stay dismissed');
+      // A different version key re-shows, which is the point of versioning it.
+      assert(core.shouldShowWelcome(store, 'rvqr.welcome.v2'), 'a new version should show again');
+      return core.WELCOME_KEY;
+    });
+
+    test('welcome: hostile or absent storage never breaks the boot path', function () {
+      var hostile = {
+        getItem: function () { throw new Error('storage disabled'); },
+        setItem: function () { throw new Error('storage disabled'); }
+      };
+      assert(core.shouldShowWelcome(hostile), 'a throwing store should fall back to showing');
+      assertEqual(core.markWelcomeSeen(hostile), false, 'marking should report failure, not throw');
+      assert(core.shouldShowWelcome(null), 'no storage at all should fall back to showing');
+      assertEqual(core.markWelcomeSeen(null), false, 'no storage marks nothing');
+      return 'degrades to showing the welcome';
+    });
+
+    test('reduced motion is honoured and safe when unsupported', function () {
+      assert(core.prefersReducedMotion(function () { return { matches: true }; }), 'reduce → true');
+      assert(!core.prefersReducedMotion(function () { return { matches: false }; }), 'no-preference → false');
+      assert(!core.prefersReducedMotion(undefined), 'no matchMedia → false');
+      assert(!core.prefersReducedMotion(function () { throw new Error('nope'); }), 'throwing matchMedia → false');
+      return '4 branches';
+    });
+
+    // -- QR decoder ----------------------------------------------------------
+
+    /**
+     * Rasterises a symbol to an ImageData-like object. Kept here rather than in
+     * the decoder so the tests drive it exactly the way a camera frame or an
+     * uploaded picture would: pixels in, text out.
+     */
+    function rasterize(qr, opts) {
+      opts = opts || {};
+      var scale = opts.scale || 4;
+      var quiet = opts.quiet === undefined ? 4 : opts.quiet;
+      var fg = opts.fg === undefined ? 0 : opts.fg;
+      var bg = opts.bg === undefined ? 255 : opts.bg;
+      var dim = qr.size + quiet * 2;
+      var W = dim * scale;
+      var data = new Uint8ClampedArray(W * W * 4);
+      for (var y = 0; y < W; y++) {
+        for (var x = 0; x < W; x++) {
+          var mx = Math.floor(x / scale) - quiet;
+          var my = Math.floor(y / scale) - quiet;
+          var dark = mx >= 0 && my >= 0 && mx < qr.size && my < qr.size && qr.getModule(mx, my);
+          var v = dark ? fg : bg;
+          var p = (y * W + x) * 4;
+          data[p] = data[p + 1] = data[p + 2] = v;
+          data[p + 3] = 255;
+        }
+      }
+      return { data: data, width: W, height: W };
+    }
+
+    function blurImage(img, r) {
+      var w = img.width, h = img.height, src = img.data;
+      var out = new Uint8ClampedArray(src.length);
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) {
+          var acc = 0, n = 0;
+          for (var dy = -r; dy <= r; dy++) {
+            for (var dx = -r; dx <= r; dx++) {
+              var X = x + dx, Y = y + dy;
+              if (X < 0 || Y < 0 || X >= w || Y >= h) continue;
+              acc += src[(Y * w + X) * 4];
+              n++;
+            }
+          }
+          var p = (y * w + x) * 4;
+          out[p] = out[p + 1] = out[p + 2] = acc / n;
+          out[p + 3] = 255;
+        }
+      }
+      return { data: out, width: w, height: h };
+    }
+
+    if (qrdec) {
+      test('decoder: matrix roundtrip across every version and level', function () {
+        var levels = ['L', 'M', 'Q', 'H'];
+        var checked = 0;
+        for (var li = 0; li < levels.length; li++) {
+          for (var v = 1; v <= 40; v += 3) {
+            var cap = Math.min(qrlib.byteCapacity(v, qrlib.ECC[levels[li]]), 64);
+            var text = '';
+            for (var i = 0; i < cap; i++) text += String.fromCharCode(65 + ((i * 7 + v) % 26));
+            var qr = qrlib.encodeText(text, { ecl: levels[li], version: v });
+            var got = qrdec.decodeMatrix(function (x, y) { return qr.getModule(x, y); }, qr.size);
+            assert(got.ok, 'v' + v + '-' + levels[li] + ' failed: ' + got.reason);
+            assertEqual(got.text, text, 'v' + v + '-' + levels[li] + ' text');
+            assertEqual(got.version, v, 'version readback');
+            assertEqual(got.ecc, levels[li], 'level readback');
+            checked++;
+          }
+        }
+        return checked + ' symbols';
+      });
+
+      test('decoder: full-capacity payloads survive the roundtrip', function () {
+        var checked = 0;
+        for (var v = 1; v <= 40; v += 7) {
+          var cap = qrlib.byteCapacity(v, qrlib.ECC.L);
+          var bytes = rndBytes(cap);
+          for (var i = 0; i < cap; i++) bytes[i] = 32 + (bytes[i] % 90); // printable
+          var qr = qrlib.encodeBytes(bytes, { ecl: 'L', version: v });
+          var got = qrdec.decodeMatrix(function (x, y) { return qr.getModule(x, y); }, qr.size);
+          assert(got.ok, 'v' + v + ' failed: ' + got.reason);
+          var want = '';
+          for (var k = 0; k < bytes.length; k++) want += String.fromCharCode(bytes[k]);
+          assertEqual(got.text, want, 'v' + v + ' payload');
+          checked++;
+        }
+        return checked + ' symbols at full capacity';
+      });
+
+      test('decoder: reads real transfer frames out of rendered pixels', function () {
+        var bytes = rndBytes(2304); // the size of the bundled demo container
+        var built = core.buildFrames(bytes, { name: 'ruvnet-demo.rvf', chunk: 512 });
+        for (var i = 0; i < built.frames.length; i++) {
+          var qr = qrlib.encodeText(built.frames[i], { ecl: 'L' });
+          var got = qrdec.decode(rasterize(qr, { scale: 4 }));
+          assert(got.ok, 'frame ' + i + ' (v' + qr.version + ') not found');
+          assertEqual(got.text, built.frames[i], 'frame ' + i + ' text');
+        }
+        return built.total + ' frames through the pixel pipeline';
+      });
+
+      test('decoder: a decoded frame feeds the receiver end to end', function () {
+        var bytes = rndBytes(1500);
+        var built = core.buildFrames(bytes, { name: 'pixels.bin', chunk: 400 });
+        var rx = core.createReceiver();
+        // Decode the frames out of pixels, in reverse, exactly as a camera
+        // catching a looping stream might.
+        for (var i = built.frames.length - 1; i >= 0; i--) {
+          var qr = qrlib.encodeText(built.frames[i], { ecl: 'L' });
+          var got = qrdec.decode(rasterize(qr, { scale: 5, quiet: 3 }));
+          assert(got.ok, 'frame ' + i + ' failed to decode');
+          core.ingest(rx, got.text);
+        }
+        var res = core.finalize(rx);
+        assert(res.ok, 'transfer rejected: ' + res.reason);
+        assert(bytesEqual(res.bytes, bytes), 'bytes differ after a pixel round trip');
+        return built.total + ' frames decoded and verified';
+      });
+
+      test('decoder: survives scale, rotation, noise and uneven light', function () {
+        var msg = 'HELLO RVQR';
+        var qr = qrlib.encodeText(msg, { ecl: 'M' });
+        var cases = [];
+        [2, 3, 4, 8].forEach(function (scale) {
+          cases.push(['scale ' + scale, rasterize(qr, { scale: scale })]);
+        });
+        cases.push(['no quiet zone', rasterize(qr, { scale: 5, quiet: 0 })]);
+        cases.push(['wide margin', rasterize(qr, { scale: 5, quiet: 20 })]);
+        cases.push(['low contrast', rasterize(qr, { scale: 5, fg: 60, bg: 200 })]);
+        cases.push(['blurred', blurImage(rasterize(qr, { scale: 6 }), 1)]);
+        for (var i = 0; i < cases.length; i++) {
+          var got = qrdec.decode(cases[i][1]);
+          assert(got.ok && got.text === msg, cases[i][0] + ' failed: ' + (got.reason || 'wrong text'));
+        }
+        return cases.length + ' renderings';
+      });
+
+      test('decoder: reads several frames out of one picture', function () {
+        // The image-upload path: photograph a screen, get every frame on it.
+        var bytes = rndBytes(1200);
+        var built = core.buildFrames(bytes, { name: 'sheet.bin', chunk: 512 });
+        var tiles = built.frames.map(function (f) {
+          return rasterize(qrlib.encodeText(f, { ecl: 'L' }), { scale: 3, quiet: 4 });
+        });
+        var cols = 2;
+        var tw = Math.max.apply(null, tiles.map(function (t) { return t.width; }));
+        var rows = Math.ceil(tiles.length / cols);
+        var W = tw * cols, H = tw * rows;
+        var sheet = { data: new Uint8ClampedArray(W * H * 4).fill(255), width: W, height: H };
+        tiles.forEach(function (t, k) {
+          var ox = (k % cols) * tw, oy = Math.floor(k / cols) * tw;
+          for (var y = 0; y < t.height; y++) {
+            for (var x = 0; x < t.width; x++) {
+              var sp = (y * t.width + x) * 4, dp = ((oy + y) * W + (ox + x)) * 4;
+              sheet.data[dp] = t.data[sp];
+              sheet.data[dp + 1] = t.data[sp + 1];
+              sheet.data[dp + 2] = t.data[sp + 2];
+              sheet.data[dp + 3] = 255;
+            }
+          }
+        });
+        var found = qrdec.decodeImage(sheet, { all: true });
+        var texts = {};
+        found.forEach(function (f) { texts[f.text] = true; });
+        for (var i = 0; i < built.frames.length; i++) {
+          assert(texts[built.frames[i]], 'frame ' + i + ' missing from the composite');
+        }
+        return found.length + ' of ' + built.total + ' frames from a single image';
+      });
+
+      test('decoder: error correction repairs a damaged symbol', function () {
+        var msg = 'rvQR error correction check';
+        var qr = qrlib.encodeText(msg, { ecl: 'Q' });
+        var matrix = [];
+        for (var y = 0; y < qr.size; y++) {
+          var row = new Uint8Array(qr.size);
+          for (var x = 0; x < qr.size; x++) row[x] = qr.getModule(x, y) ? 1 : 0;
+          matrix.push(row);
+        }
+        // A thumb-sized blot over the data region.
+        var blot = Math.max(2, Math.floor(qr.size * 0.09));
+        var ox = Math.floor(qr.size * 0.42), oy = Math.floor(qr.size * 0.5);
+        for (var by = oy; by < Math.min(qr.size, oy + blot); by++) {
+          for (var bx = ox; bx < Math.min(qr.size, ox + blot); bx++) matrix[by][bx] ^= 1;
+        }
+        var got = qrdec.decodeMatrix(function (x, y) { return !!matrix[y][x]; }, qr.size);
+        assert(got.ok, 'damaged symbol not recovered: ' + got.reason);
+        assertEqual(got.text, msg, 'recovered text');
+        assert(got.corrections > 0, 'expected the decoder to report corrections');
+        return got.corrections + ' codewords repaired';
+      });
+
+      test('decoder: refuses noise instead of inventing a payload', function () {
+        var W = 160;
+        var img = { data: new Uint8ClampedArray(W * W * 4), width: W, height: W };
+        for (var i = 0; i < W * W; i++) {
+          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+          var v = (seed >>> 16) & 0xff;
+          img.data[i * 4] = img.data[i * 4 + 1] = img.data[i * 4 + 2] = v;
+          img.data[i * 4 + 3] = 255;
+        }
+        var got = qrdec.decode(img);
+        assert(!got.ok, 'random noise decoded as ' + JSON.stringify(got.text));
+        return 'rejected as ' + got.reason;
+      });
+    }
+
     function checkStructure(qr) {
       var size = qr.size;
       // Three finder patterns: dark 7x7 ring, light ring, dark 3x3 core.
@@ -723,10 +1133,162 @@
     return results;
   }
 
+  /**
+   * RVF tests. Separate from runAll because they need the microkernel and the
+   * demo container, which arrive asynchronously in both runners.
+   */
+  function runRvfTests(rvflib, kernelBytes, containerBytes) {
+    var results = [];
+    function record(name, fn) {
+      try {
+        results.push({ name: name, ok: true, detail: fn() || '' });
+      } catch (e) {
+        results.push({ name: name, ok: false, detail: e && e.message ? e.message : String(e) });
+      }
+    }
+    function assert(c, m) { if (!c) throw new Error(m || 'assertion failed'); }
+    function assertEqual(a, b, m) {
+      if (a !== b) throw new Error((m || 'expected') + ': got ' + a + ', want ' + b);
+    }
+
+    return rvflib.load(kernelBytes).then(function (kernel) {
+      var report = rvflib.inspect(kernel, containerBytes);
+
+      record('RVF: the demo container parses with the real microkernel', function () {
+        assert(report.ok, 'inspection failed: ' + report.notes.join(' '));
+        assert(report.header, 'no header');
+        assertEqual(report.header.magicBytes, '53 46 56 52', 'segment magic');
+        assertEqual(report.header.typeName, 'Manifest', 'first segment type');
+        return report.segmentCount + ' segments, header version ' + report.header.version;
+      });
+
+      record('RVF: the segment table accounts for every byte', function () {
+        assertEqual(report.segments.length, 4, 'segment count');
+        var types = report.segments.map(function (s) { return s.typeName; }).join(', ');
+        assertEqual(types, 'Manifest, Vec, Witness, Manifest', 'segment types');
+        // Each segment is a 64-byte header plus its payload, 64-byte aligned.
+        var end = 0;
+        for (var i = 0; i < report.segments.length; i++) {
+          var seg = report.segments[i];
+          assert(seg.offset >= end, 'segment ' + i + ' overlaps the previous one');
+          end = seg.payloadOffset + seg.size;
+        }
+        assert(containerBytes.length - end < 64,
+          'the chain leaves ' + (containerBytes.length - end) + ' unexplained bytes');
+        return end + ' of ' + containerBytes.length + ' bytes covered';
+      });
+
+      record('RVF: 24 vectors of 16 dimensions, ids 1..24', function () {
+        assert(report.vectors && report.vectors.ok,
+          'no vectors: ' + (report.vectors && report.vectors.reason));
+        assertEqual(report.vectors.count, 24, 'vector count');
+        assertEqual(report.vectors.dim, 16, 'dimensionality');
+        assertEqual(report.vectors.trailing, 0, 'unexplained trailing bytes');
+        for (var i = 0; i < 24; i++) {
+          assertEqual(report.vectors.ids[i], i + 1, 'id at index ' + i);
+        }
+        return '24 × 16, ids 1..24, segment fully accounted for';
+      });
+
+      record('RVF: the vectors are unit length, as written', function () {
+        var worst = 0;
+        for (var i = 0; i < report.vectors.count; i++) {
+          var v = report.vectors.vectors[i], sum = 0;
+          for (var d = 0; d < v.length; d++) sum += v[d] * v[d];
+          worst = Math.max(worst, Math.abs(Math.sqrt(sum) - 1));
+        }
+        assert(worst < 0.001, 'worst norm deviation ' + worst);
+        return 'largest deviation from unit norm ' + worst.toExponential(2);
+      });
+
+      record('RVF: searching finds a stored vector at distance zero', function () {
+        var vectors = report.vectors;
+        for (var probe = 0; probe < 3; probe++) {
+          var idx = probe * 9;
+          var ranked = rvflib.queryVectors(vectors, vectors.vectors[idx], 5, 'cosine');
+          assertEqual(ranked.length, 5, 'result count');
+          assertEqual(ranked[0].id, vectors.ids[idx], 'nearest id for probe ' + probe);
+          assert(Math.abs(ranked[0].distance) < 1e-5,
+            'self-distance was ' + ranked[0].distance);
+          for (var r = 1; r < ranked.length; r++) {
+            assert(ranked[r].distance >= ranked[r - 1].distance, 'results out of order');
+          }
+        }
+        return 'exact self-match on 3 probes, results ordered';
+      });
+
+      record('RVF: the kernel cross-check is reported, not hidden', function () {
+        var check = null;
+        for (var i = 0; i < report.checks.length; i++) {
+          if (report.checks[i].name === 'Kernel store cross-check') check = report.checks[i];
+        }
+        assert(check, 'no cross-check was performed');
+        // The published 0.1.9 kernel reads this container's vector header
+        // transposed. Whatever it does, the app must surface it rather than
+        // silently choosing a winner.
+        if (report.store.agrees) {
+          assertEqual(check.status, 'pass', 'agreement should read as a pass');
+        } else {
+          assertEqual(check.status, 'warn', 'disagreement must be surfaced as a warning');
+          assert(check.detail.indexOf(String(report.store.count)) >= 0,
+            'the warning should quote what the kernel actually reported');
+        }
+        return report.store.agrees
+          ? 'kernel agrees with the reader'
+          : 'kernel reported ' + report.store.count + ' × ' + report.store.dimension +
+            ', flagged as a warning';
+      });
+
+      record('RVF: checks that cannot be made honestly are marked unavailable', function () {
+        var byName = {};
+        report.checks.forEach(function (c) { byName[c.name] = c; });
+        assert(byName['Checksum verification'], 'no checksum check reported');
+        assertEqual(byName['Checksum verification'].status, 'unavailable', 'checksum status');
+        assert(byName['Witness chain'], 'no witness check reported');
+        assertEqual(byName['Witness chain'].status, 'unavailable', 'witness status');
+        return 'checksum and witness both reported as unavailable';
+      });
+
+      record('RVF: malformed containers are refused without throwing', function () {
+        var cases = [
+          ['empty', new Uint8Array(0)],
+          ['random noise', (function () {
+            var b = new Uint8Array(2304);
+            for (var i = 0; i < b.length; i++) b[i] = (i * 7919) & 0xff;
+            return b;
+          })()],
+          ['truncated', containerBytes.subarray(0, 100)],
+          ['magic cleared', (function () {
+            var b = Uint8Array.from(containerBytes);
+            b[0] = 0;
+            return b;
+          })()]
+        ];
+        for (var i = 0; i < cases.length; i++) {
+          var r = rvflib.inspect(kernel, cases[i][1]);
+          assert(r && typeof r === 'object', cases[i][0] + ' returned nothing');
+          if (cases[i][0] !== 'truncated') {
+            assert(!r.ok, cases[i][0] + ' was accepted as a valid container');
+          }
+        }
+        return cases.length + ' malformed inputs handled';
+      });
+
+      return results;
+    }, function (err) {
+      results.push({
+        name: 'RVF: microkernel loads',
+        ok: false,
+        detail: 'could not instantiate: ' + (err && err.message ? err.message : String(err))
+      });
+      return results;
+    });
+  }
+
   function summarize(results) {
     var passed = results.filter(function (r) { return r.ok; }).length;
     return { total: results.length, passed: passed, failed: results.length - passed };
   }
 
-  return { runAll: runAll, summarize: summarize };
+  return { runAll: runAll, runRvfTests: runRvfTests, summarize: summarize };
 });

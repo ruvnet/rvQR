@@ -1,6 +1,19 @@
 # rvQR
 
-Move files between devices using a screen and a camera. No network, no cables, no accounts.
+**Move files between devices with a screen and a camera.**
+
+RVF containers and WASM artifacts — offline, no cables, no accounts, nothing to install.
+
+## Try it in 60 seconds ⏱️
+
+1. Open [`./artifacts/`](./artifacts/) on two devices.
+2. On the first: **Vault → ruvnet demo .rvf** (a real 2.3 KB RVF container, five QR frames), tap it, then **Send this**.
+3. On the second: **Receive → Start camera**, and point it at the first screen. No camera? Photograph the screen and drop the picture in — that works in every browser.
+4. Watch the grid fill. When the last frame lands the bytes are hashed, checked against the manifest, and stored.
+5. Tap what arrived: real segment table, 24 vectors of 16 dimensions, and a search box that ranks them by distance.
+
+The written walkthrough is [docs/tutorial.md](./docs/tutorial.md); the same
+guide is built into the app under the **Guide** tab.
 
 ## What is rvQR?
 
@@ -8,14 +21,14 @@ rvQR is optical transfer of RVF cognitive containers and WASM artifacts. Open th
 
 No internet connection needed. No pairing, no accounts, no setup. The data physically travels from one screen to another, and you can watch it happen.
 
-## Quick Start 📱
+## The two demo artifacts 📦
 
-1. Open [`./artifacts/`](./artifacts/) in your browser on two phones (or a phone and a laptop).
-2. On the first device, tap **Load demo artifact** to drop the 40 KB `rvf_wasm_bg.wasm` module into your vault.
-3. Tap that artifact to open its detail sheet, then tap **Send this**. The QR stream starts immediately and loops.
-4. On the second device, open the **Receive** tab, tap **Start camera**, allow access, and hold it over the first screen.
-5. Watch the progress ring fill and the frame grid light up cell by cell. At 82 frames and 5 frames per second, the demo artifact takes about 17 seconds per pass.
-6. Tap the file in the second device's vault to confirm it arrived intact.
+Both ship in the repo, and both are real.
+
+| Artifact | Size | Frames | What it shows |
+|----------|------|-------:|---------------|
+| `ruvnet-demo.rvf` | 2.3 KB | 5 | A genuine RVF container: 4 segments, 24 vectors of 16 dimensions. Transfers in about a second, then you can search it in the browser. |
+| `rvf_wasm_bg.wasm` | 40 KB | 82 | The RVF WebAssembly runtime itself, published as `@ruvector/rvf-wasm@0.1.9`. About 16 seconds at the defaults, and a worked example of compile-only module inspection. |
 
 ## Screens 📸
 
@@ -31,6 +44,9 @@ No internet connection needed. No pairing, no accounts, no setup. The data physi
 - **Mobile-first**. Designed for phone screens and phone cameras, but works on desktops too.
 - **Integrity verified**. Every byte accepted into your vault is checked against the SHA-256 hash from the manifest. A single-bit error causes the entire transfer to be rejected and discarded.
 - **RVF-aware**. Detects RVF containers (append-only segment streams with tail-discovered 4096-byte root manifest) and shows their type. Sends and receives them as-is.
+- **Real RVF parsing**. Containers are parsed by the actual RVF WebAssembly microkernel — header, segment table, per-segment CRC, vector count and dimensionality — and then searched, with a working nearest-neighbour query over the vectors inside.
+- **Scans without a native decoder**. Where the browser has no `BarcodeDetector` (Firefox, older Safari), rvQR falls back to its own bundled QR decoder rather than giving up.
+- **Decode from a picture**. Photograph or screenshot the sending screen and drop the image in; every frame visible in it is read at once. No camera permission needed, works in any browser.
 - **WASM inspection**. Compile-only analysis of WebAssembly modules—lists all exported names without instantiating or executing the code.
 - **Drag and drop**. Import artifacts by file picker or drag them into the vault.
 - **Pause and restart**. Control the send animation; skip ahead with the frame scrubber.
@@ -44,13 +60,15 @@ The core send/receive loop and the artifact vault are working today. Below are t
 |---------|--------|-------|
 | Single-QR-stream send/receive | ✅ Implemented | v1 protocol, deterministic frames, SHA-256 verification |
 | Artifact vault (storage, import, export, WASM inspection) | ✅ Implemented | IndexedDB-backed, no server sync |
-| RaptorQ fountain coding | 🗺️ Roadmap | RFC 6330 encoding symbols; receiver reconstructs after K+ε symbols regardless of which ones arrive |
+| RVF container parsing and vector search | ✅ Implemented | Real `@ruvector/rvf-wasm` microkernel; segment table, CRC fingerprints, nearest-neighbour query |
+| Bundled QR decoder + image-upload receive | ✅ Implemented | Used where `BarcodeDetector` is missing; reads several frames from one picture |
+| Erasure-coded frames | 🚧 Built, not yet wired in | A systematic GF(256) fountain code with RaptorQ's block structure — **RaptorQ-structured, deliberately not RFC 6330 conformant, and it will not interoperate with a conformant codec**. Any K+ε symbols reconstruct the object regardless of which arrive. Lives in `artifacts/fountain.js`; the transport still uses fixed indexed chunks. |
 | Delta segment transfer | 🗺️ Roadmap | Receiver displays its root manifest; sender diffs and sends only the missing RVF segments. Moves ~100× less data for a 1 GB container with 1% changed — about 29 hours down to 18 minutes at this app's measured rate. |
 | Signed manifest verification | 🗺️ Roadmap | Detached signatures via rvf-crypto; pinned key on receiver |
 | BitChat session bootstrap | 🗺️ Roadmap | X25519 public-key exchange QR; HKDF-SHA256 session key derivation; encrypted optical payloads |
 | Resume after browser termination | 🗺️ Roadmap | Persist transfer state; resume from last received frame |
 
-See [docs/protocol.md](./docs/protocol.md) for technical detail on the roadmap items.
+See [docs/protocol.md](./docs/protocol.md) for the wire format and roadmap, [docs/tutorial.md](./docs/tutorial.md) for the walkthrough, and [docs/ecosystem.md](./docs/ecosystem.md) for how the pieces fit together.
 
 ## Architecture
 
@@ -99,7 +117,7 @@ rather than stonewalled. When the manifest has arrived and every sequence is
 present, the payloads are concatenated in order, the SHA-256 is verified, and
 only then is the artifact stored.
 
-See [docs/protocol.md](./docs/protocol.md) for implementation detail and the roadmap (RaptorQ, delta transfer, BitChat, signed manifests).
+See [docs/protocol.md](./docs/protocol.md) for implementation detail and the roadmap (erasure-coded frames, delta transfer, BitChat, signed manifests), and [ADR-001](./docs/adr/ADR-001-rvqr-optical-transport.md) for why v1 shipped with fixed indexed chunks.
 
 ## Relationship to RuVector and RVF
 
@@ -163,16 +181,15 @@ single-symbol case rvQR complements by streaming.
 
 **Send works everywhere.** Animating QR codes requires only Canvas, which all modern browsers support.
 
-**Receive requires BarcodeDetector.** This is a native API implemented in:
-- Chrome and Edge on Android and desktop
-- Safari 17 and later on iOS and macOS
-- Older Safari versions can send but cannot receive; no heavy JavaScript decoder is bundled.
+**Receiving works everywhere**, by one of three routes:
 
-If your device does not support BarcodeDetector, use the text-paste fallback: manually copy a frame as text from the sender's screen and paste it into the Receive form.
+- **Native scanning** where the browser has `BarcodeDetector` — Chrome and Edge, and Safari 17 and later. Fastest, and what rvQR uses when it is available.
+- **The bundled decoder** everywhere else, including Firefox and older Safari. It is dependable on smaller symbols and wants a sharper image on the densest ones: good to about version 16 on a blurry camera frame, and to version 40 on a sharp screenshot. Sending at a 256-byte chunk keeps every frame comfortably inside that range.
+- **A picture, or pasted text.** Both work in any browser with no camera at all. The picture route is also the answer when rvQR is embedded in a page that does not grant camera access — a restriction set by the surrounding page, which the app detects and explains.
 
 ## Testing 🧪
 
-Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, and the QR encoder's structure — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
+Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
 
 The same assertions run under Node:
 

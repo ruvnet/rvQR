@@ -56,6 +56,274 @@
   var STALE_TRANSFER_MS = 3000;
   var STALE_MANIFEST_MS = 1000;
 
+  // --- Keyframe gate ---------------------------------------------------------
+  // Technique borrowed from rupixel (github.com/ruvnet/rupixel, docs/live.js,
+  // MIT): downsample each camera frame to a 16x16 grayscale signature and
+  // compare successive signatures by mean absolute difference. rupixel uses it
+  // to decide when a scene has changed enough to re-embed; rvQR uses it to
+  // decide when to spend a decode.
+  //
+  // The sense is inverted here. rupixel asks "has this changed?"; rvQR asks
+  // "has this changed AND stopped moving?", because a frame caught mid-pan is
+  // motion-blurred and will not decode however much CPU it is given. Running
+  // the bundled JS decoder is now the expensive path, so skipping frames that
+  // cannot succeed is worth more than skipping frames that are merely
+  // identical.
+  var SIGNATURE_SIZE = 16;
+
+  // All thresholds below are in mean-absolute-difference over 0-255 grayscale,
+  // averaged across the 256 signature cells. rupixel's SIG_THRESHOLD is 9 and
+  // that is what CHANGE_THRESHOLD inherits.
+  var CHANGE_THRESHOLD = 9;
+
+  // How still the picture must be relative to the immediately previous frame
+  // before a decode is attempted. Lower than the change threshold on purpose:
+  // "different from what I last read" is a coarser judgement than "not moving
+  // right now".
+  var SETTLE_THRESHOLD = 6;
+
+  // After this many consecutive skips the gate lets one through regardless.
+  // Without it, a scene that is changing just under the settle threshold — a
+  // hand with a slight tremor — could starve the decoder indefinitely.
+  var MAX_CONSECUTIVE_SKIPS = 12;
+
+  /**
+   * Reduces an ImageData-like object to a SIGNATURE_SIZE x SIGNATURE_SIZE
+   * grayscale signature by box-averaging. Pure: no canvas, no DOM.
+   */
+  function frameSignature(image, size) {
+    var n = size || SIGNATURE_SIZE;
+    var out = new Uint8Array(n * n);
+    var w = image.width, h = image.height, d = image.data;
+    if (!w || !h) return out;
+    for (var cy = 0; cy < n; cy++) {
+      var y0 = Math.floor((cy * h) / n);
+      var y1 = Math.max(y0 + 1, Math.floor(((cy + 1) * h) / n));
+      for (var cx = 0; cx < n; cx++) {
+        var x0 = Math.floor((cx * w) / n);
+        var x1 = Math.max(x0 + 1, Math.floor(((cx + 1) * w) / n));
+        var sum = 0, count = 0;
+        for (var y = y0; y < y1 && y < h; y++) {
+          for (var x = x0; x < x1 && x < w; x++) {
+            var p = (y * w + x) * 4;
+            // Same luma weights the decoder's binarizer uses.
+            sum += (d[p] * 77 + d[p + 1] * 151 + d[p + 2] * 28) >> 8;
+            count++;
+          }
+        }
+        out[cy * n + cx] = count ? Math.round(sum / count) : 0;
+      }
+    }
+    return out;
+  }
+
+  /** Mean absolute difference between two signatures, on a 0-255 scale. */
+  function signatureDiff(a, b) {
+    if (!a || !b || a.length !== b.length || !a.length) return 255;
+    var sum = 0;
+    for (var i = 0; i < a.length; i++) sum += Math.abs(a[i] - b[i]);
+    return sum / a.length;
+  }
+
+  function createFrameGate(opts) {
+    opts = opts || {};
+    return {
+      changeThreshold: opts.changeThreshold === undefined ? CHANGE_THRESHOLD : opts.changeThreshold,
+      settleThreshold: opts.settleThreshold === undefined ? SETTLE_THRESHOLD : opts.settleThreshold,
+      maxSkips: opts.maxSkips === undefined ? MAX_CONSECUTIVE_SKIPS : opts.maxSkips,
+      previous: null,
+      lastDecoded: null,
+      skips: 0,
+      seen: 0,
+      attempts: 0
+    };
+  }
+
+  /**
+   * Decides whether this frame is worth decoding, and records it.
+   * Returns { decode, reason, motion, change }.
+   */
+  function gateFrame(gate, signature) {
+    gate.seen++;
+    var motion = gate.previous ? signatureDiff(signature, gate.previous) : 255;
+    var change = gate.lastDecoded ? signatureDiff(signature, gate.lastDecoded) : 255;
+    gate.previous = signature;
+
+    var decision;
+    if (!gate.lastDecoded) {
+      decision = { decode: true, reason: 'first-frame' };
+    } else if (motion > gate.settleThreshold) {
+      decision = { decode: false, reason: 'moving' };
+    } else if (change < gate.changeThreshold) {
+      decision = { decode: false, reason: 'unchanged' };
+    } else {
+      decision = { decode: true, reason: 'changed-and-settled' };
+    }
+
+    if (!decision.decode && gate.skips >= gate.maxSkips) {
+      decision = { decode: true, reason: 'skip-limit' };
+    }
+
+    if (decision.decode) {
+      gate.skips = 0;
+      gate.attempts++;
+      gate.lastDecoded = signature;
+    } else {
+      gate.skips++;
+    }
+    decision.motion = motion;
+    decision.change = change;
+    return decision;
+  }
+
+  // --- Welcome animation model ----------------------------------------------
+  // The animation's state and its advance-or-skip decision live here, away from
+  // the canvas, because a loop that silently fails to step is invisible in a
+  // browser and obvious in a test. Given a clock and the dialog's visibility,
+  // these functions say whether to draw and what to draw — the caller only
+  // paints.
+
+  var STAGE_FPS = 30;          // decorative: never worth more
+  var STAGE_CYCLE_MS = 700;    // a frame leaves the sender this often
+  var STAGE_FLIGHT_MS = 1400;  // and takes this long to cross
+  var STAGE_HOLD_MS = 1200;    // pause with the grid full before looping
+  var STAGE_CELLS = 12;
+
+  function createStageModel(opts) {
+    opts = opts || {};
+    return {
+      cells: opts.cells || STAGE_CELLS,
+      fps: opts.fps || STAGE_FPS,
+      cycleMs: opts.cycleMs || STAGE_CYCLE_MS,
+      flightMs: opts.flightMs || STAGE_FLIGHT_MS,
+      holdMs: opts.holdMs || STAGE_HOLD_MS,
+      landed: 0,
+      packets: [],
+      t0: null,
+      lastEmit: -1,
+      lastDraw: null,
+      doneAt: 0,
+      drawn: 0
+    };
+  }
+
+  /** The composed still shown when motion is not wanted: mid-transfer, legible. */
+  function stageStillModel(model) {
+    var m = model || createStageModel();
+    m.landed = Math.round(m.cells * 0.42);
+    m.packets = [{ progress: 0.55, drift: 0 }];
+    return m;
+  }
+
+  /**
+   * Advances the animation to `now` and reports whether a repaint is due.
+   * Mutates and returns the model; `draw` tells the caller to paint it.
+   *
+   * env: { open, visible, reduced }
+   */
+  function stageAdvance(model, now, env) {
+    env = env || {};
+    if (env.open === false || env.visible === false) {
+      return { draw: false, reason: 'not-visible' };
+    }
+    if (env.reduced) {
+      // Draw the still exactly once, then stop asking.
+      if (model.lastDraw !== null) return { draw: false, reason: 'still-drawn' };
+      stageStillModel(model);
+      model.lastDraw = now;
+      model.drawn++;
+      return { draw: true, reason: 'reduced-still' };
+    }
+    if (model.t0 === null) model.t0 = now;
+
+    // The first frame must always paint: comparing against a zero-initialised
+    // timestamp would make the very first decision depend on how long the page
+    // had been open, which is how this loop failed the first time.
+    if (model.lastDraw !== null && now - model.lastDraw < 1000 / model.fps) {
+      return { draw: false, reason: 'throttled' };
+    }
+    model.lastDraw = now;
+    model.drawn++;
+
+    var slot = Math.floor((now - model.t0) / model.cycleMs);
+    if (slot !== model.lastEmit && model.landed + model.packets.length < model.cells) {
+      model.lastEmit = slot;
+      model.packets.push({ born: now, progress: 0, drift: (model.packets.length % 3) - 1 });
+    }
+    for (var i = model.packets.length - 1; i >= 0; i--) {
+      var pk = model.packets[i];
+      pk.progress = pk.born === undefined ? pk.progress : Math.min(1, (now - pk.born) / model.flightMs);
+      if (pk.progress >= 1) {
+        model.packets.splice(i, 1);
+        model.landed = Math.min(model.cells, model.landed + 1);
+      }
+    }
+    if (model.landed >= model.cells && !model.packets.length) {
+      if (!model.doneAt) model.doneAt = now;
+      else if (now - model.doneAt > model.holdMs) {
+        model.landed = 0;
+        model.doneAt = 0;
+        model.t0 = now;
+        model.lastEmit = -1;
+      }
+    }
+    return { draw: true, reason: 'advanced' };
+  }
+
+  /** A cheap comparable summary — what a viewer would actually see change. */
+  function stageFingerprint(model) {
+    var parts = [model.landed];
+    for (var i = 0; i < model.packets.length; i++) {
+      parts.push(model.packets[i].progress.toFixed(3));
+    }
+    return parts.join('|');
+  }
+
+  // --- First-run state -------------------------------------------------------
+  // Versioned so a future rewrite of the welcome can show itself again to
+  // people who dismissed the old one.
+  var WELCOME_KEY = 'rvqr.welcome.v1';
+
+  /**
+   * Whether the welcome should be shown, given a storage-like object.
+   * Storage is passed in rather than reached for, so this is testable and so a
+   * browser that throws on localStorage access (private mode, embedded frames)
+   * degrades to showing the welcome rather than crashing the boot path.
+   */
+  function shouldShowWelcome(storage, key) {
+    if (!storage) return true;
+    try {
+      return storage.getItem(key || WELCOME_KEY) === null;
+    } catch (e) {
+      return true;
+    }
+  }
+
+  function markWelcomeSeen(storage, key) {
+    if (!storage) return false;
+    try {
+      storage.setItem(key || WELCOME_KEY, String(Date.now()));
+      return true;
+    } catch (e) {
+      return false; // storage refused; the welcome simply shows again
+    }
+  }
+
+  /**
+   * Whether to animate, given a matchMedia-like function. Reduced motion is a
+   * stated preference, not a hint, so the caller renders one composed still
+   * frame instead — never nothing.
+   */
+  function prefersReducedMotion(matchMediaFn) {
+    if (typeof matchMediaFn !== 'function') return false;
+    try {
+      var m = matchMediaFn('(prefers-reduced-motion: reduce)');
+      return !!(m && m.matches);
+    } catch (e) {
+      return false;
+    }
+  }
+
   // --- base64url (RFC 4648 §5, unpadded) -------------------------------------
 
   var B64U = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_';
@@ -660,6 +928,26 @@
     MAX_GRID_CELLS: MAX_GRID_CELLS,
     STALE_TRANSFER_MS: STALE_TRANSFER_MS,
     STALE_MANIFEST_MS: STALE_MANIFEST_MS,
+    SIGNATURE_SIZE: SIGNATURE_SIZE,
+    CHANGE_THRESHOLD: CHANGE_THRESHOLD,
+    SETTLE_THRESHOLD: SETTLE_THRESHOLD,
+    MAX_CONSECUTIVE_SKIPS: MAX_CONSECUTIVE_SKIPS,
+    WELCOME_KEY: WELCOME_KEY,
+    STAGE_FPS: STAGE_FPS,
+    STAGE_CYCLE_MS: STAGE_CYCLE_MS,
+    STAGE_FLIGHT_MS: STAGE_FLIGHT_MS,
+    STAGE_CELLS: STAGE_CELLS,
+    createStageModel: createStageModel,
+    stageStillModel: stageStillModel,
+    stageAdvance: stageAdvance,
+    stageFingerprint: stageFingerprint,
+    frameSignature: frameSignature,
+    signatureDiff: signatureDiff,
+    createFrameGate: createFrameGate,
+    gateFrame: gateFrame,
+    shouldShowWelcome: shouldShowWelcome,
+    markWelcomeSeen: markWelcomeSeen,
+    prefersReducedMotion: prefersReducedMotion,
     gridPlan: gridPlan,
     cellForSequence: cellForSequence,
     sanitizeName: sanitizeName,
