@@ -123,6 +123,35 @@ unit table for 4 of the 8 container shapes tried and declining it for the other
 4 — including the demo container, whose table costs 869 B twice over against
 1,798 decomposable bytes.
 
+**12. The compression gate disagrees with a ratio rule in both directions, and
+only on the content this project carries.** MEASURED by driving
+`artifacts/compress.js` with the real `node:zlib` codecs on seven artifacts:
+six compress and **the incompressible one is refused, its envelope growing from
+47,553 to 47,558 bytes** with no frame saved. Float32 vectors clear by 1.26
+points where every real file clears by 15 to 68, and scanning prefixes of them
+finds the disagreement going both ways within 1,300 bytes of the same artifact —
+at 2,816 B the payload sheds 8.20% and the envelope only 7.65% (a payload rule
+compresses for nothing), at 2,304 B the payload sheds 7.81% and the **envelope
+8.31%** because a frame dropped out (a payload rule refuses a real saving). The
+verdict flips five times across eighteen sizes, so there is no single break-even
+size at all. **And none of it is sendable today: every compressing decision
+names codec id 4, which `proto2.parseFrame` rejects on the first frame.**
+
+**13. The browser cannot run either codec ADR-003 selected, and it costs less
+than that sounds.** The WHATWG Compression Streams list is `gzip`, `deflate`,
+`deflate-raw` — Zstd is ADR-003 §2.1's default and Brotli its maximum-ratio
+option, and **a browser has neither**, so every Brotli and Zstd figure in this
+document is a Node measurement of a codec no user of the web app executes.
+MEASURED through the real `CompressionStream('deflate-raw')`, with the module's
+own `choose()` judging the bytes: the shipped app gets **55.91% envelope gain on
+the demo WASM against Brotli's 63.69%, 21.07% on the demo container against
+23.37%, and 70.12% on `standalone.html` against 76.40%** — an edge of 0.48 to
+7.77 points, worst case 26% more frames for the receiver to watch. **deflate-raw
+gets most of the way there**; the browser limitation is worth single-digit
+percentage points, not a factor. A browser also has no level to raise: the
+stream's output is byte-identical to `deflateRawSync` at level 6 on 7 of 7
+artifacts.
+
 ---
 
 ## Reproducing this
@@ -138,7 +167,7 @@ node bench/index.mjs --suite payloads    # the two real demo artifacts
 node bench/index.mjs --suite delta       # delta transfer end to end
 node bench/index.mjs --suite qr          # QR encode and decode cost
 node bench/index.mjs --suite proto       # protocol v1 against v2 at matched QR versions
-node bench/index.mjs --suite compress    # zstd and brotli, judged on the whole envelope
+node bench/index.mjs --suite compress    # codecs on the envelope, what compress.js decides, Node vs browser
 node bench/index.mjs --suite objective   # G = R × C × E × P
 node bench/index.mjs --suite fleet       # N receivers, peer exchange (a model)
 node bench/index.mjs --suite closures    # progressive activation (a model)
@@ -179,13 +208,15 @@ figures also vary a few tens of percent *between runs on this machine*
 depending on how warm the JIT is by the time a suite runs — see the note under
 "Decode cost against symbol size".
 
-**Two artifacts moved while these benchmarks were being taken, repeatedly.**
-`standalone.html` was 503,216 bytes at the start of the session, 507,527 midway
-through, and 572,166 at the time of this run; `artifacts/app.js` went from
-91,487 to 112,319. Both are under active development by other agents. Every
-measurement below records the size it saw, and any figure quoted against a
-different size is a measurement of a different file. Ratios and percentages
-survive this; absolute byte counts do not, and are quoted with their size.
+**Two artifacts moved while these benchmarks were being taken, repeatedly, and
+are still moving.** `standalone.html` was 503,216 bytes at the start of the
+session, then 507,527, then 572,166 at the time of this run, and 849,284 and then
+950,817 when §2 was re-run at 20:52:14Z. `artifacts/app.js` went from 91,487 to
+112,319 for this run, and then to 182,189, 194,163, 204,901 and 206,829 across
+four §2 re-runs over fourteen minutes. Both are under active development by other agents. Every measurement
+below records the size it saw, and any figure quoted against a different size is
+a measurement of a different file. Ratios and percentages survive this; absolute
+byte counts do not, and are quoted with their size.
 
 ---
 
@@ -360,6 +391,18 @@ every table against a different one. The envelope arithmetic was checked against
 frames the real `proto2.buildFrames` produced at 15 size/chunk combinations and
 matched exactly, armoured and unarmoured.
 
+**This section was re-run on its own at 2026-08-03T20:52:14Z**, after
+`artifacts/compress.js` landed, and every number in §2 comes from that run. The
+rest of this document is from the 16:44:39Z run recorded above. The two agree
+on the machine, the seed and the demo artifacts, which have not changed; they
+disagree on `artifacts/app.js` and `standalone.html`, which grew in between and
+are reported below at the sizes this run saw them.
+
+**Read the Node and browser figures as two environments, not one.** §2's codec
+tables run `node:zlib`. The shipped app runs in a browser, which has neither
+codec ADR-003 §2.1 selected — see "The same decision in a browser" below, which
+is where the numbers a user of the web app would actually get are reported.
+
 ### The corpus
 
 | artifact | bytes | Brotli-6 | ratio | envelope gain | best codec | best ratio | best gain |
@@ -367,18 +410,24 @@ matched exactly, armoured and unarmoured.
 | `artifacts/demo/ruvnet-demo.rvf` | 2,304 | 1,745 B | 1.320× | 23.2% | brotli-9 | 1.326× | 23.5% |
 | `artifacts/demo/rvf_wasm_bg.wasm` | 40,989 | 16,636 B | 2.464× | 59.3% | brotli-11 | 2.767× | 63.7% |
 | `artifacts/core.js` | 51,683 | 15,851 B | 3.261× | 69.2% | brotli-11 | 3.679× | 72.7% |
-| `artifacts/app.js` | 112,319 | 30,286 B | 3.709× | 73.0% | brotli-11 | 4.138× | 75.8% |
-| `standalone.html` | 572,166 | 158,868 B | 3.602× | 72.2% | brotli-11 | 4.042× | 75.2% |
+| `artifacts/app.js` | 206,829 | 55,314 B | 3.739× | 73.2% | brotli-11 | 4.176× | 76.0% |
+| `standalone.html` | 950,817 | 253,636 B | 3.749× | 73.3% | brotli-11 | 4.239× | 76.4% |
 | synthetic float32 vectors | 16,384 | 14,929 B | 1.097× | 8.7% | brotli-11 | 1.103× | 9.1% |
 
 **The three reference points this was asked to reproduce independently, all
 reproduced.** 40,989 → 16,636 at Brotli-6, ratio 2.464× — the same byte count.
-2,304 → 1,745, ratio 1.320× — the same byte count. The standalone app reproduces only
-approximately, and the reason is instructive: 3.602× against a previously
-reported 3.53×, and 158,868 bytes against 142,368, because the file grew from
-503,216 to 572,166 bytes **during this session** — it was 507,527 midway
-through. The ratio is the near-reproducible quantity; the byte count is a
-measurement of a file that changed three times while it was being measured.
+2,304 → 1,745, ratio 1.320× — the same byte count. The standalone app reproduces
+only approximately, and the reason is instructive: 3.749× against a previously
+reported 3.53×, on a file that has now reached 950,817 bytes from the 503,216
+the earlier figure was taken against. The ratio is the near-reproducible
+quantity; the byte count is a measurement of a file that has been measured at
+five different sizes across this session — 503,216, then 507,527, then 572,166,
+then 849,284, and 950,817 here. `artifacts/app.js` moved during this section's
+own measurements too: 182,189 bytes at 20:38:19Z, then 194,163, 204,901 and
+206,829 at 20:52:14Z, which is the run reported. Its byte count moved by 14%
+across those fourteen minutes and its Brotli-11 ratio by 0.012×, from 4.165 to
+4.177 — which is the general shape of this problem in one artifact: the ratio is
+the quantity that travels, the byte count is not.
 
 The float32 row is the case the corpus would otherwise flatter away. It is
 synthetic, generated from the harness seed, in the shape an RVF `VEC` span
@@ -389,21 +438,23 @@ source code and WASM would make compression look uniformly free.
 
 | artifact | zstd-6 enc | zstd-6 dec | brotli-6 enc | brotli-6 dec | brotli-11 enc |
 |---|---|---|---|---|---|
-| `ruvnet-demo.rvf` (2.3 KB) | 0.02 ms | 0.01 ms | 0.04 ms | 0.01 ms | 2.4 ms |
-| `rvf_wasm_bg.wasm` (41 KB) | 0.34 ms | 0.05 ms | 0.63 ms | 0.11 ms | 37.8 ms |
-| `standalone.html` (572 KB) | 4.59 ms | 0.42 ms | 9.34 ms | 0.92 ms | 602.9 ms |
+| `ruvnet-demo.rvf` (2.3 KB) | 0.03 ms | 0.01 ms | 0.05 ms | 0.01 ms | 2.4 ms |
+| `rvf_wasm_bg.wasm` (41 KB) | 0.37 ms | 0.06 ms | 0.64 ms | 0.10 ms | 37.0 ms |
+| `artifacts/app.js` (207 KB) | 1.69 ms | 0.18 ms | 2.77 ms | 0.30 ms | 183.0 ms |
+| `standalone.html` (951 KB) | 6.88 ms | 0.71 ms | 15.31 ms | 1.39 ms | 986.7 ms |
 
 Decode is the number that matters, because it is on the receiver's critical
-path, and it is negligible: under a millisecond for half a megabyte. Encode at
-Brotli-11 is not — 603 ms for the standalone app — but it is a sender-side
-one-off before the first frame is painted, against a transfer measured in
-minutes.
+path, and it is negligible: 1.39 ms for 951 KB. Encode at Brotli-11 is not —
+987 ms for the standalone app — but it is a sender-side one-off before the
+first frame is painted, against a transfer measured in minutes.
 
 ADR-003 §2.3 reports Brotli-6 encoding `standalone.html` at 503,216 bytes in
-8.38 ms, about 60 MB/s. This harness measures 572,166 bytes in 9.34 ms, about
-61 MB/s, on a file that grew between the two runs — an independent
+8.38 ms, about 57 MB/s. This harness measures 950,817 bytes in 15.31 ms, about
+59 MB/s, on a file 1.89× the size the ADR measured — an independent
 corroboration rather than a restatement, and close enough that ADR-003's
-"compress the whole thing and compare up to 8 MB" policy is well founded.
+"compress the whole thing and compare up to 8 MB" policy is well founded. The
+ADR's ratio is re-measured against the current file below, under "ADR-003's
+figures against the file as it is now".
 
 **These are Node's builds, and the browser does not have them.** A browser's
 `DecompressionStream` supports `deflate`, `deflate-raw` and `gzip` only. Brotli
@@ -425,8 +476,8 @@ at each point is measured rather than extrapolated from the whole file's ratio.
 | `ruvnet-demo.rvf` | never in range | 64 B | 1.40× | — |
 | `rvf_wasm_bg.wasm` | never in range | 64 B | 1.45× | 2.29× |
 | `artifacts/core.js` | **64 B** | 128 B | 1.72× | 2.17× |
-| `artifacts/app.js` | never in range | 256 B | 1.68× | 2.68× |
-| `standalone.html` | never in range | 64 B | 2.68× | 2.42× |
+| `artifacts/app.js` | never in range | 256 B | 1.61× | 2.31× |
+| `standalone.html` | never in range | 64 B | 2.06× | 2.35× |
 | synthetic float32 vectors | **128 B** | **6,144 B** | 1.06× | 1.09× |
 
 **There is no single break-even size — there is a break-even per content
@@ -439,6 +490,292 @@ this project exists to carry; it has to switch on measured gain.
 A prefix of a file is not a smaller file of the same kind — the first 512 bytes
 of a WASM module are its header, which compresses differently from its code — so
 these break-evens bound the answer rather than being it.
+
+### What the sender actually decides
+
+Everything above measures the **codecs**: this harness compresses with
+`node:zlib` and applies the gate itself. Since `artifacts/compress.js` landed
+there is a second question, and it is not the same one — not "how much does
+Brotli save" but "what does the sender choose, and does it choose it for the
+right reason". So the suite now also drives that module end to end.
+
+**The module's own unit tests prove nothing about ratios, deliberately.** Most
+of `compress.test.js` injects stub codecs that return a fixed size, so its
+verdicts are arithmetic a reader can check by hand and are independent of what
+the machine running them has installed. Everything in this subsection injects
+the real `node:zlib` codecs, keyed by codec **name**, which is the key
+`compressWith` looks up — a map keyed by numeric id fails with
+`codec-unavailable`.
+
+The levels are part of the measurement and not a property of the module:
+`compressArtifact` takes its codecs as an injected map and has no parameter
+that could turn Brotli-11 into Brotli-4. Injected here: **brotli-11, zstd-3,
+deflate-raw-9**. The envelope is at **764 bytes per frame** — the module's own
+`DEFAULT_CHUNK_BYTES`, not the 512 the tables above use — v2 armoured, gate 8%.
+`nameLen` is each artifact's real basename length, because the manifest frame
+carries the name and its length is a term in the envelope.
+
+| artifact | bytes | class | codec chosen | payload gain | envelope gain | margin | frames | wire bytes | verdict |
+|---|---|---|---|---|---|---|---|---|---|
+| `artifacts/demo/ruvnet-demo.rvf` | 2,304 | rvf | **brotli** (id 4) | 24.22% | 23.37% | +15.37 pt | 5 → 4 | 2,867 → 2,197 | pass |
+| `artifacts/demo/rvf_wasm_bg.wasm` | 40,989 | wasm | **brotli** (id 4) | 63.86% | 63.69% | +55.69 pt | 55 → 21 | 48,722 → 17,692 | pass |
+| `artifacts/core.js` | 51,683 | generic | **brotli** (id 4) | 72.82% | 72.68% | +64.68 pt | 69 → 20 | 61,394 → 16,772 | pass |
+| `artifacts/app.js` | 206,829 | generic | **brotli** (id 4) | 76.05% | 76.02% | +68.02 pt | 272 → 66 | 245,373 → 58,829 | pass |
+| `standalone.html` | 950,817 | html | **brotli** (id 4) | 76.41% | 76.40% | +68.40 pt | 1246 → 295 | 1,127,658 → 266,105 | pass |
+| synthetic float32 vectors | 16,384 | generic | **brotli** (id 4) | 9.31% | 9.26% | +1.26 pt | 23 → 21 | 19,546 → 17,736 | **marginal pass** |
+| incompressible random bytes | 40,000 | generic | **none** (id 0) | −0.01% | −0.01% | −8.01 pt | 54 → 54 | 47,553 → **47,558** | **declined** |
+
+Six of seven are compressed and one is refused. Two rows are the ones worth
+reading:
+
+**The declined row grows the envelope.** 40,000 bytes of mulberry32 output from
+the harness seed — deterministic, and reproducibly incompressible: the best of
+the three codecs returns 40,004 bytes, four more than it was given. The
+envelope goes from 47,553 to 47,558 bytes, five worse, and not one of the 54
+frames is saved. The repository ships no artifact a codec loses on, so this
+case is generated; without it the gate would never be observed saying no to
+anything.
+
+**The marginal row is the one the threshold actually decides.** Float32 vectors
+clear by 1.26 points. "Marginal" is this document's word and not the module's —
+it passes or it does not — and the label is here so a reader can tell a decision
+that was never close from one that turned on the threshold. Every other real
+artifact clears by 15 to 68 points, which is to say the gate is doing no work at
+all on them.
+
+**Every codec that was offered, and whether the bytes came back.** A ratio
+without a verified round trip is a claim about a byte count, so each stream is
+decompressed and compared against the original. Encode and decode are the
+harness's medians over three runs, not the module's: nothing in `compress.js`
+reads a clock, so no timing here can have moved a verdict.
+
+| artifact | codec | compressed | ratio | payload gain | envelope gain | frames | encode | decode | round trip | gate |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ruvnet-demo.rvf` | zstd-3 | 1,811 B | 1.272× | 21.40% | 20.79% | 5 → 4 | 0.01 ms | 0.01 ms | exact | pass |
+| `ruvnet-demo.rvf` | **brotli-11** | 1,746 B | 1.320× | 24.22% | 23.37% | 5 → 4 | 2.27 ms | 0.02 ms | exact | **chosen** |
+| `ruvnet-demo.rvf` | deflate-raw-9 | 1,798 B | 1.281× | 21.96% | 21.31% | 5 → 4 | 0.05 ms | 0.01 ms | exact | pass |
+| `rvf_wasm_bg.wasm` | **brotli-11** | 14,815 B | 2.767× | 63.86% | 63.69% | 55 → 21 | 36.74 ms | 0.14 ms | exact | **chosen** |
+| `rvf_wasm_bg.wasm` | zstd-3 | 18,185 B | 2.254× | 55.63% | 55.51% | 55 → 25 | 0.11 ms | 0.04 ms | exact | pass |
+| `rvf_wasm_bg.wasm` | deflate-raw-9 | 18,013 B | 2.276× | 56.05% | 55.92% | 55 → 25 | 0.53 ms | 0.07 ms | exact | pass |
+| `core.js` | zstd-3 | 17,517 B | 2.950× | 66.11% | 66.01% | 69 → 24 | 0.11 ms | 0.05 ms | exact | pass |
+| `core.js` | **brotli-11** | 14,047 B | 3.679× | 72.82% | 72.68% | 69 → 20 | 39.79 ms | 0.10 ms | exact | **chosen** |
+| `core.js` | deflate-raw-9 | 16,584 B | 3.116× | 67.91% | 67.80% | 69 → 23 | 1.15 ms | 0.07 ms | exact | pass |
+| `app.js` | zstd-3 | 62,305 B | 3.320× | 69.88% | 69.84% | 272 → 83 | 0.60 ms | 0.17 ms | exact | pass |
+| `app.js` | **brotli-11** | 49,526 B | 4.176× | 76.05% | 76.02% | 272 → 66 | 183.38 ms | 0.40 ms | exact | **chosen** |
+| `app.js` | deflate-raw-9 | 59,079 B | 3.501× | 71.44% | 71.40% | 272 → 79 | 5.74 ms | 0.21 ms | exact | pass |
+| `standalone.html` | **brotli-11** | 224,300 B | 4.239× | 76.41% | 76.40% | 1246 → 295 | 997.11 ms | 1.69 ms | exact | **chosen** |
+| `standalone.html` | zstd-3 | 282,712 B | 3.363× | 70.27% | 70.26% | 1246 → 372 | 2.59 ms | 0.75 ms | exact | pass |
+| `standalone.html` | deflate-raw-9 | 283,233 B | 3.357× | 70.21% | 70.20% | 1246 → 372 | 26.20 ms | 1.41 ms | exact | pass |
+| float32 vectors | zstd-3 | 14,948 B | 1.096× | 8.76% | 8.73% | 23 → 21 | 0.02 ms | 0.02 ms | exact | pass |
+| float32 vectors | **brotli-11** | 14,858 B | 1.103× | 9.31% | 9.26% | 23 → 21 | 25.11 ms | 0.11 ms | exact | **chosen** |
+| float32 vectors | deflate-raw-9 | 14,939 B | 1.097× | 8.82% | 8.78% | 23 → 21 | 0.11 ms | 0.05 ms | exact | pass |
+| random bytes | zstd-3 | 40,010 B | 1.000× | −0.03% | −0.03% | 54 → 54 | 0.03 ms | 0.01 ms | exact | FAIL |
+| random bytes | **brotli-11** | 40,004 B | 1.000× | −0.01% | −0.01% | 54 → 54 | 5.51 ms | 0.01 ms | exact | FAIL |
+| random bytes | deflate-raw-9 | 40,015 B | 1.000× | −0.04% | −0.04% | 54 → 54 | 0.32 ms | 0.01 ms | exact | FAIL |
+
+**All 21 codec runs round-tripped byte-exactly**, and re-encoding reproduced the
+exact length the module had decided on in every case — so a verdict here is a
+property of the bytes rather than of the run.
+
+Brotli wins every artifact it is offered on, which is not a close contest at
+these levels: it beats zstd-3 by 6 to 8 points of envelope on the text-like
+artifacts and by 8 points on the WASM module, at 40× to 360× the encode time.
+Whether that trade is right is a sender-side latency question this document does
+not settle; what it settles is that the choice is not arbitrary and that the
+loser is never wrong by a rounding error.
+
+### The same decision in a browser, which has neither codec ADR-003 chose
+
+Every figure above runs `node:zlib`. **rvQR runs in a browser**, and the WHATWG
+Compression Streams format list is exactly `gzip`, `deflate`, `deflate-raw` —
+no `br`, no `brotli`, no `zstd`. ADR-003 §2.1 makes Zstd the default and Brotli
+the maximum-ratio option, so **the shipped web app can run neither of them**,
+and every Brotli and Zstd number above is a Node measurement of a codec no user
+of the web app will execute. (The format list is the specification's; a probe of
+a real Chromium 140 outside this harness confirmed it, with `br`, `brotli` and
+`zstd` all throwing on construction. That probe is not this harness's
+measurement and is not reported as one — what this harness measures is the
+consequence.)
+
+So the rows below are a second environment, not a caveat on the first. They are
+measured through the real `CompressionStream('deflate-raw')`. That codec is
+asynchronous and `compressArtifact` is synchronous, so it cannot be injected
+into the module's own path at all; the stream is run for real, its output length
+measured, and the length put through the module's `choose()`, which takes sizes
+rather than codecs for exactly this reason. The verdict is the module's, and
+only the bytes come from somewhere its synchronous path cannot reach.
+
+Presented a browser-shaped platform — the stream constructors and no `zlib` —
+the module detects **deflate-raw** (id 6, via `CompressionStream`, dictionary
+**no**) and nothing else, and refuses the other two by name rather than by
+omission.
+
+| artifact | bytes | browser: deflate-raw | gain | frames | Node: best codec | gain | frames | Brotli's edge | extra frames |
+|---|---|---|---|---|---|---|---|---|---|
+| `ruvnet-demo.rvf` | 2,304 | 1,804 B | 21.07% | 5 → 4 | brotli, 1,746 B | 23.37% | 5 → 4 | +2.30 pt | none |
+| `rvf_wasm_bg.wasm` | 40,989 | 18,014 B | 55.91% | 55 → 25 | brotli, 14,815 B | 63.69% | 55 → 21 | +7.77 pt | +4 |
+| `artifacts/core.js` | 51,683 | 16,619 B | 67.73% | 69 → 23 | brotli, 14,047 B | 72.68% | 69 → 20 | +4.95 pt | +3 |
+| `artifacts/app.js` | 206,829 | 59,252 B | 71.32% | 272 → 79 | brotli, 49,526 B | 76.02% | 272 → 66 | +4.70 pt | +13 |
+| `standalone.html` | 950,817 | 284,013 B | 70.12% | 1246 → 373 | brotli, 224,300 B | 76.40% | 1246 → 295 | +6.28 pt | +78 |
+| float32 vectors | 16,384 | 14,939 B | 8.78% | 23 → 21 | brotli, 14,858 B | 9.26% | 23 → 21 | +0.48 pt | none |
+| random bytes | 40,000 | *declined* | −0.04% | 54 → 54 | *declined* | −0.01% | 54 → 54 | — | none |
+
+**deflate-raw gets most of the way there, and that is the headline.** Brotli's
+edge across the six artifacts both environments compress is **0.48 to 7.77
+points** of envelope gain. In the quantity a receiver actually experiences —
+frames it has to sit and watch — the worst case is `standalone.html`, 295 frames
+under Brotli against 373 under deflate-raw, **26% more**. That is a real cost
+and it is not a crippling one. The browser limitation is worth single-digit
+percentage points of envelope, not a factor, and the right reading is that the
+web app compresses nearly as well as the best codec available anywhere — not
+that it is missing compression.
+
+Both environments reach the same compress-or-not verdict on every artifact: the
+gate is far enough from the margin that the codec difference never flips it
+here. Note that the float32 row clears by 0.78 points in a browser against 1.26
+in Node — the marginal case gets more marginal, and a slightly weaker codec is
+what would tip it.
+
+**A browser has no compression level to raise.**
+`CompressionStream('deflate-raw')` produced byte-identical output to
+`deflateRawSync(bytes, { level: 6 })` on **7 of 7** artifacts. So the
+deflate-raw column is not a setting anyone can tune; it is the whole of what is
+on offer. The deflate-raw-9 rows in the Node table above are 0 to 780 bytes
+smaller — 780 on `standalone.html`, 0 on both synthetic artifacts — and none of
+that margin is reachable from a browser.
+
+**And the synchronous path fails closed on an asynchronous codec.** Injecting a
+`compress` that returns a Promise throws `CompressError` with reason
+`bad-compressed-size` — "compressedBytes must be a size or a buffer". A Promise
+has no `length` and no `byteLength`, so the module cannot read a size out of it
+and refuses at the point of measurement, before any decision is taken. That is
+worth recording as a property rather than a caveat: the failure mode of wiring a
+browser codec into the sync path is a thrown error with a stable reason, not a
+manifest describing a stream nobody produced.
+
+### The chosen identifier is one `proto2.js` refuses
+
+`compress.js` works from ADR-003 §2.1's seven-entry codec table. `proto2.js`
+ships a four-entry one. They agree on exactly one id:
+
+| codec id | ADR-003 §2.1 | `proto2.js` | agree? |
+|---|---|---|---|
+| 0 | none | none | yes |
+| 1 | lz4 | scf1 | **no** |
+| 2 | zstd | deflate-raw | **no** |
+| 3 | custom | brotli | **no** |
+| 4 | brotli | *(refused: unknown-codec)* | **no** |
+| 5 | scf1 | *(refused: unknown-codec)* | **no** |
+| 6 | deflate-raw | *(refused: unknown-codec)* | **no** |
+
+**Every one of the six compressing decisions above names codec id 4, and
+`proto2.parseFrame` rejects id 4 on the first frame with `unknown-codec`** —
+its `CODEC_NAMES` has four entries, so 4 is out of range. Nor is there a codec
+that would work instead: zstd is id 2 here and id 2 means deflate-raw in
+`proto2.js`, which is the ADR-027 §2.2 defect exactly (a receiver decoding with
+the wrong codec), and deflate-raw is id 6, also out of range. The only
+wire-compatible decision available today is **id 0, no compression**.
+
+Nothing in this suite changes either file. `compress.js` reports the divergence
+itself through `wireCompatible()`, and this table is that function's output. The
+gains in the tables above are real; they are not *available* until `proto2.js`
+adopts the §2.1 table.
+
+### The gate's two disagreements with a payload rule, both directions
+
+The reason to gate on the envelope rather than on the ratio is that the two
+disagree. `compress.js`'s docblock publishes six size pairs said to land in the
+band where the payload clears 8% and the envelope does not. Those are
+arithmetic, not measurements, so they were re-derived here through the module's
+own `evaluate()` — **all six reproduce the docblock's figures exactly**,
+including the frame counts, so that table is the module's arithmetic rather
+than a recollection of it.
+
+The more interesting question is whether the band occurs on real bytes. Prefixes
+of every corpus artifact were compressed for real with brotli-11 at 20 sizes
+from 512 B to 32 KB, each point evaluated by the module:
+
+| artifact | sizes scanned | payload passes, envelope fails | envelope passes, payload fails | envelope grew | first size that clears | verdict flips |
+|---|---|---|---|---|---|---|
+| `ruvnet-demo.rvf` | 8 | — | — | — | 512 B | 0 |
+| `rvf_wasm_bg.wasm` | 20 | — | — | — | 512 B | 0 |
+| `artifacts/core.js` | 20 | — | — | — | 512 B | 0 |
+| `artifacts/app.js` | 20 | — | — | — | 512 B | 0 |
+| `standalone.html` | 20 | — | — | — | 512 B | 0 |
+| synthetic float32 vectors | 18 | **2,816 B** (8.20% / 7.65%), **3,584 B** (8.29% / 7.80%) | **2,304 B** (7.81% / 8.31%) | — | 2,304 B | **5** |
+| incompressible random bytes | 20 | — | — | every size scanned | never in range | 0 |
+
+**The band is real on real bytes, in both directions, and only on the content
+this project exists to carry.** At 2,816 bytes of float32 the payload sheds
+8.20% and the envelope only 7.65%, because the frame count is 5 either way: a
+payload rule turns compression on there and buys the receiver nothing but a
+decompressor on its critical path. At 2,304 bytes it runs the other way — the
+payload sheds 7.81% and the **envelope 8.31%**, because a frame dropped out, and
+dropping a frame removes its 28-byte header and its armour padding as well as
+its payload. A payload rule refuses that one, and refusing it is wrong.
+
+So the envelope rule is not a stricter payload rule. It is a different rule,
+which says yes and no in places the payload rule cannot see, and it disagrees in
+both directions on the same 1,300-byte stretch of the same artifact.
+
+**And the verdict is not monotone in size.** Float32 flips five times across
+eighteen sizes: 512 B fails, 2,304 B passes, 2,560 B fails, 3,072 B passes,
+3,584 B fails, 4,096 B passes and it stays passing. The ratio climbs smoothly
+and the frame count is a step function, so a slightly *larger* artifact can fall
+back below the gate. There is no single break-even size — the break-even table
+above reports the first crossing, which for this content is not the last, and
+the "6,144 B" it gives for float32 is a different measurement again (brotli-6 at
+a 512-byte chunk, where this scan is brotli-11 at 764). Both are correct about
+what they measured; neither is a break-even for the content in general.
+
+### The >8 MB prefix branch, exercised below 8 MB
+
+ADR-003 §2.3 compresses an artifact whole up to 8 MB and estimates on a bounded
+prefix above it. **This repository ships nothing that reaches 8 MB**, so that
+branch would go entirely unmeasured unless the threshold moved. It was moved —
+`sampleAbove` 32,768 B, `samplePrefix` 16,384 B — and that is the only thing in
+this table that is not the shipped configuration. The estimate runs at
+brotli-4/zstd-1/deflate-1 and the full encode at brotli-11/zstd-3/deflate-9,
+which is the `sampleCodecs` seam §2.3 asks for.
+
+| artifact | bytes | whole-artifact decision | sampled decision | same? | declined on the prefix |
+|---|---|---|---|---|---|
+| `rvf_wasm_bg.wasm` | 40,989 | brotli, 14,815 B (63.69%) | brotli, 14,815 B (63.69%) | yes | — |
+| `artifacts/core.js` | 51,683 | brotli, 14,047 B (72.68%) | brotli, 14,047 B (72.68%) | yes | — |
+| `artifacts/app.js` | 206,829 | brotli, 49,526 B (76.02%) | brotli, 49,526 B (76.02%) | yes | — |
+| `standalone.html` | 950,817 | brotli, 224,300 B (76.40%) | brotli, 224,300 B (76.40%) | yes | — |
+| incompressible random bytes | 40,000 | none, 40,000 B | none, 40,000 B | yes | zstd −0.06%, brotli −0.03%, deflate-raw −0.04% |
+
+The prefix reached the same decision as the whole artifact in all five rows, and
+no codec was declined on a prefix that would have cleared the gate on the whole
+artifact — so at these sizes the shortcut costs nothing. That is a property of
+these artifacts and not a guarantee: a declining estimate is **final** for that
+codec, which is §2.3's flow rather than an oversight, so a file whose first
+megabyte compresses badly and whose remainder compresses well is refused without
+ever being measured. Nothing in the module detects that case, and nothing here
+constructs one.
+
+### ADR-003's figures against the file as it is now
+
+ADR-003 §2.3's table cites `standalone.html` at **503,216 bytes** compressing
+**3.535×** under Brotli in 8.38 ms. The file is now 950,817 bytes — 447,601
+more, 1.89× the size the ADR measured.
+
+| quality | bytes in | bytes out | ratio | encode | throughput | decode | round trip |
+|---|---|---|---|---|---|---|---|
+| brotli-6 | 950,817 | 253,636 | **3.749×** | 15.02 ms | 60.4 MB/s | 1.31 ms | exact |
+| brotli-11 | 950,817 | 224,300 | 4.239× | 994.10 ms | 0.9 MB/s | 1.71 ms | exact |
+
+**The discrepancy, stated rather than absorbed: 3.749× measured against the
+ADR's 3.535×, a difference of +0.214, on a file 1.89× the size.** Nothing in
+ADR-003 has been edited by this run and nothing should be — its figures were
+true of the file it measured, and a decision record whose evidence silently
+updates itself stops being a record. What survives the file changing is the
+ratio and the throughput: 60.4 MB/s here against 57.3 MB/s there, close enough
+that §2.3's "compress the whole thing and compare, up to 8 MB" still costs a
+fraction of a second on anything this repository holds. What does not survive is
+the byte count, and any figure quoted against 503,216 bytes is a measurement of
+a different file.
 
 ## 3. Baseline versus fountain under loss
 
@@ -1450,7 +1787,11 @@ in the brief for this work. Reported rather than smoothed.
 | A v1 data frame is 739 B / 44.3% overhead (`proto2.js` docblock) vs 741 B / 44.7% (elsewhere) | Both, depending on transfer size: 739 B for a 6-frame transfer, 740–741 B for an 82-frame one | v1's `i` and `n` are decimal and grow by a byte at each power of ten. Neither figure is wrong; neither is a constant. |
 | v2 binary carries 764 B/frame at version 19-L, 1.492× v1's default | 764 B confirmed, and 1.389× against v1's *measured maximum* of 550 B at that version. 1.49× is against the app's 512 B setting, which is not v1's maximum | Both ratios are defensible; they answer different questions. Against v1's best at the same symbol, v2 binary is 1.39× and v2 armoured 1.21×. |
 | v2 binary is the dense path | The shipped `qrdecode.js` returns 830 bytes for a 792-byte binary frame and `parseFrame` rejects it | The binary path is unreachable with any decoder in this repository. `proto2.js`'s docblock says so; this measures it. The armoured path is the real one. |
-| `standalone.html` is 503,216 B, compressing to 142,368 B with Brotli-6 (ratio 3.53×) | 572,166 B compressing to 158,868 B, ratio 3.602× — and it was 507,527 B midway through this session | The ratio is stable to about 2%; the byte counts are not, because the file changed three times while being measured. Byte counts against a moving build artifact are not reproducible quantities and should be quoted with their size. |
+| ADR-003 §2.3 cites `standalone.html` at 503,216 B compressing 3.535× with Brotli in 8.38 ms | 950,817 B compressing to 253,636 B at Brotli-6, ratio 3.749× in 15.02 ms — and it was 507,527 B, then 572,166 B, then 849,284 B, earlier in this session | The ratio is stable to about 6% and the throughput to about 5% (60.4 MB/s against 57.3); the byte counts are not, because the file has been measured at five different sizes this session. Byte counts against a moving build artifact are not reproducible quantities and should be quoted with their size. **ADR-003 is not edited to match** — its figures were true of the file it measured. |
+| `compress.js` selects codec ids from ADR-003 §2.1; `proto2.js` ships `CODEC_NAMES = ['none','scf1','deflate-raw','brotli']` | The two tables agree on **id 0 alone**. Every compressing decision measured in §2 names id 4 (brotli), which `proto2.parseFrame` rejects with `unknown-codec`; zstd is id 2 here and id 2 is deflate-raw there; deflate-raw is id 6, also out of range | **No compressed transfer this module decides on can cross the wire today.** `compress.js` reports the divergence itself through `wireCompatible()` rather than working around it, and changes nothing in `proto2.js`. The gains in §2 are real and unavailable until `proto2.js` adopts the §2.1 table. This is ADR-027 §2.2's defect in its live form: id 2 means two different codecs in two files that have to agree. |
+| ADR-003 §2.1 selects Zstd as the default codec and Brotli as the maximum-ratio option for WASM, HTML and metadata | A browser can run **neither**. The WHATWG Compression Streams format list is `gzip`, `deflate`, `deflate-raw`; a real Chromium 140 throws on `br`, `brotli` and `zstd` | **The ADR selects codecs for a platform that is not the one the app runs on.** Measured through the real `CompressionStream('deflate-raw')`, the reachable codec gives 55.91% envelope gain on the demo WASM against Brotli's 63.69%, and 70.12% against 76.40% on `standalone.html` — an edge of 0.48 to 7.77 points. The decision does not change (both environments compress or decline identically on every artifact here), so §2.1's *policy* survives; its *codec choice* describes Node. |
+| `compressArtifact` is synchronous; the only codec a browser has is asynchronous | `CompressionStream` has no synchronous form, so the browser's codec cannot be injected into the module's own path at all. Injecting a Promise-returning `compress` throws `CompressError`/`bad-compressed-size` | **Fail-closed, and worth recording as a property.** A Promise has no `length` or `byteLength`, so the module refuses at the point of measurement rather than building a manifest around a size nobody produced. A browser caller must compress first and hand the measured length to `choose()`, which is the seam that path exists for. |
+| §2's break-even table gives a single size at which each artifact clears the 8% gate — 6,144 B for float32 vectors | Scanning float32 prefixes at 18 sizes, the verdict **flips five times**: 2,304 B passes, 2,560 B fails, 3,072 B passes, 3,584 B fails, 4,096 B passes | Both are correct about what they measured (brotli-6 at a 512 B chunk against brotli-11 at 764 B), and neither is a break-even for the content. The ratio climbs smoothly and the frame count is a step function, so the gate is crossed repeatedly. A "break-even size" column reports the first crossing; for this content it is not the last. |
 | ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.78×, v2 at 2.56× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
 | A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
 | ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps | **Jointly infeasible.** Neither ADR is wrong alone. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
@@ -1525,7 +1866,11 @@ store and the camera buffers are not.
 | Optimal chunk size / QR version for a real camera | **Partly measured.** §8 gives decode cost and a blur-robustness floor per version on synthetic frames, which puts the cliff between version 19 and 22. The real density-versus-loss curve needs optics. |
 | `BarcodeDetector` decode cost and byte fidelity | **Not measurable in Node.** It is the app's primary path. §1's binary round-trip failure is a property of the bundled JS decoder; whether `BarcodeDetector` behaves the same is untested, though it also returns a string. |
 | SCF-1 compression | **Not measurable.** `proto2.js` declares `CODEC_SCF1` but there is no JavaScript implementation in this repository. Absent from every table rather than estimated. |
-| Browser-side Brotli decode | **Not measurable.** `DecompressionStream` does not expose it. Node's timings stand in. |
+| Browser-side Brotli or Zstd, at all | **Not measurable, because it does not exist.** The WHATWG Compression Streams list is `gzip`, `deflate`, `deflate-raw`. Node *does* accept `new CompressionStream('brotli')` — that probe succeeds here and is recorded — but it is a Node extension and is not evidence of browser brotli; `compress.js` refuses to promote it into one. §2 reports the browser's `deflate-raw` as a separate environment rather than treating Node's codecs as the app's. |
+| A browser codec inside `compressArtifact` | **Not possible, and it fails closed.** `CompressionStream` is asynchronous and the module is synchronous. §2 measures the stream for real and puts its output length through `choose()`; the end-to-end sync path is exercised with a `deflateRawSync` stand-in that was checked byte-identical to the stream on 7 of 7 artifacts. |
+| A real browser, running any of this | **Not measured here.** This harness is Node. The browser rows model a browser's *capabilities* (constructors probed, WHATWG format list, real stream codec) on Node hardware; decode timings on a phone are the first row of this table. |
+| The >8 MB compression branch, as configured | **Measured only with the threshold moved.** This repository ships nothing that reaches 8 MB, so §2 exercises the prefix path at `sampleAbove` 32,768 B. The branch works and agrees with the whole-artifact decision on these artifacts; whether it would on an 8 MB artifact is untested, and a declining prefix estimate is final for its codec. |
+| A shared compression dictionary | **Not measurable — none exists.** `compress.js` ships an empty `DICTIONARIES` and every manifest it produces sets dictId 0. Its docblock quotes held-out dictionary figures; this harness measures the no-dictionary path only, which is the only path the shipped module can take. |
 | Peer-exchange link behaviour | **Not measured.** §11 counts bytes, not seconds, on the peer side, and models nothing about the medium. |
 | Closure activation | **Not measured.** Nothing signs or activates a closure. |
 | Colour or multi-symbol frames | **Not applicable.** rvQR sends one monochrome symbol per frame. This is the single largest throughput lever the comparators use. |

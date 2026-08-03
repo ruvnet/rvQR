@@ -33,8 +33,14 @@ import { runOverheadSuite, runSymbolSizeSweep } from './suites/overhead.mjs';
 import { runProtoDensity, runProtoAtAppRates, runV1FrameSpread, loadProto2 } from './suites/proto.mjs';
 import {
   loadCorpus,
+  decisionCorpus,
   runCompressionSuite,
   runBreakEvenSweep,
+  runDecisionSuite,
+  runBrowserSuite,
+  runSampledPath,
+  runGateBand,
+  runAdr003Recheck,
   ENVELOPE_GAIN_GATE
 } from './suites/compress.mjs';
 import { runObjectiveSuite, indexedPenalty, P_SWEEP } from './suites/objective.mjs';
@@ -704,6 +710,581 @@ function printBreakEven(res) {
     'A prefix of a file is not a smaller file of the same kind — the first 512 bytes of a WASM module ' +
       'are its header, which compresses differently from its code — so these are break-evens for ' +
       'prefixes, and they bound the answer rather than being it.'
+  );
+  say('');
+}
+
+function printDecisionSuite(res) {
+  say('### What the sender actually decides — `artifacts/compress.js`');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  const levels = res.injected.map((n) => `${n}-${res.levels[n]}`).join(', ');
+  say(
+    `Driving \`artifacts/compress.js\` end to end with the REAL node:zlib codecs injected by name — ` +
+      `${levels}. The module's unit tests inject stubs that return a fixed size, so nothing there is ` +
+      `evidence about a ratio; every figure below came out of a codec that ran. Envelope at ` +
+      `${res.chunk} B per frame (the module's own \`DEFAULT_CHUNK_BYTES\`), ` +
+      `${res.armour ? 'v2 armoured' : 'unarmoured'}, gate ${Math.round(res.gate * 100)}%. ` +
+      `Timings are the median of ${res.reps} runs and are the harness's, not the module's: ` +
+      'nothing in `compress.js` reads a clock, so no timing here can have moved a verdict.'
+  );
+  say('');
+  say(
+    '**The decision, and both figures it is made from.** "Payload" is the codec\'s number, "envelope" ' +
+      'is the transport\'s, and the gap between them is what the module exists for:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'bytes', 'class', 'codec chosen', 'payload gain', 'envelope gain', 'margin', 'frames', 'wire bytes', 'verdict'],
+      res.rows.map((r) => [
+        `${r.name}${r.synthetic ? ' *(synthetic)*' : ''}`,
+        r.bytes.toLocaleString('en-US'),
+        r.kind,
+        r.compress ? `**${r.codecName}** (id ${r.codecId})` : `**none** (id 0)`,
+        fmt(r.payloadGain * 100, 2) + '%',
+        fmt(r.envelopeGain * 100, 2) + '%',
+        `${r.margin >= 0 ? '+' : '−'}${fmt(Math.abs(r.margin) * 100, 2)} pt`,
+        `${r.framesBefore} → ${r.framesAfter}`,
+        `${r.envelopeBefore.toLocaleString('en-US')} → ${r.envelopeAfter.toLocaleString('en-US')}`,
+        r.verdict === 'declined' ? '**declined**' : r.verdict
+      ])
+    )
+  );
+  say('');
+  const declined = res.rows.filter((r) => !r.compress);
+  const marginal = res.rows.filter((r) => r.verdict === 'marginal pass');
+  const grew = res.rows.filter((r) => r.envelopeAfter > r.envelopeBefore);
+  say(
+    `${res.rows.length - declined.length} of ${res.rows.length} artifacts are compressed and ` +
+      `${declined.length} ${declined.length === 1 ? 'is' : 'are'} declined` +
+      (declined.length ? ` — ${declined.map((r) => r.name).join(', ')}` : '') +
+      '. ' +
+      (marginal.length
+        ? `${marginal.length} clear${marginal.length === 1 ? 's' : ''} by under ` +
+          `${Math.round(res.marginalBand * 100)} points and ${marginal.length === 1 ? 'is' : 'are'} ` +
+          `labelled a marginal pass here — ` +
+          marginal.map((r) => `${r.name} at ${fmt(r.envelopeGain * 100, 2)}%`).join('; ') +
+          `. "Marginal" is this report's word and not the module's: it passes or it does not, and the ` +
+          'label exists only so a reader can tell a decision that was never close from one that turned ' +
+          'on the threshold.'
+        : 'No row lands within ' + Math.round(res.marginalBand * 100) +
+          ' points of the gate, so nothing here exercises the threshold closely.') +
+      (grew.length
+        ? ` In ${grew.length} row${grew.length === 1 ? '' : 's'} the envelope actually GREW — ` +
+          grew
+            .map((r) => `${r.name}, ${r.envelopeBefore.toLocaleString('en-US')} B → ` +
+              `${r.envelopeAfter.toLocaleString('en-US')} B, ${r.envelopeAfter - r.envelopeBefore} B worse`)
+            .join('; ') +
+          ' — which is the failure a payload rule cannot see at all, because there the codec is ' +
+          'reporting a loss too and a size comparison would catch it; what a payload rule misses is the ' +
+          'row below where the payload shrinks and the envelope does not follow.'
+        : '')
+  );
+  say('');
+
+  say(
+    '**Every codec that was offered, what it produced, and whether the bytes came back.** A ratio ' +
+      'without a verified round trip is a claim about a byte count, so each stream is decompressed and ' +
+      'compared against the original:'
+  );
+  say('');
+  const cellRows = [];
+  for (const r of res.rows) {
+    for (const c of r.cells) {
+      cellRows.push([
+        r.name,
+        `${c.codec}-${c.level}`,
+        `${c.compressedBytes.toLocaleString('en-US')} B`,
+        fmt(c.ratio, 3) + '×',
+        fmt(c.payloadGain * 100, 2) + '%',
+        fmt(c.envelopeGain * 100, 2) + '%',
+        `${c.framesBefore} → ${c.framesAfter}`,
+        `${fmt(c.encodeMs, 2)} ms`,
+        `${fmt(c.decodeMs, 2)} ms`,
+        c.roundTripExact ? 'exact' : '**NO**',
+        c.passesGate ? 'pass' : 'FAIL',
+        c.codecId === r.codecId && r.compress ? '**chosen**' : ''
+      ]);
+    }
+  }
+  say(
+    markdownTable(
+      ['artifact', 'codec', 'compressed', 'ratio', 'payload gain', 'envelope gain', 'frames', 'encode', 'decode', 'round trip', 'gate', ''],
+      cellRows
+    )
+  );
+  say('');
+  const badTrip = res.rows.filter((r) => !r.allRoundTripped);
+  const badLength = res.rows.filter((r) => !r.allLengthsReproduced);
+  say(
+    (badTrip.length
+      ? `**${badTrip.length} artifact(s) failed a round trip: ${badTrip.map((r) => r.name).join(', ')}.**`
+      : `All ${cellRows.length} codec runs round-tripped byte-exactly.`) +
+      ' ' +
+      (badLength.length
+        ? `**${badLength.length} artifact(s) re-encoded to a different length than the module decided on, ` +
+          'so the codec is not deterministic and the verdicts for them are not reproducible.**'
+        : 'Re-encoding reproduced the exact length the module decided on in every case, so a verdict ' +
+          'here is a property of the bytes rather than of the run.')
+  );
+  say('');
+
+  say(
+    '**The chosen identifier against the shipped parser.** `compress.js` works from ADR-003 §2.1\'s ' +
+      'seven-entry codec table and `proto2.js` ships a four-entry one, so a codec being the right ' +
+      'choice and a codec being sendable are two different questions:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'chosen', 'id', 'decoder named', 'proto2 accepts it?'],
+      res.rows.map((r) => [
+        r.name,
+        r.codecName,
+        String(r.codecId),
+        r.decoder,
+        r.wire.ok ? 'yes' : `**no** — ${r.wire.reason}`
+      ])
+    )
+  );
+  say('');
+  const unsendable = res.rows.filter((r) => r.compress && !r.wire.ok);
+  say(
+    unsendable.length
+      ? `**Every one of the ${unsendable.length} compressing decisions above names a codec id ` +
+        '`proto2.parseFrame` would refuse on the first frame.** That is not a defect in either module ' +
+        'and it is not fixed by this suite: `compress.js` states the divergence through ' +
+        '`wireCompatible()` and changes nothing in `proto2.js`, so a sender that acts on these ' +
+        'decisions today builds a transfer its own receiver rejects. The gains in the first table are ' +
+        'real; they are not available until `proto2.js` adopts the §2.1 table.'
+      : 'Every chosen identifier means the same codec in both tables.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['codec id', 'ADR-003 §2.1', 'proto2.js', 'agree?'],
+      res.divergence.rows.map((d) => [String(d.id), d.adr003, d.proto2, d.agrees ? 'yes' : '**no**'])
+    )
+  );
+  say('');
+  say(
+    '**What this platform has, probed rather than assumed.** Available: ' +
+      res.detection.available.map((c) => `${c.name} (id ${c.id}, via ${c.via})`).join(', ') +
+      '. ' +
+      (res.detection.hasCompressionStreams
+        ? `CompressionStream constructed for [${res.detection.streamFormats.join(', ')}]` +
+          (res.detection.nonStandardStreamFormats.length
+            ? `, of which [${res.detection.nonStandardStreamFormats.join(', ')}] ` +
+              `${res.detection.nonStandardStreamFormats.length === 1 ? 'is' : 'are'} outside the WHATWG ` +
+              'format list and therefore a Node extension. The module records the successful probe and ' +
+              'refuses to promote it into a browser capability, which is the difference between ' +
+              'measuring a platform and believing it.'
+            : ', all of them standard.')
+        : 'No CompressionStream on this platform.')
+  );
+  say('');
+}
+
+function printBrowserSuite(res) {
+  say('### The same decision in a browser, which has neither codec ADR-003 chose');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    'Everything above runs `node:zlib`. **rvQR runs in a browser**, and the WHATWG Compression Streams ' +
+      `format list is exactly [${res.streamFormats.join(', ')}] — no \`br\`, no \`brotli\`, no \`zstd\`. ` +
+      'ADR-003 §2.1 makes Zstd the default and Brotli the maximum-ratio option, so **the shipped web app ' +
+      'can run neither of them**, and every Brotli and Zstd figure above is a Node measurement of a ' +
+      'codec no user of the web app will execute.'
+  );
+  say('');
+  say(
+    'The rows below are not a caveat on the Node rows; they are a second environment, measured through ' +
+      'the real `CompressionStream(\'deflate-raw\')`. That codec is asynchronous and `compressArtifact` ' +
+      'is synchronous, so it cannot be injected into the module\'s own path at all — the stream is run ' +
+      'for real, its output length measured, and the length put through the module\'s `choose()`, which ' +
+      'takes sizes rather than codecs for exactly this reason. The verdict is the module\'s; only the ' +
+      'bytes come from somewhere its sync path cannot reach.'
+  );
+  say('');
+  say(
+    `Presented a browser-shaped platform — the stream constructors and no zlib — the module detects ` +
+      res.detected.map((c) => `**${c.name}** (id ${c.id}, via ${c.via}, dictionary ${c.supportsDictionary ? 'yes' : 'no'})`).join(', ') +
+      ' and nothing else. It refuses the other two by name — ' +
+      res.refused.map((c) => `**${c.name}** (${c.reason})`).join('; ') +
+      '.'
+  );
+  say('');
+  say('**Browser against Node, side by side. Both columns are envelope gain at the same chunk, armour and name length.**');
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'bytes', 'browser: deflate-raw', 'gain', 'frames', 'Node: best codec', 'gain', 'frames', 'Brotli’s edge', 'extra frames in a browser'],
+      res.rows.map((r) => [
+        `${r.name}${r.synthetic ? ' *(synthetic)*' : ''}`,
+        r.bytes.toLocaleString('en-US'),
+        r.browserCompress ? `${r.browserBytes.toLocaleString('en-US')} B` : '*declined*',
+        `${fmt(r.browserEnvelopeGain * 100, 2)}%${r.browserPasses ? '' : ' **(FAIL)**'}`,
+        `${r.browserFramesBefore} → ${r.browserFramesAfter}`,
+        r.nodeCodec ? (r.nodeCompress ? `${r.nodeCodec}, ${r.nodeBytes.toLocaleString('en-US')} B` : '*declined*') : '—',
+        r.nodeEnvelopeGain === null ? '—' : `${fmt(r.nodeEnvelopeGain * 100, 2)}%`,
+        r.nodeFramesAfter === null ? '—' : `${r.browserFramesBefore} → ${r.nodeFramesAfter}`,
+        r.edgePoints === null ? '—' : `${r.edgePoints >= 0 ? '+' : '−'}${fmt(Math.abs(r.edgePoints) * 100, 2)} pt`,
+        r.edgeFrames === null ? '—' : (r.edgeFrames === 0 ? 'none' : `+${r.edgeFrames}`)
+      ])
+    )
+  );
+  say('');
+  const paying = res.rows.filter((r) => r.edgePoints !== null && r.browserCompress && r.nodeCompress);
+  const edges = paying.map((r) => r.edgePoints * 100);
+  // Frames are not summable across artifacts — they are different transfers —
+  // so the cost is reported as the worst single case and as a share of the
+  // frames that receiver watches, which is the quantity a user experiences.
+  const worst = paying.length
+    ? paying.reduce((a, b) =>
+        (b.browserFramesAfter - b.nodeFramesAfter) / b.nodeFramesAfter >
+        (a.browserFramesAfter - a.nodeFramesAfter) / a.nodeFramesAfter ? b : a)
+    : null;
+  say(
+    paying.length
+      ? `**deflate-raw gets most of the way there.** Brotli's edge across the ${paying.length} artifacts ` +
+        `both environments compress is ${fmt(Math.min(...edges), 2)} to ${fmt(Math.max(...edges), 2)} ` +
+        'points of envelope gain. In the quantity a receiver actually experiences — frames it has to ' +
+        `watch — the worst case here is **${worst.name}**, ${worst.nodeFramesAfter} frames under Brotli ` +
+        `against ${worst.browserFramesAfter} under deflate-raw, ` +
+        `${fmt(((worst.browserFramesAfter - worst.nodeFramesAfter) / worst.nodeFramesAfter) * 100, 0)}% more. ` +
+        'That is a real cost and it is not a crippling one: the browser limitation is worth single-digit ' +
+        'percentage points of envelope, not a factor. The reading a reader should take is that the web ' +
+        'app compresses nearly as well as the best codec available anywhere, not that it is missing ' +
+        'compression.'
+      : 'No artifact was compressed in both environments, so there is no edge to report.'
+  );
+  say('');
+  const declineSplit = res.rows.filter((r) => r.browserCompress !== r.nodeCompress);
+  say(
+    declineSplit.length
+      ? `**The two environments reach different verdicts on ${declineSplit.length} artifact(s): ` +
+        declineSplit.map((r) => r.name).join(', ') +
+        '.** The gate is applied to whatever codec the platform has, so a platform with a weaker codec ' +
+        'declines earlier — which is the rule working, not a divergence in it.'
+      : 'Both environments reach the same compress-or-not verdict on every artifact: the gate is far ' +
+        'enough from the margin that the codec difference never flips it here.'
+  );
+  say('');
+  const standIn = res.rows.filter((r) => r.syncStandInIdentical !== null);
+  const identical = standIn.filter((r) => r.syncStandInIdentical);
+  say(
+    `**The browser exposes no compression level, and its stream is Node's default.** ` +
+      (standIn.length
+        ? `\`CompressionStream('deflate-raw')\` produced byte-identical output to ` +
+          `\`deflateRawSync(bytes, { level: 6 })\` on ${identical.length} of ${standIn.length} artifacts` +
+          (identical.length === standIn.length
+            ? '. So the synchronous stand-in is a stand-in and not an approximation, and — more to the ' +
+              'point — a browser has no level parameter to raise: the deflate-raw column above is not a ' +
+              'setting anyone can tune, it is the whole of what is on offer.'
+            : `, and differed on ${standIn.length - identical.length}, so the sync path is NOT a ` +
+              'substitute for the stream on this platform.')
+        : 'node:zlib is absent here, so the comparison could not be made.')
+  );
+  say('');
+  say(
+    '**And the sync path fails closed on an asynchronous codec rather than corrupting the stream.** ' +
+      (res.asyncInjection.threw
+        ? 'Injecting a `compress` that returns a Promise throws `' +
+          res.asyncInjection.name + '` with reason `' + res.asyncInjection.reason + '` — "' +
+          res.asyncInjection.message +
+          '". A Promise has no `length` and no `byteLength`, so the module cannot read a size out of it ' +
+          'and refuses at the point of measurement, before any decision is taken. That is worth ' +
+          'recording as a property and not a caveat: the failure mode of wiring a browser codec into ' +
+          'the sync path is a thrown error with a stable reason, not a manifest describing a stream ' +
+          'nobody produced.'
+        : '**It did not throw.** The sync path accepted a Promise, which means a caller wiring a ' +
+          'browser codec in would build a manifest around a size that does not exist.')
+  );
+  say('');
+}
+
+function printGateBand(res) {
+  if (!res.available) {
+    say(`Gate-band scan not run: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    '**The band the gate exists for: payload clears, envelope does not.** `compress.js`\'s docblock ' +
+      'publishes six size pairs said to land in it. Those are arithmetic rather than measurements, so ' +
+      'they are re-derived here through the module\'s own `evaluate()` and printed beside what the ' +
+      'docblock claims:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['original', 'compressed', 'payload gain', 'docblock', 'envelope gain', 'docblock', 'frames', 'docblock', 'in the band?'],
+      res.claimed.map((c) => [
+        `${c.original.toLocaleString('en-US')} B`,
+        `${c.compressed.toLocaleString('en-US')} B`,
+        fmt(c.payloadGain * 100, 2) + '%',
+        c.claimPayload,
+        fmt(c.envelopeGain * 100, 2) + '%',
+        c.claimEnvelope,
+        c.frames,
+        c.claimFrames,
+        c.inBand ? 'yes' : '**no**'
+      ])
+    )
+  );
+  say('');
+  const disagree = res.claimed.filter((c) => !c.agrees);
+  const outOfBand = res.claimed.filter((c) => !c.inBand);
+  say(
+    (disagree.length
+      ? `**${disagree.length} of ${res.claimed.length} rows do not reproduce the docblock's own figures, ` +
+        'so the module\'s documentation and its arithmetic disagree.**'
+      : `All ${res.claimed.length} rows reproduce the docblock's figures exactly, so that table is the ` +
+        'module\'s arithmetic and not a recollection of it.') +
+      ' ' +
+      (outOfBand.length
+        ? `**${outOfBand.length} of them are not actually in the band.**`
+        : 'Every one of them is in the band: the payload clears 8% and the envelope does not.')
+  );
+  say('');
+
+  const withBand = res.rows.filter((r) => r.band.length);
+  const withReverse = res.rows.filter((r) => r.reverseBand.length);
+  const withGrowth = res.rows.filter((r) => r.grew.length);
+  const nonMonotone = res.rows.filter((r) => !r.monotone);
+  say(
+    `**And the same question on real bytes.** Prefixes of every corpus artifact compressed for real ` +
+      `with ${res.codec}, at ${res.chunk} B per frame, every point evaluated by the module:`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'sizes scanned', 'payload passes, envelope fails', 'envelope passes, payload fails', 'envelope grew', 'first size that clears', 'verdict flips'],
+      res.rows.map((r) => {
+        const first = r.points.find((p) => p.passesGate);
+        const list = (ps) =>
+          ps.length
+            ? ps
+                .map((p) => `${p.size} B (${fmt(p.payloadGain * 100, 2)}% / ${fmt(p.envelopeGain * 100, 2)}%)`)
+                .join(', ')
+            : '—';
+        return [
+          r.name,
+          String(r.points.length),
+          list(r.band),
+          list(r.reverseBand),
+          r.grew.length
+            ? (r.grew.length === r.points.length
+                ? `every size scanned (${r.points.length})`
+                : r.grew.map((p) => `${p.size} B`).join(', '))
+            : '—',
+          first ? `${first.size} B` : 'never in range',
+          String(r.verdictFlips)
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    'Both disagreement columns are cases where a payload rule and this module reach opposite verdicts, ' +
+      'and they fail in opposite directions: the first is compression turned on for nothing, the second ' +
+      'is compression refused when it would have paid.'
+  );
+  say('');
+  say(
+    withBand.length
+      ? `**Payload passes and envelope fails on real bytes in ${withBand.length} of ${res.rows.length} ` +
+        `artifacts** — ` +
+        withBand
+          .map((r) =>
+            `${r.name} at ${r.band
+              .map((p) => `${p.size} B, where the payload sheds ${fmt(p.payloadGain * 100, 2)}% and the ` +
+                `envelope only ${fmt(p.envelopeGain * 100, 2)}% because the frame count is ` +
+                `${p.framesBefore} either way`)
+              .join('; ')}`
+          )
+          .join('; ') +
+        '. Those are transfers a payload rule turns compression on for and this module refuses. The ' +
+        'refusal is right: no frame is saved, so the receiver waits through exactly as many symbols and ' +
+        'gains a decompressor on its critical path for its trouble.'
+      : 'No prefix of any artifact in this repository lands in that band at these sizes: the text-like ' +
+        'artifacts clear both figures by a wide margin and the incompressible ones fail both. That is a ' +
+        'fact about this corpus rather than evidence the rule is idle.'
+  );
+  say('');
+  say(
+    withReverse.length
+      ? `**And the gap runs the other way too, which is the half that is easy to miss.** In ` +
+        `${withReverse.length} of ${res.rows.length} artifacts the ENVELOPE clears the gate and the ` +
+        'PAYLOAD does not — ' +
+        withReverse
+          .map((r) =>
+            `${r.name} at ${r.reverseBand
+              .map((p) => `${p.size} B (payload ${fmt(p.payloadGain * 100, 2)}%, envelope ` +
+                `${fmt(p.envelopeGain * 100, 2)}%, ${p.framesBefore} → ${p.framesAfter} frames)`)
+              .join(', ')}`
+          )
+          .join('; ') +
+        '. A frame dropped out, and dropping a frame removes its 28-byte header and its armour padding ' +
+        'as well as its payload, so the envelope shrinks by MORE than the payload did. A payload rule ' +
+        'refuses these, and refusing them is wrong: they are the transfers where compression buys a ' +
+        'whole symbol the receiver never has to see. The envelope rule is therefore not a stricter ' +
+        'payload rule; it is a different rule that says yes and no in places the payload rule cannot see.'
+      : 'No point measured here has the envelope clearing the gate while the payload misses it.'
+  );
+  say('');
+  if (nonMonotone.length) {
+    say(
+      `**The verdict is not monotone in size**, which is worth stating because it is easy to assume it ` +
+        `must be. ` +
+        nonMonotone
+          .map((r) => {
+            const seq = r.points
+              .filter((p, i) => i === 0 || p.passesGate !== r.points[i - 1].passesGate)
+              .map((p) => `${p.size} B ${p.passesGate ? 'passes' : 'fails'}`)
+              .join(', then ');
+            return `${r.name} flips ${r.verdictFlips} times across ${r.points.length} sizes — ${seq}`;
+          })
+          .join('; ') +
+        '. The ratio climbs smoothly and the frame count is a step function, so a slightly larger ' +
+        'artifact can fall back below the gate. There is no single break-even size for these ' +
+        'artifacts, only a break-even that the frame boundary keeps re-crossing, and any table that ' +
+        'reports one number is reporting the first crossing rather than the last.'
+    );
+    say('');
+  }
+  if (withGrowth.length) {
+    say(
+      `Compression makes the envelope BIGGER at ${withGrowth
+        .map((r) => `${r.name} (${r.grew.length === r.points.length ? 'every size scanned' : r.grew.map((p) => p.size + ' B').join(', ')})`)
+        .join('; ')} — the codec returns more bytes than it was given and the frame count cannot fall, ` +
+        'so the whole cost is paid and nothing is bought.'
+    );
+    say('');
+  }
+}
+
+function printSampledPath(res) {
+  if (!res.available) {
+    say(`Sampled path not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  if (!res.rows.length) {
+    say('No artifact exceeded the sampling threshold, so the prefix branch was not exercised.');
+    say('');
+    return;
+  }
+  say(
+    `**The >8 MB prefix branch, run below 8 MB because nothing here is 8 MB.** ADR-003 §2.3 estimates ` +
+      'on a bounded prefix above the threshold and this repository ships no artifact that reaches it, ' +
+      `so the branch would go unmeasured unless the threshold moved. It is moved: \`sampleAbove\` is ` +
+      `${res.sampleAbove.toLocaleString('en-US')} B here and \`samplePrefix\` ` +
+      `${res.samplePrefix.toLocaleString('en-US')} B. That is the only thing in this table that is not ` +
+      'the shipped configuration. The estimate runs at ' +
+      Object.entries(res.fastLevels).map(([k, v]) => `${k}-${v}`).join(', ') +
+      ' and the full encode at ' +
+      Object.entries(res.fullLevels).map(([k, v]) => `${k}-${v}`).join(', ') +
+      ', which is the `sampleCodecs` seam §2.3 asks for.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'bytes', 'prefix', 'fast estimate distinct?', 'whole-artifact decision', 'sampled decision', 'same?', 'declined on the prefix', 'estimates overturned'],
+      res.rows.map((r) => [
+        r.name,
+        r.bytes.toLocaleString('en-US'),
+        `${r.prefixBytes.toLocaleString('en-US')} B`,
+        r.sampleCodecsDistinct ? 'yes' : 'no',
+        `${r.wholeCodec}, ${r.wholeStreamBytes.toLocaleString('en-US')} B (${fmt(r.wholeGain * 100, 2)}%)`,
+        `${r.sampledCodec}, ${r.sampledStreamBytes.toLocaleString('en-US')} B (${fmt(r.sampledGain * 100, 2)}%)`,
+        r.sameDecision ? 'yes' : '**no**',
+        r.declined.length ? r.declined.map((d) => `${d.codec} at ${fmt(d.estimateGain * 100, 2)}%`).join(', ') : '—',
+        r.overturned.length ? String(r.overturned.length) : '—'
+      ])
+    )
+  );
+  say('');
+  const changed = res.rows.filter((r) => !r.sameDecision);
+  const lost = [];
+  for (const r of res.rows) {
+    for (const d of r.declinedCost) if (d.fullPassed) lost.push({ name: r.name, ...d });
+  }
+  say(
+    (changed.length
+      ? `**The prefix changed the decision for ${changed.length} of ${res.rows.length} artifacts.**`
+      : `The prefix reached the same decision as the whole artifact for all ${res.rows.length} rows.`) +
+      ' ' +
+      (lost.length
+        ? `**${lost.length} codec(s) were declined on a prefix that would have cleared the gate on the ` +
+          'whole artifact: ' +
+          lost
+            .map((d) => `${d.name}/${d.codec}, estimated ${fmt(d.estimateGain * 100, 2)}% and measured ` +
+              `${fmt(d.fullGain * 100, 2)}%`)
+            .join('; ') +
+          '.** A declining estimate is final for that codec — that is §2.3\'s flow rather than an ' +
+          'oversight — so this is the one place the shortcut loses real bytes, and it is measurable ' +
+          'rather than hypothetical.'
+        : 'No codec was declined on a prefix that would have cleared the gate on the whole artifact, so ' +
+          'at these sizes the shortcut costs nothing. That is a property of these artifacts: a file ' +
+          'whose first megabyte compresses badly and whose remainder compresses well would be refused ' +
+          'without ever being measured, and nothing in the module detects that case.')
+  );
+  say('');
+}
+
+function printAdr003Recheck(res) {
+  if (!res.available) {
+    say(`ADR-003 cross-check not run: ${res.reason}.`);
+    say('');
+    return;
+  }
+  const a = res.adr;
+  say(
+    `**ADR-003 §2.3 against \`standalone.html\` as it is now.** The ADR's table cites ` +
+      `${a.bytes.toLocaleString('en-US')} B compressing ${a.ratio}× under Brotli, encoded in ` +
+      `${a.brotli6EncodeMs} ms. The file is now ${res.bytes.toLocaleString('en-US')} B — ` +
+      `${res.bytesDelta > 0 ? '+' : '−'}${Math.abs(res.bytesDelta).toLocaleString('en-US')} B, ` +
+      `${fmt(res.bytesGrowth, 2)}× the size the ADR measured. Re-measured here:`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['quality', 'bytes in', 'bytes out', 'ratio', 'encode', 'throughput', 'decode', 'round trip'],
+      res.measured.map((m) => [
+        `brotli-${m.quality}`,
+        res.bytes.toLocaleString('en-US'),
+        m.compressedBytes.toLocaleString('en-US'),
+        fmt(m.ratio, 3) + '×',
+        `${fmt(m.encodeMs, 2)} ms`,
+        `${fmt(m.encodeMBps, 1)} MB/s`,
+        `${fmt(m.decodeMs, 2)} ms`,
+        m.roundTripExact ? 'exact' : '**NO**'
+      ])
+    )
+  );
+  say('');
+  const q6 = res.measured.find((m) => m.quality === a.quality);
+  say(
+    `**The discrepancy, stated rather than absorbed: ${fmt(q6.ratio, 3)}× measured against the ADR's ` +
+      `${a.ratio}×, a difference of ${res.ratioDelta >= 0 ? '+' : '−'}${fmt(Math.abs(res.ratioDelta), 3)}, ` +
+      `on a file that is ${fmt(res.bytesGrowth, 2)}× the size it was.** Nothing in ADR-003 is edited by ` +
+      'this run and nothing should be: its figures were true of the file it measured, and a decision ' +
+      'record whose evidence silently updates itself stops being a record. What survives the file ' +
+      'changing is the ratio and the throughput, and both are close enough to corroborate the policy ' +
+      `§2.3 rests on — ${fmt(q6.encodeMBps, 1)} MB/s here against ` +
+      `${fmt(a.bytes / 1024 / 1024 / (a.brotli6EncodeMs / 1000), 1)} MB/s there, so "compress the whole ` +
+      'thing and compare, up to 8 MB" still costs a fraction of a second. What does not survive is the ' +
+      'byte count, and any figure quoted against 503,216 B is a measurement of a different file.'
   );
   say('');
 }
@@ -1460,7 +2041,10 @@ function printPlannerSuite(res) {
 
 // --- Main --------------------------------------------------------------------
 
-function main() {
+// Asynchronous solely because one measurement is: the browser's own
+// `CompressionStream` has no synchronous form, and measuring the shipped app's
+// codec through a synchronous stand-in would be measuring Node again.
+async function main() {
   const args = parseArgs(process.argv);
   if (args.help) {
     console.log(fs.readFileSync(new URL(import.meta.url), 'utf8').split('*/')[0].replace(/^\/\*!?/, ''));
@@ -1666,6 +2250,32 @@ function main() {
     printCompressionSuite(results.compression);
     results.breakEven = runBreakEvenSweep({ corpus });
     printBreakEven(results.breakEven);
+
+    // The grid above measures the CODECS. What follows measures the module that
+    // ships the decision, on a corpus with one artifact the grid cannot contain:
+    // the repository holds nothing a codec loses on, so the decline case has to
+    // be generated or it cannot be observed.
+    const forDecision = decisionCorpus({ seed: args.seed });
+    results.decision = runDecisionSuite({ corpus: forDecision, reps: args.quick ? 1 : 3 });
+    printDecisionSuite(results.decision);
+
+    // The second environment. Node's codecs are not the app's codecs: a browser
+    // has deflate-raw and neither of the two ADR-003 §2.1 names, so the rows
+    // above overstate what a user of the web app gets unless this runs beside
+    // them. Asynchronous, because the browser's codec is.
+    results.browser = await runBrowserSuite({
+      corpus: forDecision,
+      nodeRows: results.decision.available ? results.decision.rows : [],
+      reps: args.quick ? 1 : 3
+    });
+    printBrowserSuite(results.browser);
+
+    results.gateBand = runGateBand({ corpus: forDecision });
+    printGateBand(results.gateBand);
+    results.sampledPath = runSampledPath({ corpus: forDecision });
+    printSampledPath(results.sampledPath);
+    results.adr003 = runAdr003Recheck({ reps: args.quick ? 1 : 5 });
+    printAdr003Recheck(results.adr003);
   }
 
   if (want('objective')) {
@@ -1782,4 +2392,7 @@ function main() {
   return results;
 }
 
-main();
+main().catch((err) => {
+  console.error(err && err.stack ? err.stack : String(err));
+  process.exitCode = 1;
+});
