@@ -365,6 +365,12 @@ Brotli-11 is not — 527 ms for the standalone app — but it is a sender-side
 one-off before the first frame is painted, against a transfer measured in
 minutes.
 
+ADR-003 §2.3 reports Brotli-6 encoding `standalone.html` at 503,216 bytes in
+8.38 ms, about 60 MB/s. This harness measures 507,527 bytes in 7.94 ms, about
+64 MB/s, on a file that grew between the two runs — an independent
+corroboration rather than a restatement, and close enough that ADR-003's
+"compress the whole thing and compare up to 8 MB" policy is well founded.
+
 **These are Node's builds, and the browser does not have them.** A browser's
 `DecompressionStream` supports `deflate`, `deflate-raw` and `gzip` only. Brotli
 decompression is available to a browser for HTTP content encoding, not as a
@@ -1087,10 +1093,10 @@ in the brief for this work. Reported rather than smoothed.
 | v2 binary carries 764 B/frame at version 19-L, 1.492× v1's default | 764 B confirmed, and 1.389× against v1's *measured maximum* of 550 B at that version. 1.49× is against the app's 512 B setting, which is not v1's maximum | Both ratios are defensible; they answer different questions. Against v1's best at the same symbol, v2 binary is 1.39× and v2 armoured 1.21×. |
 | v2 binary is the dense path | The shipped `qrdecode.js` returns 830 bytes for a 792-byte binary frame and `parseFrame` rejects it | The binary path is unreachable with any decoder in this repository. `proto2.js`'s docblock says so; this measures it. The armoured path is the real one. |
 | `standalone.html` is 503,216 B, compressing to 142,368 B with Brotli-6 | 507,527 B compressing to 143,695 B, ratio 3.532× | The ratio reproduces exactly; the file grew during this session. Byte counts against a moving build artifact are not reproducible quantities. |
-| ADR-025 §2.1 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.84×, v2 at 2.58× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
+| ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.84×, v2 at 2.58× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
 | A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
 | ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps | **Jointly infeasible.** Neither ADR is wrong alone. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
-| ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule is unaffected — §2 measures every corpus artifact clearing it — but the frame-budget arithmetic behind ADR-003's choice of margin is 15% optimistic. |
+| ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule survives — §2 measures every corpus artifact clearing it — but the supporting arithmetic is 15% optimistic: 8% of 40 KB is 5.0 frames and 1.0 s at 665 B, not the 4.3 frames and 0.9 s the ADR states. The conclusion does not move. |
 | `core.SIGNATURE_SIZE = 16` | 16 bytes is not a signature size for any standard scheme | Modelled with 64 B (Ed25519) instead, with the discrepancy stated. Whatever 16 means, it is a truncated tag. |
 | Decode cost at 512 B symbols is 3.86 ms (previous revision of this document) | 2.63 ms this run | Same code, same seed, warmer JIT. Millisecond figures on this machine vary by tens of percent between runs; byte and frame counts do not vary at all. |
 
