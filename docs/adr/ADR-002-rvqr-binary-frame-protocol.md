@@ -6,7 +6,7 @@
 | Date | 2026-08-03 |
 | Scope | The wire format of an rvQR frame: header, manifest body, and the fields a receiver needs before it touches a payload |
 | Implementation | `artifacts/proto2.js`, 26/26 tests in `artifacts/proto2.test.js`. **Not wired into `app.js` or `index.html`** — the app still sends and receives v1 |
-| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-003: Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md), [ADR-004: Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-004: RVF Cognitive Container Format](./ADR-004-rvf-format.md) (mirrored) |
+| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-003: Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md), [ADR-031: Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-004: RVF Cognitive Container Format](./ADR-004-rvf-format.md) (mirrored) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -36,19 +36,22 @@ There is also a correctness defect to fix while the format is open, and it is
 not cosmetic. In the seed format rvQR's closest relative defines
 ([ADR-034](./ADR-034-qr-cognitive-seed.md) §1.1), compression is a **single
 flag** — bit 5, `SEED_COMPRESSED`. One bit can say *that* something is
-compressed. It cannot say *with what*. And the two descriptions of that bit do
-not agree: the mirrored ADR in this directory renders it as "Microkernel is
-LZ-compressed", while the doc comment on the upstream field in
-`rvf-types/src/qr_seed.rs` reads **"Microkernel is Brotli-compressed"** — and
-`SeedBuilder::compress_microkernel` in `rvf-runtime/src/qr_seed.rs` calls
-`compress::compress`, the zero-dependency **SCF-1** LZ77 codec that
-[ADR-034](./ADR-034-qr-cognitive-seed.md) §4.1 lists at `rvf-runtime/src/compress.rs`.
-The flag says Brotli, the bytes are SCF-1, and nothing on the wire lets a
-receiver notice. (The upstream Rust is not in this repository; the source
-locations above are as reported by the implementation of `proto2.js` and are the
-one claim here that could not be checked locally. The mirrored ADR's own
-disagreement about the same bit is checkable and is in
-[ADR-034](./ADR-034-qr-cognitive-seed.md) §1.1 and §4.1.)
+compressed. It cannot say *with what*. And the descriptions of that bit do not
+agree with each other or with the code. Verified in the RuVector tree:
+
+- `crates/rvf/rvf-types/src/qr_seed.rs:25` documents the flag as
+  **"Microkernel is Brotli-compressed."**
+- `crates/rvf/rvf-runtime/src/qr_seed.rs:183` — `compress_microkernel()` —
+  is documented as using "the built-in LZ compressor" and calls
+  `compress::compress`, the zero-dependency **SCF-1** LZ77 codec that
+  [ADR-034](./ADR-034-qr-cognitive-seed.md) §4.1 lists at
+  `rvf-runtime/src/compress.rs`.
+- The mirrored [ADR-034](./ADR-034-qr-cognitive-seed.md) §1.1 in this directory
+  renders the same flag a third way, as "Microkernel is LZ-compressed".
+
+The flag says Brotli, the bytes are SCF-1, the ADR says LZ, and nothing on the
+wire lets a receiver notice. Three descriptions, one bit, no way to check any of
+them.
 
 rvQR must not repeat that, in either direction. "Compressed" is not a decoder,
 and a doc comment is not a wire field.
@@ -205,7 +208,7 @@ than repaired.
   not a strong statement about a sender that lies — which is unchanged from v1,
   where authenticity does not exist either
   ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.2,
-  [ADR-009](./ADR-009-rvqr-signature-admission.md)).
+  [ADR-035](./ADR-035-rvqr-signature-admission.md)).
 - **The codec table is not RuVector's**, and that is a conflict rather than a
   cost — see [ADR-003](./ADR-003-rvqr-adaptive-compression.md) §2.1 and §2.5.
   `proto2.js` ships 1 = SCF-1, 2 = deflate-raw, 3 = Brotli where
@@ -216,7 +219,7 @@ than repaired.
   something the protocol can arrange.
 - **1.49× does not change the character of the channel.** It is a necessary
   step underneath [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
-  [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md), not a fix on its own.
+  [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md), not a fix on its own.
 
 ## 4. Acceptance criteria
 

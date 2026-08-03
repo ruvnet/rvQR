@@ -6,7 +6,7 @@
 | Date | 2026-08-03 |
 | Scope | Using the optical channel to establish trust and identity, and a radio channel to move the payload |
 | Implementation | `artifacts/p2p.js` implements the WebRTC half and is **not wired into the app**; BitChat is not implemented at all |
-| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-009: Pinned-Fingerprint Admission](./ADR-009-rvqr-signature-admission.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-057: Federated RVF Transfer Learning](./ADR-057-federated-rvf-transfer-learning.md) (mirrored) |
+| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-035: Pinned-Fingerprint Admission](./ADR-035-rvqr-signature-admission.md), [ADR-034: QR Cognitive Seed](./ADR-034-qr-cognitive-seed.md) (mirrored), [ADR-057: Federated RVF Transfer Learning](./ADR-057-federated-rvf-transfer-learning.md) (mirrored) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -21,7 +21,7 @@ two devices have never met, share no account, and cannot be assumed to be on the
 same network — or when you have decided they must not be.
 
 Every other decision in this set makes the optical channel faster. Together they
-project tens of KB/s ([ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md)), which
+project tens of KB/s ([ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md)), which
 turns a 40 KB module into a second and a 100 MB container into a bad afternoon
 rather than eleven hours. That is a real improvement and it does not change the
 shape of the problem. The measured ceiling today is 9.53 KB/s
@@ -71,7 +71,7 @@ design that has to work on a shaky handheld camera.
 Bytes arriving over the data channel go through the identical receiver state
 machine and the identical SHA-256 check as bytes arriving through the camera,
 and through the identical admission control in
-[ADR-009](./ADR-009-rvqr-signature-admission.md). **Changing the pipe does not
+[ADR-035](./ADR-035-rvqr-signature-admission.md). **Changing the pipe does not
 change the acceptance rule.** This is already how `artifacts/p2p.js` is built —
 it drives `core.js`'s receiver rather than trusting the transport — and it is
 the property that makes escalation a performance decision rather than a security
@@ -125,7 +125,7 @@ channel is weak ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.2):
   corruption and **authenticates nothing**, being an unkeyed hash travelling
   inside the payload it covers.
 
-Pinning a fingerprint ([ADR-009](./ADR-009-rvqr-signature-admission.md)) is what
+Pinning a fingerprint ([ADR-035](./ADR-035-rvqr-signature-admission.md)) is what
 turns "the human aiming the camera" into a checkable claim, and it applies to
 this path unchanged.
 
@@ -193,7 +193,7 @@ as a target and nothing in this document claims it works.
    rejected by the manifest hash exactly as an optical one is.
 4. **Pinning applies to both paths.** With a fingerprint pinned and the wrong
    signer, a data-channel transfer stores nothing —
-   [ADR-009](./ADR-009-rvqr-signature-admission.md)'s Chromium check, repeated
+   [ADR-035](./ADR-035-rvqr-signature-admission.md)'s Chromium check, repeated
    on this path.
 5. **Hostile offer payloads.** A fuzz corpus of malformed and adversarial SDPs
    through `parseOfferPayload` produces rejection or a bounded allocation, never

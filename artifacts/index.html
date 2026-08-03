@@ -926,6 +926,13 @@
     <details class="card tight" id="sendSettingsCard">
       <summary>Transfer settings</summary>
       <div class="details-body">
+        <label class="field" for="formatPick">Frame format</label>
+        <select id="formatPick">
+          <option value="v1" selected>v1 — JSON frames, read by every rvQR</option>
+          <option value="v2">v2 — binary frames, denser</option>
+        </select>
+        <p class="small muted" id="formatNote" style="margin:.4rem 0 .8rem"></p>
+
         <label class="field" for="modePick">Transfer mode</label>
         <select id="modePick">
           <option value="indexed" selected>Indexed frames — numbered chunks, looped</option>
@@ -990,6 +997,12 @@
         </div>
         <div class="bar" style="margin-top:.7rem"><i id="rxBar"></i></div>
         <div class="frameGrid" id="rxGrid"></div>
+        <!--
+          A frame in the other frame format lands here, named. It sits above the
+          result so it cannot be mistaken for the verdict on the transfer, which
+          carries on regardless.
+        -->
+        <div id="rxFormatNote" style="margin-top:.8rem"></div>
         <div id="rxResult" style="margin-top:.8rem"></div>
       </div>
     </div>
@@ -1009,7 +1022,7 @@
       <details class="card tight" id="rxPasteCard" open>
         <summary>Paste a frame by hand</summary>
         <div class="details-body">
-          <p class="small muted">Useful without a camera: paste one decoded frame per line and feed it to the same receiver. It drives exactly the same receiving logic as the other two routes.</p>
+          <p class="small muted">Useful without a camera: paste one decoded frame per line and feed it to the same receiver. It drives exactly the same receiving logic as the other two routes. A binary v2 frame can contain a newline, so paste those one at a time.</p>
           <textarea id="manualFrames" placeholder='{"v":1,"t":"…","h":"…","i":0,"n":42,"m":{…}}'></textarea>
           <button class="btn-sm" id="manualBtn" style="margin-top:.5rem">Feed frames</button>
         </div>
@@ -1279,6 +1292,13 @@
 <script src="./crypto.js" defer></script>
 <script src="./delta.js" defer></script>
 <script src="./resume.js" defer></script>
+<!--
+  proto2.js reads RVQRCore at load time, so it must follow core.js — which it
+  does, core being one of the eager scripts above. It is deferred with the other
+  optional modules: nothing on the first paint needs it, the sender defaults to
+  v1 without it, and the receiver names a v2 frame rather than mis-reading one.
+-->
+<script src="./proto2.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

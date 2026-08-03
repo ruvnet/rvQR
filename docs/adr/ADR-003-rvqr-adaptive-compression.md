@@ -56,20 +56,20 @@ and saves nothing.
 ### 2.1 Zstandard is the default; Brotli is the maximum-ratio option
 
 **Zstandard ([RFC 8878](https://www.rfc-editor.org/rfc/rfc8878.html)) is the
-default codec**, at codec id `0x0002`. **Brotli
+default codec**, at codec id `2`. **Brotli
 ([RFC 7932](https://www.rfc-editor.org/rfc/rfc7932.html)) is selected for WASM
-modules, HTML, and metadata**, at codec id `0x0003`.
+modules, HTML, and metadata**, at the extension id `4` — see the table below for
+why it needs one.
 
-Those two ids are not rvQR's. They are RuVector's, from the compression contract
-in [ADR-004 §5.1](./ADR-004-rvf-format.md), which already enumerates None
-`0x00`, LZ4 `0x01`, Zstd `0x02` and Brotli `0x03` and already assigns Brotli to
-WASM in its tiered strategy (§5.2). **rvQR reuses that vocabulary rather than
-inventing one**, and reuses RuVector's Rust implementation compiled to WASM
-rather than shipping a second JavaScript codec that could disagree with it. The
-alternative — an rvQR-specific codec table — is how the RVQS defect recorded in
-[ADR-002](./ADR-002-rvqr-binary-frame-protocol.md) §1 happened: a builder
-reaching for a bespoke LZ implementation while the format's own contract named
-something else.
+Zstd's id is not rvQR's. It is RuVector's, from `CompressionAlgo` in
+`crates/rvf/rvf-types/src/compression.rs`, which is also what the tiered strategy
+in [ADR-004 §5.2](./ADR-004-rvf-format.md) assumes. **rvQR reuses that vocabulary
+rather than inventing one**, and reuses RuVector's Rust implementation compiled
+to WASM rather than shipping a second JavaScript codec that could disagree with
+it. The alternative — an rvQR-specific codec table — is how the RVQS defect
+recorded in [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md) §1 happened: a
+builder reaching for a bespoke LZ implementation while the format's own
+documentation named something else.
 
 Zstd is the default rather than Brotli because the ratio difference is under 4%
 on every artifact measured while the encode difference on the largest was 2×,
@@ -78,23 +78,48 @@ is kept for the cases where its window and static dictionary genuinely pay:
 WASM, HTML and text metadata are where the measured 2.46× and 3.54× came from,
 and those are also the artifacts a bootstrap transfer is most likely to carry.
 
-**This decision is currently in conflict with the shipped code, and the
-conflict has to be resolved before anything depends on the numbering.**
-`artifacts/proto2.js` defines its codec ids as 0 none, **1 SCF-1, 2 deflate-raw,
-3 Brotli**. Only Brotli coincides with [ADR-004 §5.1](./ADR-004-rvf-format.md),
-which assigns 1 to LZ4 and 2 to Zstd — and **Zstd, the default this ADR chooses,
-has no id in the shipped table at all**. A container compressed by RuVector at
-codec 2 and a frame declaring codec 2 currently mean different things.
+**Three codec tables currently exist and no two of them agree.** This was
+checked against the RuVector tree rather than inferred:
 
-The recommendation is that `proto2.js` adopt RuVector's numbering, because it is
-the wider contract, because nothing is wired into the app yet, and because the
-alternative is that rvQR ends up with the private vocabulary this section exists
-to avoid. SCF-1 and deflate-raw are both real needs — SCF-1 for RVQS
-interoperability, deflate-raw because it is available in every browser through
-`DecompressionStream` with no bundle cost — so they need ids that do not collide:
-an extension range above the contract's assignments, e.g. `0xF1` for SCF-1 and
-`0xF2` for deflate-raw, leaving 1 and 2 to mean what the rest of the project
-says they mean.
+| Source | 0 | 1 | 2 | 3 |
+|---|---|---|---|---|
+| `rvf-types/src/compression.rs` — **the shipped enum** | None | Lz4 | Zstd | **Custom** |
+| Mirrored [ADR-004 §5.1](./ADR-004-rvf-format.md) | None | LZ4 | Zstd | **Brotli** |
+| `artifacts/proto2.js` | none | **scf1** | **deflate-raw** | brotli |
+
+Two consequences follow, and the second is the more serious.
+
+**The mirrored ADR has drifted from the code.** `CompressionAlgo` is a `#[repr(u8)]`
+enum whose only values are 0–3, and 3 is `Custom`, not Brotli. Brotli has **no
+identifier at all** in the shipped format. That is the same failure this ADR set
+keeps finding: a document describing bytes it no longer matches.
+
+**And `Custom = 3` is `SEED_COMPRESSED` one layer up.** It carries no
+sub-identifier, so SCF-1, Brotli and any future codec are all `Custom` and
+indistinguishable from one another on the wire. The RVQS defect in
+[ADR-002](./ADR-002-rvqr-binary-frame-protocol.md) §1 is not a slip in one
+builder; it is what this enum permits.
+
+The decision, therefore, is narrower than "reuse RuVector's ids" and more
+defensible:
+
+- **0, 1 and 2 mean exactly what `CompressionAlgo` says** — None, LZ4, Zstd —
+  because those three are agreed by both the code and the ADR, and a frame and a
+  segment must never disagree about them. This is the part that matters, and it
+  is the part `proto2.js` currently violates.
+- **3 stays `Custom` and rvQR does not use it**, because an identifier that does
+  not identify is the defect.
+- **Codecs RuVector does not name get ids above the shipped range**: `4` Brotli,
+  `5` SCF-1, `6` deflate-raw. `proto2.js`'s codec id is a `u8`, so there is room,
+  and each is a real need — Brotli for the measured ratios above, SCF-1 for RVQS
+  interoperability, deflate-raw because it is available in every browser through
+  `DecompressionStream` at no bundle cost.
+- **RVF should extend `CompressionAlgo` to match**, so that the two tables stay
+  one table. Until it does, rvQR's ids 4–6 are an extension rvQR defines and must
+  say so wherever they appear.
+
+This is worth doing now precisely because nothing is wired in yet. After that it
+is a wire-format migration.
 
 ### 2.2 Compress only when the complete transport envelope shrinks by ≥ 8%
 

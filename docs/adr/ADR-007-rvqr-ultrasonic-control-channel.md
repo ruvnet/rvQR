@@ -6,7 +6,7 @@
 | Date | 2026-08-03 |
 | Scope | A low-rate acoustic back channel from receiver to sender, and the two safety findings that constrain it |
 | Implementation | Nothing. No acoustic code exists in this repository |
-| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-002: Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-004: Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md), [ADR-006: QR-Bootstrapped Escalation](./ADR-006-rvqr-p2p-escalation.md) |
+| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-002: Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-031: Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md), [ADR-006: QR-Bootstrapped Escalation](./ADR-006-rvqr-p2p-escalation.md) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -20,7 +20,7 @@ channel.** The sender never learns what the receiver missed, so it loops forever
 ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.1). It never learns when the
 receiver is done, so it keeps painting. It never learns what the receiver's
 camera can resolve, so the lane profile in
-[ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) §2.2 has to be a user setting. It
+[ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) §2.2 has to be a user setting. It
 never learns the block size, so the manifest repaint interval is a constant that
 [docs/benchmarks.md](../benchmarks.md) §3 measures to be wrong at one end or the
 other — at K=5 a 4-slot repaint cuts the 60%-loss p95 from 101 slots to 30, and
@@ -63,6 +63,20 @@ That is fine for "start", "approve", "cancel". It is useless for anything
 per-frame: a per-frame acknowledgement at 5 fps needs five messages a second and
 this channel delivers one every fifteen seconds.
 
+**And the ceiling is low even done well.** Google's robust near-ultrasound
+system for consumer hardware achieved **94.5 raw bit/s**
+([doi:10.1109/TMM.2017.2766049](https://doi.org/10.1109/TMM.2017.2766049)) —
+their measurement, on unmodified phones, from a team with substantial resources.
+Against our ~33 useful bit/s that is a factor of three, not a factor of a
+thousand.
+
+That number should settle the category question rather than motivate an
+optimisation programme: **near-ultrasound is a proximity token and a control
+channel, and it is not a data channel at any effort level anyone has
+demonstrated.** [ADR-027](./ADR-027-rvqr-non-goals.md) §2.1 records that as a
+decision. Everything below is designed to fit inside roughly 100 bit/s rather
+than to escape it.
+
 ## 2. Decision
 
 ### 2.1 Forward optical, reverse acoustic — and the speed comes from omission
@@ -83,7 +97,7 @@ stops painting frames nobody needs:
   optimum interval moves in opposite directions between K=5 and K=81 and *any*
   fixed constant is wrong at one end.
 - **Pick the lane profile from the receiver's actual camera**, which is the
-  problem [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) §2.2 otherwise leaves
+  problem [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) §2.2 otherwise leaves
   to a user-visible setting with a conservative default.
 - **Advertise the segment inventory**, which is what delta transfer needs and
   has never had.
@@ -155,7 +169,7 @@ can only influence *scheduling*. It cannot cause a byte to be accepted: the
 content hash in the optical manifest remains the acceptance rule
 ([ADR-001](./ADR-001-rvqr-optical-transport.md) §2.2), and admission still runs
 through `core.admitArtifact`
-([ADR-009](./ADR-009-rvqr-signature-admission.md)). The worst a perfect acoustic
+([ADR-035](./ADR-035-rvqr-signature-admission.md)). The worst a perfect acoustic
 attacker achieves is denial of progress — which a person watching two screens
 will notice.
 

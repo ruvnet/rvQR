@@ -56,6 +56,20 @@
   var MODE_FOUNTAIN = 'fountain';
   var KNOWN_MODES = [MODE_INDEXED, MODE_FOUNTAIN];
 
+  // Frame formats. These are orthogonal to the modes above: a transfer is
+  // indexed or fountain, and separately v1-framed or v2-framed.
+  //
+  // v1 is this module's JSON envelope. v2 is proto2.js's binary one, which
+  // carries materially more payload per symbol but is only readable by a
+  // receiver that has proto2.js. v1 is therefore the default, and stays the
+  // default: a sender who has not chosen otherwise must not be the reason a
+  // first-time receiver sees a transfer it cannot read.
+  var FORMAT_V1 = 'v1';
+  var FORMAT_V2 = 'v2';
+  var KNOWN_FORMATS = [FORMAT_V1, FORMAT_V2];
+  var DEFAULT_FORMAT = FORMAT_V1;
+  var FORMAT_LABELS = { v1: 'v1 (JSON frames)', v2: 'v2 (binary frames)' };
+
   // Most cells the receive grid will ever draw, whatever the frame count says.
   var MAX_GRID_CELLS = 4096;
 
@@ -696,6 +710,71 @@
     return out.slice(0, Math.max(1, limit - ext.length)) + ext;
   }
 
+  // --- Frame formats ---------------------------------------------------------
+  // Pure helpers shared by the sender, the receiver and the tests. They hold no
+  // state and touch no DOM, so what the app does with a mixed-format scan is
+  // decided by functions that can be asserted on directly.
+
+  /** Any unrecognised value becomes the default rather than an error state. */
+  function normalizeFormat(value) {
+    return KNOWN_FORMATS.indexOf(value) >= 0 ? value : DEFAULT_FORMAT;
+  }
+
+  function formatLabel(format) {
+    return FORMAT_LABELS[normalizeFormat(format)];
+  }
+
+  /**
+   * Names the format a decoded QR string belongs to: 'v1', 'v2' or 'unknown'.
+   *
+   * v1 is JSON, so its first character settles it. v2's canonical frame begins
+   * with the bytes "RVQ2", but on this transport it arrives ASCII-armoured —
+   * and unpacking that armour is proto2's job, not this module's. So proto2 is
+   * passed in when it is loaded rather than having its bit-packing duplicated
+   * here; without it, an armoured v2 frame is honestly 'unknown' instead of
+   * being mistaken for damage.
+   */
+  function frameFormat(text, proto2) {
+    if (typeof text !== 'string' || !text.length) return 'unknown';
+    if (text.charAt(0) === '{') return FORMAT_V1;
+    if (text.slice(0, 4) === PROTO2_MAGIC) return FORMAT_V2;
+    if (proto2 && typeof proto2.identify === 'function') {
+      var id = proto2.identify(text);
+      if (id === 'v1') return FORMAT_V1;
+      if (id === 'v2' || id === 'v2-armoured') return FORMAT_V2;
+    }
+    return 'unknown';
+  }
+
+  /**
+   * The format a parser was refusing, given the reason it returned.
+   *
+   * core.parseFrame answers 'v2-frame' and proto2.parseFrame answers
+   * 'v1-frame'. Both already know what arrived; this is what turns that into a
+   * name the receiver can say out loud instead of a generic failure.
+   */
+  function rejectedFormat(reason) {
+    if (reason === 'v2-frame') return FORMAT_V2;
+    if (reason === 'v1-frame') return FORMAT_V1;
+    return null;
+  }
+
+  /**
+   * The sentence a receiver shows when a frame of the wrong format arrives.
+   * Returns null when the two formats agree — there is nothing to report.
+   */
+  function formatMismatchText(receiving, arrived) {
+    var have = normalizeFormat(receiving);
+    if (KNOWN_FORMATS.indexOf(arrived) < 0) {
+      return 'That frame is not an rvQR frame in any format this build reads. ' +
+        'This transfer is ' + formatLabel(have) + '.';
+    }
+    if (arrived === have) return null;
+    return 'That frame is ' + formatLabel(arrived) + ', but this transfer is ' +
+      formatLabel(have) + '. Nothing was mixed in. Reset the receiver to start a ' +
+      formatLabel(arrived) + ' transfer, or ask the sender to switch back.';
+  }
+
   function randomTransferId() {
     var bytes = new Uint8Array(4);
     var g = typeof globalThis !== 'undefined' ? globalThis : null;
@@ -1240,6 +1319,15 @@
     MODE_INDEXED: MODE_INDEXED,
     MODE_FOUNTAIN: MODE_FOUNTAIN,
     KNOWN_MODES: KNOWN_MODES,
+    FORMAT_V1: FORMAT_V1,
+    FORMAT_V2: FORMAT_V2,
+    KNOWN_FORMATS: KNOWN_FORMATS,
+    DEFAULT_FORMAT: DEFAULT_FORMAT,
+    normalizeFormat: normalizeFormat,
+    formatLabel: formatLabel,
+    frameFormat: frameFormat,
+    rejectedFormat: rejectedFormat,
+    formatMismatchText: formatMismatchText,
     parseFrame: parseFrame,
     createReceiver: createReceiver,
     ingest: ingest,

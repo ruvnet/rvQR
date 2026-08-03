@@ -24,6 +24,7 @@
   function cryptoLib() { return window.RVQRCrypto || null; }
   function deltaLib() { return window.RVQRDelta || null; }
   function resumeLib() { return window.RVQRResume || null; }
+  function proto2Lib() { return window.RVQRProto2 || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -55,6 +56,17 @@
       );
     }
     return Promise.resolve(core.sha256Hex(bytes));
+  }
+
+  // v1 carries the digest as 64 hex characters; v2 carries the 32 raw bytes.
+  // The vault already holds the hex form, so this is the one conversion the
+  // two formats need between them. Anything that is not a full digest comes
+  // back null, and the caller recomputes rather than sending a short hash.
+  function hexToBytes(hex) {
+    if (typeof hex !== 'string' || !/^[0-9a-f]{64}$/.test(hex)) return null;
+    var out = new Uint8Array(32);
+    for (var i = 0; i < 32; i++) out[i] = parseInt(hex.substr(i * 2, 2), 16);
+    return out;
   }
 
   // ---------------------------------------------------------------------------
@@ -963,11 +975,31 @@
     chunk: core.DEFAULT_CHUNK,
     ecl: 'L',
     mode: core.MODE_INDEXED,
+    // v1 until the sender says otherwise. A v2 sender meeting a v1 receiver is
+    // a dead transfer, so it is never what someone gets by not choosing.
+    format: core.DEFAULT_FORMAT,
     stream: null,   // the erasure-coded symbol source, when in that mode
     esi: 0,         // next encoding symbol id to emit
+    // The format the frames currently in hand were actually built in, which is
+    // what drawFrame needs. Distinct from `format`, the choice: a v2 choice
+    // with proto2.js missing produces v1 frames.
+    wire: core.DEFAULT_FORMAT,
     sign: false,
     identity: null
   };
+
+  /**
+   * The format this send will actually use, as opposed to the one chosen.
+   *
+   * proto2.js is deferred and optional, exactly like the fountain and crypto
+   * modules, so a v2 choice degrades to v1 rather than failing — and the note
+   * under the picker says so, so the degradation is never silent.
+   */
+  function sendFormat() {
+    return send.format === core.FORMAT_V2 && proto2Lib()
+      ? core.FORMAT_V2
+      : core.FORMAT_V1;
+  }
 
   function refreshSendPicker() {
     var pick = $('sendPick');
@@ -1000,12 +1032,23 @@
 
   function startSend(id, overrideBytes, overrideName) {
     stopSend();
-    return vaultGet(id).then(function (row) {
+    // The delta path sends bytes that are in no vault record, and calls this
+    // with a null id. IDBObjectStore.get(null) throws DataError synchronously
+    // inside the transaction, so the lookup is skipped rather than attempted
+    // and caught: there is nothing to look up.
+    var lookup = id ? vaultGet(id) : Promise.resolve(null);
+    return lookup.then(function (row) {
       if (!row && !overrideBytes) return;
       send.record = row || null;
       var bytes = overrideBytes || recordBytes(row);
       var name = overrideName || (row ? row.name : 'artifact.bin');
       var hash = overrideBytes ? core.sha256Hex(bytes) : row.sha256;
+
+      send.wire = sendFormat();
+      if (send.wire === core.FORMAT_V2) {
+        startSendV2(bytes, name, hash);
+        return;
+      }
 
       return signIfRequested({ name: name, size: bytes.length, sha256: hash })
         .then(function (signature) {
@@ -1046,6 +1089,70 @@
     });
   }
 
+  /**
+   * The v2 half of startSend.
+   *
+   * Kept separate rather than threaded through the v1 path with conditionals:
+   * the two protocols are two state machines by design (proto2.js says so in
+   * as many words), and the one place they meet is drawFrame, which has to know
+   * whether it is holding a string or a byte array.
+   *
+   * Signing is not offered here. v2's manifest body is a fixed 47-byte record
+   * plus the name, with no slot for a signature and a parser that rejects a
+   * body of any other length — so a signed v2 transfer is not something the
+   * frozen format can express. The checkbox is disabled and says why rather
+   * than being quietly ignored.
+   */
+  function startSendV2(bytes, name, hash) {
+    var P = proto2Lib();
+    var digest = hexToBytes(hash);
+    send.stream = null;
+    send.frames = null;
+
+    try {
+      if (send.mode === core.MODE_FOUNTAIN && fountainLib()) {
+        var encoder = fountainLib().encoder(bytes, P.clampChunk(send.chunk));
+        send.stream = P.buildFountainStream(encoder, {
+          name: name,
+          contentHash: digest || core.sha256Bytes(bytes),
+          originalSize: bytes.length,
+          compressedSize: bytes.length
+        });
+        send.esi = 0;
+        send.index = 0;
+        $('scrub').max = '0';
+        $('sendStageCard').hidden = false;
+        $('sendMeta').textContent =
+          name + ' · ' + core.formatBytes(bytes.length) + ' · v2 binary · erasure-coded, K=' +
+          encoder.K + ' · ' + encoder.symbolSize + ' B/symbol · transfer ' +
+          send.stream.transferIdHex;
+        drawFrame(0);
+        play(true);
+        return;
+      }
+
+      var built = P.buildFrames(bytes, {
+        name: name,
+        chunk: send.chunk,
+        contentHash: digest || undefined
+      });
+      send.frames = built.frames;
+      send.index = 0;
+      $('scrub').max = String(built.frames.length - 1);
+      $('scrub').value = '0';
+      $('sendStageCard').hidden = false;
+      $('sendMeta').textContent =
+        name + ' · ' + core.formatBytes(bytes.length) + ' · v2 binary · ' + built.chunk +
+        ' B/frame · transfer ' + built.transferIdHex;
+      drawFrame(0);
+      play(true);
+    } catch (e) {
+      toast('Could not build v2 frames: ' + e.message);
+      stopSend();
+      $('sendStageCard').hidden = true;
+    }
+  }
+
   function withSignature(manifestFrame, signature) {
     var obj = JSON.parse(manifestFrame);
     obj.m.sig = signature.sig;
@@ -1069,6 +1176,15 @@
       if (!send.frames || !send.frames.length) return;
       send.index = ((i % send.frames.length) + send.frames.length) % send.frames.length;
       text = send.frames[send.index];
+    }
+    // A v1 frame is already the string that goes on the wire. A v2 frame is a
+    // byte array, and the two QR decoders this app can reach — the browser's
+    // BarcodeDetector and the bundled one — both hand back a string and nothing
+    // else, so the bytes are ASCII-armoured here. That costs 8/7 rather than
+    // v1's base64url 4/3; proto2.js explains why nothing denser survives the
+    // round trip.
+    if (send.wire === core.FORMAT_V2 && typeof text !== 'string') {
+      text = proto2Lib().toTransport(text);
     }
     var qr;
     try {
@@ -1126,14 +1242,101 @@
     verification: null,
     pin: null,
     resume: null,
-    pending: [],
     state: core.createReceiver(),
+    // The v2 receiver is a second, independent state machine, created lazily
+    // because proto2.js is deferred. Two states rather than one union: sharing
+    // a state would mean one protocol's bug is both protocols' bug, which is
+    // the reason proto2.js keeps its own in the first place.
+    v2: null,
+    // Which of the two is holding the transfer in progress. Null means nothing
+    // has been adopted yet and either format may start one.
+    format: null,
+    formatNote: null,
     stream: null,
     detector: null,
     running: false,
     lastText: null,
     finalizing: false
   };
+
+  /** The v2 receiver, made on first use. Null when proto2.js never loaded. */
+  function v2Receiver() {
+    var P = proto2Lib();
+    if (!P) return null;
+    if (!rx.v2) rx.v2 = P.createReceiver();
+    return rx.v2;
+  }
+
+  /**
+   * One shape over two receivers, so the progress bar, the meta line and the
+   * frame grid are written once instead of twice.
+   *
+   * The two states already agree on the fields that matter — total, received,
+   * duplicates, rejected, and a chunks map keyed by frame index — because
+   * proto2.js deliberately mirrored core's receiver. What differs is the
+   * manifest: v1 spells it {name,size,chunk,k,symbolSize}, v2 spells the same
+   * facts {name,originalSize,chunkSize,k}. This is the one place that knows.
+   */
+  function receiveView() {
+    if (rx.format === core.FORMAT_V2) {
+      var s = rx.v2;
+      if (!s) return null;
+      var m = s.manifest;
+      var P = proto2Lib();
+      return {
+        format: core.FORMAT_V2,
+        status: s.status,
+        fountain: s.mode === P.MODE_FOUNTAIN,
+        total: s.total,
+        received: s.received,
+        symbols: s.received,
+        needed: m ? m.k : s.total,
+        duplicates: s.duplicates,
+        rejected: s.rejected,
+        chunks: s.chunks,
+        manifest: m,
+        name: m ? m.name : null,
+        size: m ? m.originalSize : 0
+      };
+    }
+    var v1 = rx.state;
+    var vm = v1.manifest;
+    return {
+      format: core.FORMAT_V1,
+      status: v1.status,
+      fountain: v1.mode === core.MODE_FOUNTAIN,
+      total: v1.total,
+      received: v1.received,
+      symbols: v1.symbols,
+      needed: v1.needed || (vm ? vm.k : 0),
+      duplicates: v1.duplicates,
+      rejected: v1.rejected,
+      chunks: v1.chunks,
+      manifest: vm,
+      name: vm ? vm.name : null,
+      size: vm ? vm.size : 0
+    };
+  }
+
+  /**
+   * Whether a frame in `arriving` may take over from the transfer in progress.
+   *
+   * Mirrors core.shouldAdoptNewTransfer's reasoning rather than its clock: a
+   * finished or empty receiver has nothing to protect, so the other format is
+   * simply a new transfer. A receiver mid-collection does, so the frame is
+   * refused and named. Deliberately stricter than the v1-to-v1 rule — there is
+   * no partial state to salvage across a format change, so there is no reason
+   * to let a stray frame of the other format cost someone their progress.
+   */
+  function mayAdoptFormat(arriving) {
+    if (!rx.format || rx.format === arriving) return true;
+    var view = receiveView();
+    if (!view) return true;
+    if (view.status === 'IDLE' || view.status === 'VERIFIED' || view.status === 'REJECTED') {
+      return true;
+    }
+    return !view.manifest && !view.received;
+  }
 
   // Two decoding engines. The native one is faster and better tested, so it
   // wins when present; the bundled decoder means "no BarcodeDetector" is no
@@ -1207,9 +1410,12 @@
 
   function resetReceiver() {
     rx.state = core.createReceiver();
+    rx.v2 = null;
+    rx.format = null;
+    rx.formatNote = null;
     rx.gate = core.createFrameGate();
     rx.verification = null;
-    rx.pending = [];
+    rx.sinceSave = 0;
     rx.finalizing = false;
     rx.lastText = null;
     $('rxCard').hidden = true;
@@ -1348,6 +1554,19 @@
     });
   }
 
+  function renderFormatNote() {
+    var note = $('formatNote');
+    if (send.format !== core.FORMAT_V2) {
+      note.textContent = 'JSON frames. Every rvQR build reads them, including ones ' +
+        'older than the binary format.';
+      return;
+    }
+    note.textContent = proto2Lib()
+      ? 'More payload per symbol — but the receiver has to speak v2, and one that ' +
+        'does not will say so rather than read it wrong.'
+      : 'The binary-format module has not loaded, so this send will use v1 JSON frames.';
+  }
+
   function renderModeNote() {
     var note = $('modeNote');
     if (send.mode === core.MODE_FOUNTAIN) {
@@ -1361,6 +1580,17 @@
 
   function renderSignNote() {
     var note = $('signNote');
+    // v2's manifest is a fixed-length binary record with no signature field,
+    // and its parser rejects a body of any other length, so there is nowhere
+    // for a signature to go. Said plainly here rather than left to be
+    // discovered when the receiver reports an unsigned transfer.
+    if (sendFormat() === core.FORMAT_V2) {
+      $('signSend').disabled = true;
+      note.textContent = 'Binary v2 frames carry no signature field, so this transfer ' +
+        'cannot be signed. Switch back to v1 frames to sign.';
+      return;
+    }
+    $('signSend').disabled = !cryptoLib();
     if (!send.sign) {
       note.textContent = 'Unsigned. The receiver can verify the bytes arrived intact, but not who sent them.';
       return;
@@ -1403,9 +1633,11 @@
           totalFound += results.length;
           for (var i = 0; i < results.length; i++) {
             rx.lastText = null; // a still image may legitimately repeat a frame
-            var before = rx.state.received;
+            // Counted through the view rather than rx.state, so a picture full
+            // of v2 frames reports what it actually accepted.
+            var before = receivedCount();
             feedFrame(results[i].text);
-            if (rx.state.received > before) totalAccepted++;
+            if (receivedCount() > before) totalAccepted++;
           }
         } catch (e) { /* report below */ }
         URL.revokeObjectURL(url);
@@ -1438,6 +1670,37 @@
     if (rx.finalizing) return;
     if (text === rx.lastText) return; // cheap guard against re-reading one frame
     rx.lastText = text;
+
+    // Route on the format before either parser sees the frame. Both parsers
+    // already refuse the other protocol by name rather than mis-decoding it —
+    // that is what makes routing safe to get wrong — but naming the format up
+    // here is what lets the receiver say which one arrived.
+    var arriving = core.frameFormat(text, proto2Lib());
+    if (arriving === core.FORMAT_V2 && !proto2Lib()) {
+      rx.formatNote = 'A v2 binary frame arrived, but the module that reads them ' +
+        'did not load. Nothing was decoded.';
+      renderReceiveProgress();
+      return;
+    }
+    if (!mayAdoptFormat(arriving)) {
+      rx.formatNote = core.formatMismatchText(rx.format, arriving);
+      bumpRejected();
+      renderReceiveProgress();
+      return;
+    }
+    rx.formatNote = null;
+    if (arriving === core.FORMAT_V2) {
+      feedFrameV2(text);
+      return;
+    }
+    // An unrecognised string still goes to the v1 parser, which is where the
+    // reason for refusing it comes from. Only a frame that is positively the
+    // other format is diverted above.
+    if (rx.format === core.FORMAT_V2 && arriving === 'unknown') {
+      feedFrameV2(text);
+      return;
+    }
+    rx.format = core.FORMAT_V1;
     var before = rx.state.status;
     var beforeManifest = rx.state.manifest;
     core.ingest(rx.state, text, Date.now());
@@ -1449,13 +1712,82 @@
       attachFountainDecoder();
     }
     if (rx.state.manifest && !rx.verification) verifyManifestSignature();
-    recordFrameForResume(text);
+    recordFrameForResume();
     if (rx.state.status !== 'IDLE') $('rxCard').hidden = false;
     if (before === 'IDLE' && rx.state.status === 'COLLECTING') {
       toast('Transfer ' + rx.state.transferId + ' detected');
     }
     renderReceiveProgress();
     if (core.isComplete(rx.state)) finishReceive();
+  }
+
+  /** Data frames accepted so far, whichever receiver is holding the transfer. */
+  function receivedCount() {
+    var view = receiveView();
+    return view ? view.received : 0;
+  }
+
+  /** A frame refused before either parser saw it still counts as refused. */
+  function bumpRejected() {
+    var s = rx.format === core.FORMAT_V2 ? rx.v2 : rx.state;
+    if (s) s.rejected++;
+  }
+
+  /** The v2 half of feedFrame. Same order of operations, different module. */
+  function feedFrameV2(text) {
+    var P = proto2Lib();
+    var s = v2Receiver();
+    if (!s) return;
+    rx.format = core.FORMAT_V2;
+    var before = s.status;
+    var beforeManifest = s.manifest;
+    var out = P.ingest(s, text);
+
+    // A frame the v2 parser refuses because it is v1 is named rather than
+    // counted as damage. This is the case the routing above cannot catch: a
+    // frame that identify() could not place, fed here because the transfer in
+    // progress is v2, and then recognised by the parser itself.
+    var named = core.rejectedFormat(out.reason);
+    if (named) rx.formatNote = core.formatMismatchText(core.FORMAT_V2, named);
+
+    if (!beforeManifest && s.manifest && s.mode === P.MODE_FOUNTAIN) {
+      attachFountainDecoderV2();
+    }
+    // v2's manifest is a fixed-length binary record with no signature field,
+    // so a v2 transfer is unsigned as a property of the format, not as an
+    // omission by the sender. A pinned fingerprint therefore refuses it, which
+    // is core.admitArtifact's existing behaviour for an unsigned transfer.
+    if (s.manifest && !rx.verification) {
+      rx.verification = { state: 'unsigned', note: 'binary v2 frames carry no signature' };
+      renderVerification();
+    }
+    recordFrameForResume();
+    if (s.status !== 'IDLE') $('rxCard').hidden = false;
+    if (before === 'IDLE' && s.status === 'COLLECTING') {
+      toast('Transfer ' + P.transferIdHex(s.transferId) + ' detected (v2)');
+    }
+    renderReceiveProgress();
+    if (P.isComplete(s)) finishReceive();
+  }
+
+  /** attachFountainDecoder's v2 counterpart; same replay, different manifest. */
+  function attachFountainDecoderV2() {
+    var lib = fountainLib();
+    var P = proto2Lib();
+    var s = rx.v2;
+    var m = s && s.manifest;
+    if (!lib || !m || s.codec) return;
+    try {
+      var decoder = lib.decoder(m.k, m.chunkSize, m.k * m.chunkSize);
+      P.useCodec(s, decoder);
+      for (var key in s.chunks) {
+        var esi = Number(key);
+        var payload = s.chunks[key];
+        if (payload) s.decodable = decoder.add({ esi: esi, bytes: payload }) === true;
+      }
+    } catch (e) {
+      toast('Could not start the erasure decoder: ' + e.message);
+    }
   }
 
   // Attaches the erasure decoder and replays any symbols that arrived before
@@ -1605,7 +1937,10 @@
 
   // --- resume ----------------------------------------------------------------
 
-  var RESUME_BATCH = 20; // the module's author measured 1290us/frame unbatched vs 63us at 20
+  // Frames between writes. The module's author measured 1290us/frame writing
+  // one at a time against 63us at 20, and saveProgress already tracks which
+  // sequences are durable, so this only decides how often the transaction runs.
+  var RESUME_BATCH = 20;
 
   function resumeStore() {
     var lib = resumeLib();
@@ -1616,16 +1951,76 @@
       .catch(function () { return null; });
   }
 
-  function recordFrameForResume(text) {
-    if (!resumeLib() || !rx.state.manifest) return;
-    rx.pending.push(text);
-    if (rx.pending.length < RESUME_BATCH && !core.isComplete(rx.state)) return;
-    var batch = rx.pending.splice(0, rx.pending.length);
+  /**
+   * The key a transfer is stored under, with its format in front.
+   *
+   * The format has to survive the round trip through storage or a resumed
+   * transfer cannot be handed to the right receiver, and resume.js persists a
+   * fixed set of fields — so the key carries it. It is also what keeps a v1 and
+   * a v2 transfer that happen to share a transfer id from colliding: the two
+   * formats draw their ids from different spaces and neither knows the other.
+   */
+  function resumeId() {
+    if (rx.format === core.FORMAT_V2) {
+      var P = proto2Lib();
+      var s = rx.v2;
+      return s && s.transferId !== null ? 'v2:' + P.transferIdHex(s.transferId) : null;
+    }
+    return rx.state.transferId ? 'v1:' + rx.state.transferId : null;
+  }
+
+  /**
+   * The receiver, in the shape resume.js persists: name, size, sha256 and
+   * chunk, plus the chunk map it writes frame by frame.
+   *
+   * v2 spells three of those four differently (originalSize, chunkSize), so the
+   * translation happens here rather than in the store — resume.js predates the
+   * binary format and its restore() contract promises a core-shaped state.
+   *
+   * Erasure-coded transfers are not persisted, in either format. restore()
+   * rebuilds an indexed receiver — no mode, no symbol count, no decoder — so a
+   * fountain transfer that came back from it would resume into a receiver that
+   * could never complete. Refusing to store it is the honest version of that.
+   */
+  function resumeStateView() {
+    var v = receiveView();
+    if (!v || !v.manifest || v.fountain) return null;
+    var sha = v.manifest.sha256;
+    if (typeof sha !== 'string' || sha.length !== 64) return null;
+    return {
+      hashPrefix: sha.slice(0, 8),
+      total: v.total,
+      received: v.received,
+      chunks: v.chunks,
+      manifest: {
+        name: v.name,
+        size: v.size,
+        sha256: sha,
+        chunk: v.format === core.FORMAT_V2 ? v.manifest.chunkSize : v.manifest.chunk
+      }
+    };
+  }
+
+  function recordFrameForResume() {
+    if (!resumeLib()) return;
+    var id = resumeId();
+    var view = resumeStateView();
+    if (!id || !view) return;
+    var P = proto2Lib();
+    var done = rx.format === core.FORMAT_V2
+      ? !!(P && P.isComplete(rx.v2))
+      : core.isComplete(rx.state);
+    rx.sinceSave = (rx.sinceSave || 0) + 1;
+    if (rx.sinceSave < RESUME_BATCH && !done) return;
+    rx.sinceSave = 0;
     resumeStore().then(function (store) {
-      if (!store || !store.recordFrame) return;
-      // One transaction for the batch: per-frame writes cost ~20x more, and a
-      // camera delivers frames far faster than IndexedDB likes to commit.
-      return store.recordFrame(rx.state, batch);
+      if (!store || !store.saveProgress) return;
+      // One transaction for everything that has arrived since the last call:
+      // per-frame writes cost ~20x more, and a camera delivers frames far
+      // faster than IndexedDB likes to commit. saveProgress tracks which
+      // sequences are already durable, so re-passing the whole chunk map
+      // writes only the new ones.
+      return store.saveProgress(id, view);
     }).catch(function () { /* resume is a convenience, never a blocker */ });
   }
 
@@ -1649,8 +2044,9 @@
       var row = el('div', 'row');
       row.style.marginTop = '.6rem';
       list.slice(0, 3).forEach(function (entry) {
+        var v2 = typeof entry.id === 'string' && entry.id.slice(0, 3) === 'v2:';
         var label = (entry.name || 'transfer') + ' · ' +
-          (entry.received || 0) + ' frames';
+          (entry.received || 0) + ' frames' + (v2 ? ' · v2' : '');
         var b = el('button', 'btn-sm', 'Continue ' + label);
         b.addEventListener('click', function () { resumeTransfer(entry); });
         row.appendChild(b);
@@ -1659,16 +2055,75 @@
     }).catch(function () { /* nothing to offer */ });
   }
 
+  /**
+   * Rebuilds a v2 receiver from what resume.js gives back.
+   *
+   * Everything a v2 receiver needs is either in the restored record or derivable
+   * from it: the transfer id from the key, the header's 32-bit content hash from
+   * the first four digest bytes, and both sizes from the one the manifest kept —
+   * this app never sends a codec, so the two are equal by construction. Anything
+   * that does not add up returns null and the transfer simply is not resumed.
+   */
+  function rebuildV2Receiver(id, restored) {
+    var P = proto2Lib();
+    var m = restored && restored.manifest;
+    var digest = m && hexToBytes(m.sha256);
+    if (!P || !digest || !m.name || !m.chunk || !restored.total) return null;
+    var transferId = parseInt(id.slice(3), 16);
+    if (!Number.isFinite(transferId)) return null;
+    var s = P.createReceiver();
+    s.status = 'COLLECTING';
+    s.transferId = transferId >>> 0;
+    s.contentHash32 =
+      (digest[0] | (digest[1] << 8) | (digest[2] << 16) | (digest[3] << 24)) >>> 0;
+    s.total = restored.total;
+    s.mode = P.MODE_INDEXED;
+    s.codecId = P.CODEC_NONE;
+    s.dictId = P.DICT_NONE;
+    s.chunks = restored.chunks;
+    s.received = restored.received;
+    s.manifest = {
+      originalSize: m.size,
+      compressedSize: m.size,
+      contentHash: digest,
+      sha256: m.sha256,
+      chunkSize: m.chunk,
+      k: 0,
+      name: m.name
+    };
+    return s;
+  }
+
   function resumeTransfer(entry) {
+    var id = entry.id || entry.transferId;
+    var format = typeof id === 'string' && id.slice(0, 3) === 'v2:'
+      ? core.FORMAT_V2
+      : core.FORMAT_V1;
+    if (format === core.FORMAT_V2 && !proto2Lib()) {
+      toast('That transfer is in the binary v2 format and the module that reads it did not load');
+      return;
+    }
     resumeStore().then(function (store) {
       if (!store || !store.restore) return;
-      return store.restore(entry.id || entry.transferId);
+      return store.restore(id);
     }).then(function (state) {
       if (!state) { toast('That transfer could not be restored'); return; }
-      rx.state = state;
+      if (format === core.FORMAT_V2) {
+        var v2 = rebuildV2Receiver(id, state);
+        if (!v2) { toast('That v2 transfer could not be restored'); return; }
+        rx.v2 = v2;
+        rx.format = core.FORMAT_V2;
+        rx.verification = { state: 'unsigned', note: 'binary v2 frames carry no signature' };
+        renderVerification();
+      } else {
+        rx.state = state;
+        rx.format = core.FORMAT_V1;
+        if (state.mode === core.MODE_FOUNTAIN) attachFountainDecoder();
+      }
+      rx.formatNote = null;
+      rx.sinceSave = 0;
       rx.finalizing = false;
       rx.lastText = null;
-      if (state.mode === core.MODE_FOUNTAIN) attachFountainDecoder();
       $('rxCard').hidden = false;
       $('resumeBanner').textContent = '';
       renderReceiveProgress();
@@ -1679,19 +2134,34 @@
     });
   }
 
+  // A refused frame is worth a line of its own: the bar and the counters carry
+  // on describing the transfer in progress, and this says why the last thing
+  // scanned was not part of it.
+  function renderRxFormatNote() {
+    var box = $('rxFormatNote');
+    if (!box) return;
+    box.textContent = '';
+    if (!rx.formatNote) return;
+    box.appendChild(el('div', 'notice bad', rx.formatNote));
+  }
+
   function renderReceiveProgress() {
-    var s = rx.state;
-    if (!s.total) return;
-    if (s.mode === core.MODE_FOUNTAIN) {
-      var k = s.needed || (s.manifest ? s.manifest.k : 0);
+    renderRxFormatNote();
+    // One shape over both receivers. Everything below reads the view, so the
+    // grid, the bar and the meta line are the same code for either format.
+    var s = receiveView();
+    if (!s || !s.total) return;
+    var tag = s.format === core.FORMAT_V2 ? 'v2 binary · ' : '';
+    if (s.fountain) {
+      var k = s.needed || 0;
       var got = s.symbols;
       var fpct = k ? Math.min(100, Math.round((got / k) * 100)) : 0;
       $('rxBar').style.width = fpct + '%';
-      $('rxTitle').textContent = (s.manifest ? core.sanitizeName(s.manifest.name) + ' — ' : '') +
+      $('rxTitle').textContent = (s.name ? core.sanitizeName(s.name) + ' — ' : '') +
         got + ' / ' + k + ' symbols';
-      $('rxMeta').textContent = 'erasure-coded · any ' + k + ' symbols rebuild it · ' +
+      $('rxMeta').textContent = tag + 'erasure-coded · any ' + k + ' symbols rebuild it · ' +
         s.duplicates + ' duplicates · ' + s.rejected + ' rejected' +
-        (s.manifest ? ' · ' + core.formatBytes(s.manifest.size) : '');
+        (s.manifest ? ' · ' + core.formatBytes(s.size) : '');
       $('rxGrid').textContent = '';
       return;
     }
@@ -1700,17 +2170,19 @@
     var pct = need ? Math.round((have / need) * 100) : 100;
     $('rxBar').style.width = pct + '%';
     $('rxTitle').textContent = s.manifest
-      ? core.sanitizeName(s.manifest.name) + ' — ' + pct + '%'
+      ? core.sanitizeName(s.name) + ' — ' + pct + '%'
       : 'Collecting frames — ' + pct + '% (waiting for the manifest)';
-    $('rxMeta').textContent =
+    $('rxMeta').textContent = tag +
       have + ' / ' + need + ' data frames · ' + s.duplicates + ' duplicates · ' +
       s.rejected + ' rejected' +
-      (s.manifest ? ' · ' + core.formatBytes(s.manifest.size) : '');
+      (s.manifest ? ' · ' + core.formatBytes(s.size) : '');
 
     // The cell count comes from gridPlan, never straight from s.total: the
     // frame count is attacker-controlled and must not be able to drive how
     // many DOM nodes this builds. Past the cap each cell stands for a run of
-    // frames and lights up once that whole run has landed.
+    // frames and lights up once that whole run has landed. v2 numbers its data
+    // frames 1..total-1 exactly as v1 does, so the plan needs no notion of
+    // which format it is drawing.
     var plan = core.gridPlan(s.total);
     var grid = $('rxGrid');
     if (grid.childElementCount !== plan.cells) {
@@ -1739,6 +2211,7 @@
   function finishReceive() {
     if (rx.finalizing) return;
     rx.finalizing = true;
+    if (rx.format === core.FORMAT_V2) { finishReceiveV2(); return; }
     var s = rx.state;
     var bytes;
     try {
@@ -1755,34 +2228,83 @@
           s.manifest.sha256.slice(0, 16) + '…, got ' + digest.slice(0, 16) + '…');
         return;
       }
-      // The hash proves the bytes; it does not prove the signer. When a
-      // fingerprint is pinned the signature verdict has to be settled and
-      // admitting BEFORE anything reaches the vault — the check runs
-      // asynchronously, so waiting on it here is what makes the pin a control
-      // rather than a label.
-      return Promise.resolve(rx.pin ? rx.verificationPromise : null)
-        .catch(function () { return null; })
-        .then(function () {
+      return admitAndStore(s, bytes, s.manifest.name);
+    }).catch(function (err) {
+      showReceiveResult(false, 'Failed to store: ' + err.message);
+    });
+  }
+
+  // Why a v2 transfer was refused, in the words of the thing that refused it.
+  // proto2.finalize returns a reason rather than a sentence on purpose, so the
+  // sentences live here with the rest of the copy.
+  var V2_FINALIZE_COPY = {
+    incomplete: 'The transfer is not complete yet.',
+    'assembly-failed': 'The collected frames did not fit back together, so nothing was kept.',
+    'compressed-size-mismatch': 'The reassembled stream is not the length the manifest declared. Discarded.',
+    'no-codec': 'This transfer is compressed with a codec this build does not carry, so it was refused rather than handed over as-is.',
+    'decode-failed': 'The compressed stream could not be decoded. Discarded.',
+    'original-size-mismatch': 'The decoded artifact is not the size the manifest declared. Discarded.'
+  };
+
+  /**
+   * The v2 half of finishReceive.
+   *
+   * proto2.finalize does the reassembly, the codec step and the SHA-256 check
+   * in one call and hands back bytes only if the digest matches — so unlike the
+   * v1 path there is no place here where unverified bytes exist under a name.
+   * It hashes synchronously with core's SHA-256 rather than through WebCrypto,
+   * which is what makes that single call possible.
+   */
+  function finishReceiveV2() {
+    var P = proto2Lib();
+    var s = rx.v2;
+    var out = P.finalize(s, {});
+    if (!out.ok) {
+      if (out.reason === 'hash-mismatch') {
+        showReceiveResult(false,
+          'Hash mismatch — the whole transfer was discarded. Expected ' +
+          String(out.expected).slice(0, 16) + '…, got ' + String(out.actual).slice(0, 16) + '…');
+        return;
+      }
+      showReceiveResult(false,
+        V2_FINALIZE_COPY[out.reason] || ('The transfer was refused: ' + out.reason + '.'));
+      return;
+    }
+    Promise.resolve(admitAndStore(s, out.bytes, out.name)).catch(function (err) {
+      showReceiveResult(false, 'Failed to store: ' + err.message);
+    });
+  }
+
+  /**
+   * The tail both formats share: pin check, then the vault.
+   *
+   * The hash proves the bytes; it does not prove the signer. When a fingerprint
+   * is pinned the signature verdict has to be settled and admitting BEFORE
+   * anything reaches the vault — the check runs asynchronously, so waiting on
+   * it here is what makes the pin a control rather than a label.
+   */
+  function admitAndStore(state, bytes, name) {
+    return Promise.resolve(rx.pin ? rx.verificationPromise : null)
+      .catch(function () { return null; })
+      .then(function () {
         var verdict = core.admitArtifact(rx.pin, rx.verification);
         if (!verdict.admit) {
-          s.status = 'REJECTED';
+          state.status = 'REJECTED';
           showReceiveResult(false,
             'Refused — ' + verdict.reason +
             ' The bytes arrived intact, but nothing was stored.');
           return;
         }
-        s.status = 'VERIFIED';
-        return storeArtifact(s.manifest.name, bytes, 'received').then(function () {
-        stopCamera();
-        showReceiveResult(true,
-          'Verified and stored: ' + s.manifest.name + ' (' + core.formatBytes(bytes.length) +
-          '). SHA-256 matches the manifest. Nothing was executed.');
-        renderVault();
+        state.status = 'VERIFIED';
+        return storeArtifact(name, bytes, 'received').then(function () {
+          stopCamera();
+          showReceiveResult(true,
+            'Verified and stored: ' + core.sanitizeName(name) + ' (' +
+            core.formatBytes(bytes.length) +
+            '). SHA-256 matches the manifest. Nothing was executed.');
+          renderVault();
         });
       });
-    }).catch(function (err) {
-      showReceiveResult(false, 'Failed to store: ' + err.message);
-    });
   }
 
   function showReceiveResult(ok, msg) {
@@ -2165,6 +2687,16 @@
       drawFrame(send.index);
     });
 
+    // --- frame format ---
+    // Changing the format rebuilds the stream: the frames in hand are in the
+    // old one, and a receiver mid-transfer would see the two disagree.
+    $('formatPick').addEventListener('change', function (e) {
+      send.format = core.normalizeFormat(e.target.value);
+      renderFormatNote();
+      renderSignNote();
+      if (send.record) startSend(send.record.id);
+    });
+
     // --- transfer mode ---
     $('modePick').addEventListener('change', function (e) {
       send.mode = e.target.value === 'fountain' ? core.MODE_FOUNTAIN : core.MODE_INDEXED;
@@ -2214,14 +2746,27 @@
       toast('Receiver reset');
     });
     $('manualBtn').addEventListener('click', function () {
-      var lines = $('manualFrames').value.split('\n');
+      var raw = $('manualFrames').value;
       var fed = 0;
-      for (var i = 0; i < lines.length; i++) {
-        var line = lines[i].trim();
-        if (!line) continue;
+      // One frame per line works for v1, whose frames are JSON and contain no
+      // newline. It cannot work for v2: the armour's alphabet is every byte
+      // 0x00-0x7F, newline and the other control characters included, so
+      // splitting on '\n' or trimming whitespace cuts a frame in half. So the
+      // whole box is offered as a single v2 frame first, and only text that is
+      // not one falls through to the line-by-line path.
+      if (core.frameFormat(raw, proto2Lib()) === core.FORMAT_V2) {
         rx.lastText = null;
-        feedFrame(line);
-        fed++;
+        feedFrame(raw);
+        fed = 1;
+      } else {
+        var lines = raw.split('\n');
+        for (var i = 0; i < lines.length; i++) {
+          var line = lines[i].trim();
+          if (!line) continue;
+          rx.lastText = null;
+          feedFrame(line);
+          fed++;
+        }
       }
       $('rxCard').hidden = false;
       toast('Fed ' + fed + ' frame' + (fed === 1 ? '' : 's'));
@@ -2312,12 +2857,16 @@
   // The optional modules arrive after this script runs, so the notes that
   // describe them are filled in once the document is ready rather than now.
   window.addEventListener('load', function () {
+    renderFormatNote();
     renderModeNote();
     renderSignNote();
     offerResume();
     if (!fountainLib()) $('modePick').disabled = true;
     if (!cryptoLib()) $('signSend').disabled = true;
     if (!deltaLib()) $('deltaSendCard').hidden = true;
+    // The picker offers v2 only when the module that builds it is here. A
+    // choice that silently means something else is worse than no choice.
+    if (!proto2Lib()) $('formatPick').disabled = true;
   });
 
   renderVault().then(function () {

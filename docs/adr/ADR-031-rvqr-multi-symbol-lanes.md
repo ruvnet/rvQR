@@ -1,11 +1,11 @@
-# ADR-004: Multi-Symbol Spatial Lanes
+# ADR-031: Multi-Symbol Spatial Lanes
 
 | Field | Value |
 |---|---|
 | Status | Proposed |
 | Date | 2026-08-03 |
 | Scope | Painting more than one QR symbol per frame period, and what the receiver has to do about it |
-| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-002: Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-005: Bounded Decode Worker Pool](./ADR-005-rvqr-decode-worker-pool.md), [ADR-008: Colour Channels](./ADR-008-rvqr-colour-channels.md) |
+| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-002: Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md), [ADR-033: Bounded Decode Worker Pool](./ADR-033-rvqr-decode-worker-pool.md), [ADR-008: Colour Channels](./ADR-008-rvqr-colour-channels.md) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -139,7 +139,7 @@ on an Apple M4 Pro. **A phone is five to ten times slower at JavaScript**
 (§8), which puts the same work at 120–240 ms and makes 15 fps impossible on the
 main thread, which is already running a camera preview and a render loop.
 
-Ordering follows from that: [ADR-005](./ADR-005-rvqr-decode-worker-pool.md)
+Ordering follows from that: [ADR-033](./ADR-033-rvqr-decode-worker-pool.md)
 first, lanes second. Building lanes on a single-threaded receiver would produce
 a sender that emits 23 KB/s into a receiver that cannot read it, and the failure
 would look like frame loss.
@@ -206,7 +206,7 @@ would look like frame loss.
    target platforms, against the single-symbol baseline.
 6. **The receiver keeps up.** No frame-drop regression against the single-symbol
    path at the same fps, with the worker pool from
-   [ADR-005](./ADR-005-rvqr-decode-worker-pool.md) in place.
+   [ADR-033](./ADR-033-rvqr-decode-worker-pool.md) in place.
 7. **Graceful degradation.** With one quadrant permanently occluded the transfer
    still completes, slower — demonstrated, not argued.
 8. **The acceptance bar in [ADR-010](./ADR-010-rvqr-acceptance-bar.md) is met by

@@ -6,7 +6,12 @@
 | Date | 2026-08-03 |
 | Scope | Carrying independent data in colour planes rather than one monochrome symbol |
 | Implementation | Nothing, and deliberately so |
-| Related | [ADR-004: Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md), [ADR-005: Bounded Decode Worker Pool](./ADR-005-rvqr-decode-worker-pool.md) |
+| Related | [ADR-031: Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md), [ADR-033: Bounded Decode Worker Pool](./ADR-033-rvqr-decode-worker-pool.md), [ADR-018: Device Physics and Calibration](./ADR-018-rvqr-device-physics.md), [ADR-026: Optical Turbo Research](./ADR-026-rvqr-optical-turbo.md) |
+
+> **Later note (2026-08-03).** [ADR-026](./ADR-026-rvqr-optical-turbo.md)
+> establishes an experimental optical research track that includes adaptive
+> colour constellations. That does **not** un-defer this ADR: §4 below remains
+> the entry condition, and ADR-026 §4.6 defers to it explicitly.
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -38,7 +43,7 @@ even the prior art's magnitude is not something this project has established.
 **Defer.** rvQR keeps one monochrome symbol per frame, and pursues capacity
 through [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md),
 [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
-[ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) first.
+[ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) first.
 
 Four reasons, in the order they matter.
 
@@ -80,7 +85,7 @@ before it stops decoding — and rvQR has exactly one measurement of that budget
 the blur sweep in [docs/benchmarks.md](../benchmarks.md) §6.
 
 The difference is that spatial lanes can be **bounded by geometry from data this
-project already has**: [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) §2.2
+project already has**: [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) §2.2
 derives a hard capture-resolution requirement from the measured module size,
 before anyone builds anything. Colour has no equivalent. Its feasibility cannot
 be estimated from any measurement in this repository, and the harness models no
@@ -106,7 +111,7 @@ order.
 ### What deferring costs
 
 - **1.5–3× left on the table**, on top of whatever
-  [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) achieves. If lanes land at the
+  [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) achieves. If lanes land at the
   projected 23 KB/s, colour is the difference between that and something near
   the comparators.
 - **The gap to Decimen stays partly structural.** 128 KB/s comes from colour,
@@ -121,7 +126,7 @@ order.
 Colour becomes a candidate when all of the following hold. Until then it stays
 deferred, and no rvQR document should describe it as planned.
 
-1. **[ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) has shipped and been
+1. **[ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) has shipped and been
    measured on real phones.** Its acceptance criteria are the prerequisite; if
    spatial lanes do not survive real optics, colour certainly will not.
 2. **A device-pair colour study exists.** At least three sender displays and

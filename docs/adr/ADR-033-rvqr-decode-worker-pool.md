@@ -1,11 +1,11 @@
-# ADR-005: Bounded Decode Worker Pool
+# ADR-033: Bounded Decode Worker Pool
 
 | Field | Value |
 |---|---|
 | Status | Proposed |
 | Date | 2026-08-03 |
 | Scope | What runs off the main thread, how buffers cross the boundary, and when more than one worker is worth having |
-| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-004: Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md) |
+| Related | [ADR-001: rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md), [ADR-031: Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md) |
 
 > This is an **rvQR-local** ADR. Most other files in this directory are mirrored
 > from RuVector and keep their upstream numbers; rvQR's own decisions start at
@@ -19,7 +19,7 @@ times frame rate, and no amount of parallelism changes either. Nothing in this
 document makes rvQR faster on its own. What it does is make the mechanisms in
 [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md),
 [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
-[ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) sustainable on a phone whose
+[ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) sustainable on a phone whose
 main thread is already running a camera preview, a render loop and a QR painter.
 
 That framing matters because the measurements say the current worker split is
@@ -56,7 +56,7 @@ transfer list. The main thread never wanted the pixels; it wanted the answer.
 
 `ImageBitmap` is transferable, so there is no clone. Cropping at creation means
 only the region a lane occupies crosses the boundary, which under
-[ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) is a quarter of the frame per
+[ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) is a quarter of the frame per
 worker. The ownership warning in `offload.js` stops applying because the bitmap
 is constructed for the worker rather than borrowed from a canvas the main thread
 is still drawing into.
@@ -86,7 +86,7 @@ would only multiply the startup cost — each worker `importScripts`es five file
 and `offload.js` allows four seconds for a worker to say hello before writing it
 off.
 
-After [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) there are four symbols per
+After [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) there are four symbols per
 frame period and a genuine reason for concurrency. The pool is then sized to
 **min(lanes, hardwareConcurrency − 1, 4)**: one thread reserved for the main
 loop, and a ceiling of four because a phone's core count is not its sustained
@@ -131,7 +131,7 @@ the two paths diverge.
 - **Zero throughput on its own.** Every number in
   [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md),
   [ADR-003](./ADR-003-rvqr-adaptive-compression.md) and
-  [ADR-004](./ADR-004-rvqr-multi-symbol-lanes.md) is unchanged by this document.
+  [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) is unchanged by this document.
   It is a prerequisite, and prerequisites are easy to mistake for progress.
 - **`createImageBitmap` is not free and has not been measured here.** It does
   its own work, asynchronously, and whether the total is cheaper than the clone

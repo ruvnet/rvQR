@@ -23,28 +23,91 @@ their upstream numbers.
 The two numbering spaces now collide: **ADR-004, ADR-005 and ADR-009 each exist
 twice in this directory, meaning different things.** The rule that resolves it is
 the filename, not the number — **a local ADR's slug begins with `rvqr-`**
-(`ADR-009-rvqr-signature-admission.md` is rvQR's;
+(`ADR-035-rvqr-signature-admission.md` is rvQR's;
 `ADR-009-rvf-v1-wire-contract.md` is RuVector's wire contract). Every local file
 also says so in a note under its header. Cite these by filename rather than by
-number.
+number. The local space currently runs **001–028**; 029, 030, 032, 034, 057 and
+280 in this directory are mirrored-only and the local sequence must skip them.
 
-Statuses are load-bearing. Only three of the ten are Accepted; the rest are a
-throughput and control-channel programme that is written down and, with the
-exception of `artifacts/p2p.js`, not built. Each one says in its own header what
-exists.
+**Statuses are load-bearing, and most of this is not built.** Of 28 local ADRs,
+five are Accepted and one is Deferred; the rest are a deployment-plane programme
+that is written down and largely unimplemented. Each file's header table says
+what exists in its own `Implementation` row, and
+[ADR-011](./ADR-011-rvqr-deployment-plane.md) §2.1 carries the summary: **of the
+eight links in the chain, two ship.**
+
+The set divides into three blocks: **001–010** the optical transport and its
+acceptance bar; **011–018** the deployment plane, its cryptography and its
+control; **019–028** bulk transport, execution, fleet distribution and delivery
+structure.
+
+### Optical transport and its acceptance bar (001–010)
 
 | ADR | Status | What it decides |
 |-----|--------|-----------------|
 | [ADR-001 — rvQR Optical Transport](./ADR-001-rvqr-optical-transport.md) | Accepted | The decisions this project has actually made and shipped: fixed indexed chunks before erasure coding, integrity without authenticity as a stated position, the hostile-input ceilings and why the renderer is capped independently of them, the stall-based transfer switching rule, native scanning with a vendored decoder fallback, the iframe camera constraint, the keyframe gate, and the line between parsing an untrusted container with WebAssembly and executing it. Includes an honest cost list. |
 | [ADR-002 — Binary Frame Protocol v2](./ADR-002-rvqr-binary-frame-protocol.md) | Accepted | Replaces JSON-plus-base64 framing with a 28-byte binary header, taking a version 19 symbol from 512 payload bytes to 764 — a measured **1.492×** at the same robust operating point, or 1.30× through the ASCII armour the bundled decoder forces. Carries codec id and dictionary id in every frame, original and compressed sizes as separate fields, and **both** a per-frame transport hash and the artifact's content hash. Records the correctness defect this closes: RVQS carries one `SEED_COMPRESSED` bit whose doc comment says Brotli while the builder invokes SCF-1. Implemented in `artifacts/proto2.js` (26/26 tests) and **not yet wired into the app**. |
 | [ADR-003 — Adaptive Compression](./ADR-003-rvqr-adaptive-compression.md) | Proposed | Zstandard (RFC 8878) by default and Brotli (RFC 7932) for WASM, HTML and metadata, reusing RuVector's codec ids and Rust implementation rather than inventing an rvQR vocabulary. Compress only when the whole transport envelope shrinks by ≥ 8%. Measured on this repository's artifacts: 2.464× on the demo WASM module, 1.320× on an RVF container of float vectors, 3.535× on the standalone page. **Records an open conflict**: `proto2.js` ships a different codec table from the one this ADR adopts, and Zstd has no id in it. |
-| [ADR-004 — Multi-Symbol Spatial Lanes](./ADR-004-rvqr-multi-symbol-lanes.md) | Proposed | A 2×2 grid of version-13 symbols, projected at 23.0 KB/s raw and ~56.7 KB/s compressed. The single biggest lever and the highest execution risk. Derives a hard consequence from the existing blur measurement: four version-13 lanes **do not fit a 720p capture** and require 1080p, with a version-10 fallback for cameras that cannot supply it. |
-| [ADR-005 — Bounded Decode Worker Pool](./ADR-005-rvqr-decode-worker-pool.md) | Proposed | Workers add no optical capacity, and today they measure *slower* — SHA ~15%, the keyframe signature ~59% — because buffers are copied across the boundary. Transfer a cropped `ImageBitmap` instead of cloning `ImageData`, and add 2–4 workers only after multi-lane tiling gives them something to do. |
+| [ADR-031 — Multi-Symbol Spatial Lanes](./ADR-031-rvqr-multi-symbol-lanes.md) | Proposed | A 2×2 grid of version-13 symbols, projected at 23.0 KB/s raw and ~56.7 KB/s compressed. The single biggest lever and the highest execution risk. Derives a hard consequence from the existing blur measurement: four version-13 lanes **do not fit a 720p capture** and require 1080p, with a version-10 fallback for cameras that cannot supply it. |
+| [ADR-033 — Bounded Decode Worker Pool](./ADR-033-rvqr-decode-worker-pool.md) | Proposed | Workers add no optical capacity, and today they measure *slower* — SHA ~15%, the keyframe signature ~59% — because buffers are copied across the boundary. Transfer a cropped `ImageBitmap` instead of cloning `ImageData`, and add 2–4 workers only after multi-lane tiling gives them something to do. |
 | [ADR-006 — QR-Bootstrapped BitChat / WebRTC Escalation](./ADR-006-rvqr-p2p-escalation.md) | Proposed | QR carries identity, ephemeral keys, manifests and segment inventories; the payload moves over a WebRTC data channel (RFC 8831) or BitChat. Preserves the optical trust bootstrap and is explicitly **not radio-silent** — opt-in, off by default, empty `iceServers`. `artifacts/p2p.js` implements the WebRTC half and is not wired into the app. |
 | [ADR-007 — Ultrasonic Reverse Control Channel](./ADR-007-rvqr-ultrasonic-control-channel.md) | Proposed | Forward optical, reverse acoustic: capability negotiation, fountain rank, signal quality, pause/resume/cancel/complete. Speed comes from omitting unnecessary QR frames, not from acoustic bandwidth. Proposes a ~20-byte RVU1 control frame over 4-tone FSK against `ruvnet/ultrasonic`'s 12.7–20.2 s for a 16-byte command. Records two safety findings: AES-GCM does not stop replay of a recording, and the published 20% error tolerance is tested by negating samples, which a sign-blind decoder cannot see. |
 | [ADR-008 — Colour Channels](./ADR-008-rvqr-colour-channels.md) | **Deferred** | Potentially 1.5–3×, deferred with reasons: camera white balance and tone mapping, chroma subsampling, display profiles, and rolling shutter — none of which any measurement in this repository can bound, unlike spatial lanes. Lists what would reopen it. |
-| [ADR-009 — Pinned-Fingerprint Admission](./ADR-009-rvqr-signature-admission.md) | Accepted | A pin must be enforced where the artifact is stored, not rendered as a badge. The pure `core.admitArtifact(pin, verification)`: pending never admits, unknown verdicts fail closed, no-pin is unchanged. Records the companion defect — `signManifest` called with reversed arguments, so signing silently never happened — and that the signing key currently sits in plaintext `localStorage`. |
-| [ADR-010 — The Acceptance Bar](./ADR-010-rvqr-acceptance-bar.md) | Accepted | 100 physical transfers across iPhone Safari and Android Chrome, bright / dim / glare, 20% induced loss. Pass requires zero corrupt accepts, zero wrong-key vault writes, ≥ 99 completions and p95 under 30 s for 40 KB. States plainly that the benchmark models frame loss but not optics, so today's figures are engineering baselines — and shows the bar is unreachable until the fountain layer is wired into the transport. |
+| [ADR-035 — Pinned-Fingerprint Admission](./ADR-035-rvqr-signature-admission.md) | Accepted | A pin must be enforced where the artifact is stored, not rendered as a badge. The pure `core.admitArtifact(pin, verification)`: pending never admits, unknown verdicts fail closed, no-pin is unchanged. Records the companion defect — `signManifest` called with reversed arguments, so signing silently never happened — and that the signing key currently sits in plaintext `localStorage`. |
+| [ADR-010 — The Acceptance Bar](./ADR-010-rvqr-acceptance-bar.md) | Accepted | Three bars. Milestone: 100 × 40 KB across iPhone Safari and Android Chrome, bright / dim / glare, 20% induced loss, p95 under 30 s. **The bar**: 100 signed 10 MB RVF transfers across three phone/laptop combinations, radios disabled — 100% verification, zero pre-verification vault writes or executions, zero accepted replayed ultrasonic commands, median raw > 100 KB/s, effective > 250 KB/s, p95 < 120 s, memory < 256 MB. Says plainly that the benchmark models frame loss but not optics, so today's figures are engineering baselines, and that the 10 MB bar is set above what any current projection delivers. |
+
+### The deployment plane (011–018)
+
+| ADR | Status | What it decides |
+|-----|--------|-----------------|
+| [ADR-011 — rvQR Is a Deployment Plane](./ADR-011-rvqr-deployment-plane.md) | Accepted | The framing: rvQR moves code, models, vectors, credentials, policy, state and audit evidence across a disconnected security boundary, and the output is a verified deployment plus a receipt, not a downloaded file. Tabulates the eight-link chain and marks which two ship. States the defensibility argument plainly — animated QR is easy to copy, the full chain is not — and the standard that follows: state of the art is demonstrated by benchmarks, not feature count. |
+| [ADR-012 — Post-Quantum Manifest Crypto](./ADR-012-rvqr-post-quantum-manifest.md) | Proposed | Hybrid X25519 + ML-KEM-768 and Ed25519 + ML-DSA-65 (NIST FIPS 203, FIPS 204), because RVF artifacts and credentials are long-lived. **Full signatures live in the manifest, never in every frame** — an ML-DSA-65 signature is 3,309 bytes against a 764-byte payload budget, so per-frame signing is arithmetically impossible. Records a blocking prerequisite: the tree's PQ deps are the archived PQClean lineage (RUSTSEC-2024-0380/0381, RUSTSEC-2026-0162/0163). |
+| [ADR-013 — Byte Minimisation](./ADR-013-rvqr-byte-minimisation.md) | Proposed | Dedup and delta beat codec choice for recurring deliveries — a measured 85.1× against a measured 1.320× on the same payload class. FastCDC content-defined chunking (USENIX ATC '16), BLAKE3-addressed chunks, RVF segment delta, Zstd dictionaries. **Corrects a naming drift: RVCOW and `agenticow` are one mechanism with two names.** Encrypts the receiver inventory, because a list of installed models and agents is itself sensitive. |
+| [ADR-014 — Fountain Code Selection](./ADR-014-rvqr-fountain-selection.md) | **Open** | Three options — keep the shipped RaptorQ-structured codec (measured 98.45% at exactly K), adopt Wirehair (its published N+0.02), or become RFC 6330 conformant. No winner asserted, because the evidence to pick one does not exist. Names the measurement that would decide it, and notes the choice blocks the fleet broadcast tier. |
+| [ADR-015 — Adaptive Transfer Control](./ADR-015-rvqr-adaptive-control.md) | Proposed | A bounded controller, then a constrained bandit, maximising G = R × C × E × P and J = 0.45T + 0.20E + 0.20B + 0.15R. **Hard rules always override learning** — a learned policy that can override a trust gate is not a policy, it is a vulnerability. Records the 278 and 612 KB/s worked figures as projections resting on Decimen's published claims, not our measurements. |
+| [ADR-016 — Verified Execution and the RVM Handoff](./ADR-016-rvqr-verified-execution.md) | Proposed | No vault write and no execution authority before verification — the same invariant at two layers, with neither trusting the other's word. **Binds to `rvm-witness`'s ADR-134 format rather than defining a second receipt**: 96-byte records, 128-bit keyed-BLAKE3 chain MACs, Merkle sealing, and the existing invariant "no witness, no mutation". |
+| [ADR-017 — Strict and Hybrid Transport Modes](./ADR-017-rvqr-transport-modes.md) | Proposed | Strict is light and sound only with radios disabled; hybrid lets optical and ultrasonic establish trust and a radio move the payload. **Mode is a mode, never a fallback** — no failure, including total failure to transfer, promotes strict to hybrid — and the mode in force is recorded in the receipt so an auditor can establish which medium carried a deployment. |
+| [ADR-018 — Device Physics and Calibration](./ADR-018-rvqr-device-physics.md) | Proposed | **The largest uncertainty in the programme.** Autofocus, display refresh, camera frame-rate reporting, microphone filtering and speaker response will dominate the laboratory algorithm choices. A ~3 s calibration phase, conservative fallback profiles, and RuVector memory that learns the best *verified* profile per device pair. Every throughput number in the set is an engineering baseline, not a phone result. |
+
+### Bulk transport, execution and delivery (019–028)
+
+| ADR | Status | What it decides |
+|-----|--------|-----------------|
+| [ADR-019 — rvDrop: The Bulk Transport Tier](./ADR-019-rvdrop-bulk-transport.md) | Proposed | An AirDrop-class local mode sharing rvQR's trust root, explicitly not interoperating with AirDrop. **Do not stripe every medium as an equal data lane** — ultrasound is control, optical is bootstrap or strict mode, WiFi is bulk; race transports and pick the fastest *trusted* one. Shared-LAN QUIC is the pragmatic v1 target on reach and maturity; WiFi Aware is the differentiator once availability is proven. **QUIC, WiFi Aware, BitChat and CDC are absent from the entire tree — this is greenfield.** The fallback chain is the feature. |
+| [ADR-020 — Embedded Provenance](./ADR-020-rvqr-embedded-provenance.md) | Proposed | Provenance, SBOM, licences, signer policy, source revision, build identity and vulnerability assertions become **native RVF segments, never sidecar manifests**, mapped onto SLSA v1.2. The lowest-effort, lowest-risk item in the set — it should land early. Provenance is evidence for policy, never policy. |
+| [ADR-021 — Measured Device Attestation](./ADR-021-rvqr-device-attestation.md) | Proposed | Bind the handshake to measured RuVix/RVM boot state via DICE, TPM 2.0, Secure Enclave or Android hardware-backed keys, so a sender can require a trusted signer set, current epoch, approved measurement and permitting storage policy. **Attestation is evidence, not authorization** — the same invariant as the pin fix, one layer down. Supersedes the plaintext `localStorage` key. |
+| [ADR-022 — Progressive Verified Activation](./ADR-022-rvqr-progressive-activation.md) | Proposed | Split an artifact into independently signed closures — manifest+policy, minimal runtime, hot code and state, cold assets — and start the agent once the minimal closure verifies. The gate is not weakened, it is applied more times. Target: first trusted agent under 3 s. **The highest-risk item in the set**, because every mechanism for running before full verification is a mechanism for running something unverified. |
+| [ADR-023 — Physical Presence Fusion](./ADR-023-rvqr-presence-fusion.md) | Proposed | Bind QR line-of-sight, ultrasonic challenge-response and UWB ranging into the session transcript. **No channel may independently authorize activation** — each alone is arrangeable by an attacker; fused they are much harder. Raises the cost of relay MITM without claiming to close it. |
+| [ADR-024 — Fleet Swarm Distribution](./ADR-024-rvqr-fleet-swarm.md) | Proposed | BitChat for custody, rank exchange and peer discovery; content-addressed peer transfer on normal links; RaptorQ for lossy broadcast. 100 devices × 1 GB should cost under 3 GB of source traffic, not 100 GB. **A peer is a transport, not an authority** — every device verifies against the source's signed manifest. Blocked on [ADR-014](./ADR-014-rvqr-fountain-selection.md) for the broadcast codec. |
+| [ADR-025 — Zero-Copy Pipeline](./ADR-025-rvqr-zero-copy-pipeline.md) | Proposed | One bounded pipeline — read → hash → delta → compress → encrypt → send — with pooled buffers, memory mapping, SIMD BLAKE3 and compression, 4–8 bounded streams. Three budgets treated as contracts: internal throughput ≥ 2× the radio ceiling, fewer than two full payload copies, working memory under 128 MiB. The measured 15%/59% worker regression is what the alternative looks like. |
+| [ADR-026 — Optical Turbo Research](./ADR-026-rvqr-optical-turbo.md) | **Experimental** | Camera-calibrated grids, rolling-shutter modulation, adaptive colour constellations, GPU decoding, multiple regions, targeting 0.5–1 MB/s from the 0.10–0.19 MB/s projected baseline. Highest effort and lowest value in the set; justified by strict mode having no alternative, not by competitiveness. Blocks nothing. |
+| [ADR-027 — Non-Goals](./ADR-027-rvqr-non-goals.md) | Accepted | Recorded as decisions so they are not revisited by default: no ultrasonic bulk transfer (Google's consumer-hardware state of the art is 94.5 raw bit/s), no arbitrary learned compression, no uncontrolled multipath striping, no AirDrop interoperability, no chasing raw optical competitiveness, and **no learned policy with authority over trust**. Every entry but the last names the evidence that would overturn it. |
+| [ADR-028 — Swarm Delivery Structure](./ADR-028-rvqr-swarm-delivery-structure.md) | Proposed | **Agent capacity can be unlimited; shared contract ownership cannot.** One architecture coordinator, seven domains, one owner per module, unlimited workers behind the boundary. Research tournaments scored on S = 0.30 throughput + 0.20 time-to-useful-state + 0.15 energy + 0.15 recovery + 0.20 security confidence. Verification stays independent of implementation teams — the empirical case being three integration-drift incidents in this repository, all caught by verification rather than review. |
+
+### Which suite demonstrates which decision
+
+Acceptance criteria in these ADRs are meant to be *run*, not read.
+[`bench/`](../../bench/) carries the suites, and
+[docs/benchmarks.md](../benchmarks.md) reports them. Where an ADR states a
+number it cannot yet source, the suite below is where that number will come
+from.
+
+| Suite | Demonstrates |
+|---|---|
+| `loss.mjs`, `overhead.mjs` | [ADR-014](./ADR-014-rvqr-fountain-selection.md) — reception overhead and slots under loss |
+| `payloads.mjs`, `qrcost.mjs` | [ADR-001](./ADR-001-rvqr-optical-transport.md), [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) — real payload rates, encode/decode cost and the blur cliff |
+| `delta.mjs` | [ADR-013](./ADR-013-rvqr-byte-minimisation.md) — delta against codec on a recurring-delivery corpus |
+| `proto.mjs` | [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md) — v1 against v2 at matched QR versions |
+| `compress.mjs` | [ADR-003](./ADR-003-rvqr-adaptive-compression.md) — the 8% whole-envelope threshold |
+| `objective.mjs` | [ADR-015](./ADR-015-rvqr-adaptive-control.md) — G = R × C × E × P, reported term by term |
+| `fleet.mjs` | [ADR-024](./ADR-024-rvqr-fleet-swarm.md) — source traffic for N receivers |
+| `closures.mjs` | [ADR-022](./ADR-022-rvqr-progressive-activation.md) — time to first trusted closure |
+| `memory.mjs` | [ADR-025](./ADR-025-rvqr-zero-copy-pipeline.md) — working memory and payload copies |
+
+**No suite covers optics, radios or acoustics**, and none can — see
+[ADR-018](./ADR-018-rvqr-device-physics.md) and
+[ADR-010](./ADR-010-rvqr-acceptance-bar.md). Everything above is an engineering
+baseline; the bars in ADR-010 are what turn one into a result.
 
 ## Mirrored: wire format and contract
 

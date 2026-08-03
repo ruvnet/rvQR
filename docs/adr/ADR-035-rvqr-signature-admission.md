@@ -1,4 +1,4 @@
-# ADR-009: A Pinned Fingerprint Is Enforced at the Vault Write
+# ADR-035: A Pinned Fingerprint Is Enforced at the Vault Write
 
 | Field | Value |
 |---|---|

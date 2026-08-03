@@ -275,6 +275,14 @@ export function runProtoDensity({
           cell.modes[mode] = { fits: false };
           continue;
         }
+        // If the artifact is smaller than the chunk the search settled on, the
+        // frame is short because the payload ran out, not because the framing
+        // is efficient, and every percentage below would be wrong. Refuse the
+        // cell rather than report it.
+        if (m.chunk >= bytes.length) {
+          cell.modes[mode] = { fits: false, reason: 'payload smaller than the chunk under test' };
+          continue;
+        }
         const confirmed = confirmVersion(P, mode, m.sampleFrame, ecl);
         cell.modes[mode] = {
           fits: true,
@@ -384,17 +392,22 @@ export function runV1FrameSpread({ payloads, chunk = 512 } = {}) {
     rows: payloads.map((p) => {
       const built = core.buildFrames(p.bytes, { chunk, name: p.name, transferId: 'aaaaaaaa' });
       const sizes = built.frames.slice(1).map((f) => Buffer.byteLength(f, 'utf8'));
+      // The last data frame carries the remainder, not a whole chunk, so its
+      // envelope percentage is a different quantity and would drag the range
+      // into nonsense. It stays in the histogram and out of the percentages.
+      const full = sizes.length > 1 ? sizes.slice(0, -1) : sizes;
       const counts = new Map();
       for (const s of sizes) counts.set(s, (counts.get(s) || 0) + 1);
       return {
         payload: p.name,
         payloadBytes: p.bytes.length,
         dataFrames: sizes.length,
-        min: Math.min(...sizes),
-        max: Math.max(...sizes),
+        min: Math.min(...full),
+        max: Math.max(...full),
+        tailFrameBytes: sizes.length > 1 ? sizes[sizes.length - 1] : null,
         histogram: [...counts.entries()].sort((a, b) => a[0] - b[0]),
-        minOverheadPct: (Math.min(...sizes) - chunk) / chunk,
-        maxOverheadPct: (Math.max(...sizes) - chunk) / chunk
+        minOverheadPct: (Math.min(...full) - chunk) / chunk,
+        maxOverheadPct: (Math.max(...full) - chunk) / chunk
       };
     })
   };

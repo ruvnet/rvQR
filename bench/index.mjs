@@ -8,6 +8,9 @@
  *   node bench/index.mjs --seed 12345    a different (still fixed) seed
  *   node bench/index.mjs --json out.json also write the raw results
  *
+ * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
+ *         fleet, closures, memory.
+ *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
  * on the same machine produce the same numbers; two runs on different machines
@@ -27,6 +30,17 @@ import { runPayloadSuite, projectTransfer } from './suites/payloads.mjs';
 import { runDeltaSuite, projectLargeContainer } from './suites/delta.mjs';
 import { runQrCostSuite, runVersionSweep, runDecodeVersionSweep, loadDecoder } from './suites/qrcost.mjs';
 import { runOverheadSuite, runSymbolSizeSweep } from './suites/overhead.mjs';
+import { runProtoDensity, runProtoAtAppRates, runV1FrameSpread, loadProto2 } from './suites/proto.mjs';
+import {
+  loadCorpus,
+  runCompressionSuite,
+  runBreakEvenSweep,
+  ENVELOPE_GAIN_GATE
+} from './suites/compress.mjs';
+import { runObjectiveSuite, indexedPenalty, P_SWEEP } from './suites/objective.mjs';
+import { runFleetSuite, runFleetScaleCheck } from './suites/fleet.mjs';
+import { runClosureSuite, closureProfiles, FIRST_CLOSURE_TARGET_SECONDS } from './suites/closures.mjs';
+import { runMemorySuite } from './suites/memory.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -498,6 +512,427 @@ function printDecodeVersionSweep(res) {
   say('');
 }
 
+// --- Printers for the protocol, compression, objective, fleet, closure and
+// --- memory suites -----------------------------------------------------------
+
+function kb(bytes, digits = 2) {
+  return `${fmt(bytes / 1024, digits)} KB`;
+}
+
+function printProtoDensity(res) {
+  say('### Protocol v1 against protocol v2, at matched QR versions');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    `Payload ${res.payload} (${res.payloadBytes} B). v2 header ${res.headerBytes} B, manifest body ` +
+      `${res.manifestFixedBytes} B plus the name. v1 chunk ceiling ${res.v1MaxChunk} B ` +
+      `(\`core.MAX_CHUNK\`), v2 payload ceiling ${res.v2MaxPayload} B (\`MAX_PAYLOAD_BYTES\`). ` +
+      `Armour length arithmetic checked against \`toTransport\`: ${res.armourLengthExact ? 'exact' : 'MISMATCH'}.`
+  );
+  say('');
+
+  const rows = [];
+  for (const cell of res.rows) {
+    for (const mode of ['v1-json', 'v2-binary', 'v2-armoured']) {
+      const m = cell.modes[mode];
+      if (!m || !m.fits) {
+        rows.push([
+          `${cell.version}-${cell.ecl}`,
+          String(cell.capacity),
+          mode,
+          m && m.reason ? m.reason : 'does not fit',
+          '—', '—', '—', '—', '—'
+        ]);
+        continue;
+      }
+      rows.push([
+        `${cell.version}-${cell.ecl}`,
+        String(cell.capacity),
+        mode,
+        `${m.chunk} B${m.clampedByProtocol ? ' (capped)' : ''}`,
+        `${m.frameBytes} B`,
+        fmt(m.overheadPct * 100, 1) + '%',
+        m.gainOverV1 ? fmt(m.gainOverV1, 3) + '×' : '1.000×',
+        m.versionConfirmed ? 'yes' : `NO (${m.encodedVersion})`,
+        m.roundTrip.ok ? 'yes' : `NO (${m.roundTrip.stage})`
+      ]);
+    }
+  }
+  say(
+    markdownTable(
+      ['QR ver-ECC', 'capacity', 'framing', 'max payload', 'frame bytes', 'envelope', 'vs v1', 'version confirmed', 'round trip'],
+      rows
+    )
+  );
+  say('');
+  say(
+    '"Max payload" is the largest chunk whose every frame still fits the version, found by binary ' +
+      'search over frames the real builders produced and confirmed by encoding one and reading back ' +
+      'its version. "Round trip" encodes that frame and decodes it with `artifacts/vendor/qrdecode.js`: ' +
+      'a NO means the density in that row cannot currently be used, only quoted.'
+  );
+  say('');
+}
+
+function printProtoAtAppRates(res) {
+  if (!res.available) return;
+  say('**The same three framings at the app\'s own operating points:**');
+  say('');
+  say(
+    markdownTable(
+      ['payload', 'chunk', 'fps', 'framing', 'frame bytes', 'envelope', 'QR ver', 'frames', 'wire bytes', 'wire eff.', 'seconds', 'goodput'],
+      res.rows.map((r) => [
+        r.payload,
+        `${r.chunk} B`,
+        String(r.fps),
+        r.mode,
+        `${r.frameBytes} B`,
+        fmt(r.overheadPct * 100, 1) + '%',
+        r.qrVersion === null ? 'over 40' : String(r.qrVersion),
+        String(r.frames),
+        String(r.totalWireBytes),
+        fmt(r.wireEfficiency * 100, 1) + '%',
+        fmt(r.seconds, 1),
+        `${fmt(r.goodputBytesPerSec / 1024, 2)} KB/s`
+      ])
+    )
+  );
+  say('');
+}
+
+function printV1FrameSpread(res) {
+  say(`**v1's frame size is not a constant** — \`i\` and \`n\` are decimal, so a frame gains a byte at each power of ten (${res.chunk} B chunk):`);
+  say('');
+  say(
+    markdownTable(
+      ['payload', 'data frames', 'smallest frame', 'largest frame', 'envelope range', 'distribution'],
+      res.rows.map((r) => [
+        r.payload,
+        String(r.dataFrames),
+        `${r.min} B`,
+        `${r.max} B`,
+        `${fmt(r.minOverheadPct * 100, 1)}%–${fmt(r.maxOverheadPct * 100, 1)}%`,
+        r.histogram.map(([size, count]) => `${size}→${count}`).join(', ')
+      ])
+    )
+  );
+  say('');
+}
+
+function printCompressionSuite(res) {
+  say('### Compression, judged on the whole envelope');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    `Zstd ${res.zstdAvailable ? 'available' : 'NOT available on this Node'}. Envelope arithmetic checked ` +
+      `against the real builder: ${res.envelopeModelVerified ? 'exact' : 'MISMATCH'}. Envelope is v2 ` +
+      `armoured at ${res.chunk} B per frame, ${res.headerBytes} B of header per frame plus the manifest ` +
+      `frame. The gate is an envelope gain of ${Math.round(res.gate * 100)}%.`
+  );
+  say('');
+  for (const row of res.rows) {
+    say(
+      `**${row.name}** — ${row.bytes} B${row.synthetic ? ' (synthetic)' : ''}, ` +
+        `${row.baselineFrames} frames and ${row.baselineEnvelopeBytes} wire bytes uncompressed`
+    );
+    say('');
+    say(
+      markdownTable(
+        ['codec', 'compressed', 'ratio', 'encode', 'decode', 'frames', 'wire bytes', 'envelope gain', 'gate', 'exact?'],
+        row.cells
+          .filter((c) => c.available)
+          .map((c) => [
+            c.codec,
+            `${c.compressedBytes} B`,
+            fmt(c.ratio, 3) + '×',
+            `${fmt(c.encodeMs, 2)} ms`,
+            `${fmt(c.decodeMs, 2)} ms`,
+            String(c.envelopeFrames),
+            String(c.envelopeBytes),
+            fmt(c.envelopeGain * 100, 1) + '%',
+            c.passesGate ? 'pass' : 'FAIL',
+            c.roundTripExact ? 'yes' : 'NO'
+          ])
+      )
+    );
+    say('');
+  }
+}
+
+function printBreakEven(res) {
+  if (!res.available) return;
+  say(`**Break-even by artifact size** (${res.codec}, prefixes compressed for real at every size):`);
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'compression LOSES at or below', `reaches the ${Math.round(res.gate * 100)}% gate at`, 'ratio at 512 B', 'ratio at 4 KB'],
+      res.rows.map((r) => {
+        const at = (n) => r.points.find((p) => p.size === n);
+        const p512 = at(512);
+        const p4k = at(4096);
+        return [
+          r.name,
+          r.lossBreakEven === null ? 'never in range' : `${r.lossBreakEven} B`,
+          r.gainBreakEven === null ? 'never in range' : `${r.gainBreakEven} B`,
+          p512 ? fmt(p512.ratio, 2) + '×' : '—',
+          p4k ? fmt(p4k.ratio, 2) + '×' : '—'
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    'A prefix of a file is not a smaller file of the same kind — the first 512 bytes of a WASM module ' +
+      'are its header, which compresses differently from its code — so these are break-evens for ' +
+      'prefixes, and they bound the answer rather than being it.'
+  );
+  say('');
+}
+
+function printObjectiveSuite(res, penalty) {
+  say('### The objective function, G = R × C × E × P');
+  say('');
+  if (!res.available) {
+    say(`Not computed: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    '**R** raw optical rate (QR capacity × fps, measured capacity). **C** compression gain (measured). ' +
+      '**E** recovery efficiency: stream bytes recovered per QR byte painted, folding the envelope, ' +
+      'the fill slack and the measured reception overhead. **P** decode success probability per frame ' +
+      '— **not measurable by this harness at all**, so it is swept, and every column below with P < 1 ' +
+      'is a projection rather than a measurement. G is in artifact bytes per second.'
+  );
+  say('');
+  const ps = res.pSweep;
+  say(
+    markdownTable(
+      ['artifact', 'codec', 'framing', 'QR ver', 'fps', 'chunk', 'R', 'C', 'E', ...ps.map((p) => `G @ P=${p}${p === 1 ? '' : ' (proj.)'}`)],
+      res.rows.map((r) => [
+        r.artifact,
+        r.codec,
+        r.mode,
+        String(r.version),
+        String(r.fps),
+        `${r.chunk} B`,
+        `${fmt(r.R / 1024, 2)} KB/s`,
+        fmt(r.C, 3),
+        fmt(r.E, 4),
+        ...ps.map((p) => `${fmt(r.G[p] / 1024, 2)} KB/s`)
+      ])
+    )
+  );
+  say('');
+  if (penalty && penalty.available) {
+    say(
+      '**Where G is wrong.** G is linear in P, which is exact for a rateless code and wrong for v1\'s ' +
+        'indexed cycling. Measured slots against the 1/P scaling G assumes:'
+    );
+    say('');
+    const rates = penalty.rows[0].cells.map((c) => pctLabel(c.lossRate));
+    say(
+      markdownTable(
+        ['transport', ...rates],
+        penalty.rows.map((t) => [t.transport, ...t.cells.map((c) => fmt(c.penalty, 2) + '×')])
+      )
+    );
+    say('');
+    say(
+      'A ratio of 1.00× means G is exact for that transport at that loss rate. Anything above means G ' +
+        'overstates it, so the G columns for `v1-json` at P below 1 are optimistic by the factor shown.'
+    );
+    say('');
+  }
+}
+
+function printFleetSuite(res, scale) {
+  say('### Fleet: one screen, N receivers, content-addressed peer exchange');
+  say('');
+  say(
+    '**This is a model, not a measurement.** It captures broadcast, independent per-receiver erasure, ' +
+      'rateless coding at the measured reception overhead, and content addressing. It does not capture ' +
+      'the peer channel\'s existence, capacity, discovery or signalling cost, nor loss that is ' +
+      'correlated across receivers — which, in one room sharing one glare source and one person walking ' +
+      `past, is the assumption most likely to be wrong. Simulated at K=${res.simulatedK} symbols, ` +
+      `${res.trials} trials per cell, seed ${res.baseSeed}; ${res.symbolPayloadBytes} B payload in a ` +
+      `${res.symbolPaintedBytes} B symbol.`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['loss', 'N', 'source traffic, peer exchange', 'source traffic, broadcast only', 'naive unicast', 'peer bytes per receiver'],
+      res.rows.map((r) => [
+        pctLabel(r.lossRate),
+        String(r.N),
+        fmt(r.sourceTrafficPeer, 3) + '×',
+        fmt(r.sourceTrafficBroadcastOnly, 3) + '×',
+        `${r.naiveMultiplier}×`,
+        kb(r.peerBytesPerReceiver, 0)
+      ])
+    )
+  );
+  say('');
+  say(
+    'Multiples are of the artifact size, counted in bytes actually painted, so the QR envelope is ' +
+      `inside them: a ${res.symbolPayloadBytes} B payload in a ${res.symbolPaintedBytes} B symbol is ` +
+      `${fmt(res.symbolPaintedBytes / res.symbolPayloadBytes, 3)}× before a single frame is lost.`
+  );
+  say('');
+  const gb = (b) => `${fmt(b / 1024 ** 3, 2)} GB`;
+  say(`**Projected onto a ${gb(res.artifactBytes)} artifact** (arithmetic on the measured multipliers above):`);
+  say('');
+  say(
+    markdownTable(
+      ['loss', 'N', 'source, peer exchange', 'source, broadcast only', 'naive unicast'],
+      res.rows.map((r) => [
+        pctLabel(r.lossRate),
+        String(r.N),
+        gb(r.projectedSourceBytesPeer),
+        gb(r.projectedSourceBytesBroadcast),
+        gb(r.projectedNaiveBytes)
+      ])
+    )
+  );
+  say('');
+  if (scale && scale.available) {
+    say(
+      `**Is the multiplier flat in K?** The projection above applies a multiplier measured at ` +
+        `K=${res.simulatedK} to a K of ${res.realK.toLocaleString('en-US')}, which is only legitimate ` +
+        `if it is. Measured at N=${scale.N}, ${Math.round(scale.p * 100)}% loss:`
+    );
+    say('');
+    say(
+      markdownTable(
+        ['K', 'peer-exchange multiplier', 'broadcast-only multiplier'],
+        scale.rows.map((r) => [String(r.K), fmt(r.unionMultiplier, 4), fmt(r.broadcastMultiplier, 4)])
+      )
+    );
+    say('');
+  }
+}
+
+function printClosureSuite(res) {
+  say('### Progressive activation: time to the first trusted closure');
+  say('');
+  if (!res.available) {
+    say(`Not computed: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    '**This is a model.** Nothing in this repository signs a closure or activates one; what follows is ' +
+      'arithmetic over measured span sizes, measured artifact sizes and measured byte rates. Each ' +
+      `closure pays its own ${res.signatureBytes} B signature (Ed25519) and its own manifest frame, and ` +
+      `rounds up to whole frames. \`core.js\` declares \`SIGNATURE_SIZE = ${res.declaredSignatureSize}\`, ` +
+      'which is a truncated tag rather than any standard signature size; the larger figure is used here ' +
+      'because it is the one a real detached signature costs.'
+  );
+  say('');
+  for (const t of res.timelines) {
+    say(
+      `**${t.profile}** at ${t.transport} — first closure ${fmt(t.firstClosureSeconds, 2)} s ` +
+        `(${t.meetsTarget ? 'meets' : 'MISSES'} the ${res.target} s target), whole artifact ${fmt(t.totalSeconds, 1)} s`
+    );
+    say('');
+    say(
+      markdownTable(
+        ['closure', 'bytes', 'source', 'frames', 'cumulative', 'fps needed for 3 s'],
+        t.steps.map((s) => [
+          s.name,
+          String(s.bytes),
+          s.measured ? 'measured' : 'modelled',
+          String(s.frames),
+          `${fmt(s.cumulativeSeconds, 2)} s`,
+          fmt(s.fpsNeededForTarget, 1)
+        ])
+      )
+    );
+    say('');
+  }
+  say(`**The largest first closure that fits the ${res.target}-second target at each rate:**`);
+  say('');
+  say(
+    markdownTable(
+      ['transport', 'P', 'frames in budget', 'max first closure', 'feasible?'],
+      res.budgets.map((b) => [
+        b.transport,
+        b.projection ? `${b.successProbability} (projection)` : String(b.successProbability),
+        String(b.frameBudget),
+        `${b.bytes} B`,
+        b.feasible ? 'yes' : 'no'
+      ])
+    )
+  );
+  say('');
+}
+
+function printMemorySuite(res) {
+  say('### Working memory and payload copies');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+  say(
+    `Largest artifact in the repository: \`${res.artifact}\`, ${res.artifactBytes} B. Measured in a ` +
+      'separate process under `--expose-gc`, so the figures are the pipeline\'s and not the rest of the ' +
+      'harness\'s. "Live" is heapUsed + external after a forced collection, divided by the artifact ' +
+      'size — external is where typed-array payloads actually are, and a copy count taken from heapUsed ' +
+      'alone under-reports them by about half.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['stage', 'heap Δ', 'external Δ', 'total Δ', 'live copies', 'peak RSS', 'ms'],
+      res.stages.map((s) => [
+        s.name,
+        fmt(s.retainedHeapBytes / res.artifactBytes, 2) + '×',
+        fmt(s.retainedExternalBytes / res.artifactBytes, 2) + '×',
+        fmt(s.copies, 2) + '×',
+        fmt(s.liveCopies, 2) + '×',
+        `${fmt(s.peakRssBytes / 1024 ** 2, 1)} MiB`,
+        fmt(s.ms, 1)
+      ])
+    )
+  );
+  say('');
+  say(
+    `**Peak RSS ${fmt(res.peakRssMiB, 1)} MiB, of which ${fmt(res.peakRssAboveBaselineMiB, 1)} MiB is ` +
+      `this pipeline above an empty Node process — ${res.withinBudget ? 'inside' : 'OVER'} the ` +
+      `${res.budgetMiB} MiB budget.**`
+  );
+  say('');
+  say(
+    `**Payload copies, receiver side: v1 peaks at ${fmt(res.v1.receiverPeakCopies, 2)}×, v2 at ` +
+      `${fmt(res.v2.receiverPeakCopies, 2)}×** against a budget of fewer than two. ` +
+      `Sender side, v1 holds ${fmt(res.v1.senderCopies, 2)}× as base64url text and v2 ` +
+      `${fmt(res.v2.senderCopiesOneFrame, 2)}× with one armoured frame retained. Both transfers ` +
+      `verified byte-exact (v1 ${res.v1Verified ? 'yes' : 'NO'}, v2 ${res.v2.verified ? 'yes' : 'NO'}).`
+  );
+  say('');
+  say('**Allocation sites, read out of the source rather than inferred from the numbers:**');
+  say('');
+  say(
+    markdownTable(
+      ['stage', 'what allocates', 'expected cost'],
+      res.stages
+        .filter((s) => s.allocation)
+        .map((s) => [s.name, s.allocation.site, s.allocation.cost])
+    )
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 function main() {
@@ -666,6 +1101,126 @@ function main() {
     printQrCostSuite(results.qrCost, results.versionSweep);
     results.decodeVersionSweep = runDecodeVersionSweep({});
     printDecodeVersionSweep(results.decodeVersionSweep);
+  }
+
+  if (want('proto')) {
+    say('---');
+    say('');
+    // The density search runs to 2953 B chunks, so it needs an artifact bigger
+    // than that or a short final frame would be mistaken for an efficient one.
+    results.protoDensity = runProtoDensity({ bytes: wasm, name: 'rvf_wasm_bg.wasm' });
+    printProtoDensity(results.protoDensity);
+    results.protoAppRates = runProtoAtAppRates({
+      payloads: [
+        { bytes: rvf, name: 'ruvnet-demo.rvf' },
+        { bytes: wasm, name: 'rvf_wasm_bg.wasm' }
+      ]
+    });
+    printProtoAtAppRates(results.protoAppRates);
+    results.v1FrameSpread = runV1FrameSpread({
+      payloads: [
+        { bytes: rvf, name: 'ruvnet-demo.rvf' },
+        { bytes: wasm, name: 'rvf_wasm_bg.wasm' }
+      ]
+    });
+    printV1FrameSpread(results.v1FrameSpread);
+  }
+
+  // The compression suite's corpus and its winning codec per artifact feed the
+  // objective function, so it is computed whenever either is wanted.
+  const needCorpus = want('compress') || want('objective');
+  let corpus = null;
+  if (needCorpus) {
+    corpus = loadCorpus({ seed: args.seed });
+    results.compression = runCompressionSuite({ corpus, reps: args.quick ? 1 : 3 });
+  }
+
+  if (want('compress')) {
+    say('---');
+    say('');
+    printCompressionSuite(results.compression);
+    results.breakEven = runBreakEvenSweep({ corpus });
+    printBreakEven(results.breakEven);
+  }
+
+  if (want('objective')) {
+    say('---');
+    say('');
+    // The reception-overhead ratio is a MEASURED input, so it is taken from the
+    // overhead suite when that ran and stated as an assumption of 1.0 when it
+    // did not — never silently defaulted.
+    const overheadRatio = results.overhead?.available
+      ? 1 + results.overhead.aggregate.mean / 81
+      : 1;
+    // Three artifacts rather than the whole corpus: a small container, a
+    // medium binary and the largest real file. More rows would not add a
+    // finding, and the table is already the widest in the report.
+    const wanted = ['ruvnet-demo.rvf', 'rvf_wasm_bg.wasm', 'standalone.html'];
+    results.objective = runObjectiveSuite({
+      corpus: results.compression.rows
+        .filter((r) => wanted.some((w) => r.name.endsWith(w)))
+        .map((r) => ({ name: r.name, bytes: r.bytes, best: r.best })),
+      codingOverheadRatio: overheadRatio
+    });
+    results.objective.codingOverheadRatio = overheadRatio;
+    results.objective.codingOverheadMeasured = !!results.overhead?.available;
+    results.indexedPenalty = indexedPenalty(results.lossIid);
+    printObjectiveSuite(results.objective, results.indexedPenalty);
+  }
+
+  if (want('fleet')) {
+    say('---');
+    say('');
+    results.fleet = runFleetSuite({
+      trials: args.quick ? 4 : 12,
+      baseSeed: args.seed
+    });
+    results.fleetScale = runFleetScaleCheck({
+      trials: args.quick ? 3 : 8,
+      baseSeed: args.seed
+    });
+    printFleetSuite(results.fleet, results.fleetScale);
+  }
+
+  if (want('closures')) {
+    say('---');
+    say('');
+    let spans = [];
+    if (shippedDelta) {
+      try {
+        spans = shippedDelta.module.spanPlan(rvf);
+      } catch {
+        spans = [];
+      }
+    }
+    let appBytes = 0;
+    try {
+      appBytes = fs.statSync(path.join(REPO_ROOT, 'standalone.html')).size;
+    } catch {
+      appBytes = 0;
+    }
+    results.closures = runClosureSuite({
+      profiles: closureProfiles({
+        rvfBytes: rvf.length,
+        wasmBytes: wasm.length,
+        appBytes: appBytes || 512 * 1024,
+        rvfSpans: spans
+      }),
+      transports: [
+        { label: 'v1 JSON, 512 B @ 5 fps', chunk: 512, armour: false, fps: 5 },
+        { label: 'v2 armoured, 665 B @ 5 fps', chunk: 665, armour: true, fps: 5 },
+        { label: 'v2 armoured, 665 B @ 10 fps', chunk: 665, armour: true, fps: 10 },
+        { label: 'v2 armoured, 665 B @ 30 fps', chunk: 665, armour: true, fps: 30 }
+      ]
+    });
+    printClosureSuite(results.closures);
+  }
+
+  if (want('memory')) {
+    say('---');
+    say('');
+    results.memory = runMemorySuite({});
+    printMemorySuite(results.memory);
   }
 
   if (args.json) {

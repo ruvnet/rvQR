@@ -28,6 +28,7 @@
       };
       var mods = {};
       try { mods.fountain = require('./fountain.js'); } catch (e) { /* optional */ }
+      try { mods.proto2 = require('./proto2.js'); } catch (e) { /* optional */ }
       var results = api.runAll(core, qrlib, qrdec, mods);
       results.forEach(print);
 
@@ -1440,6 +1441,270 @@
         eccBits: (data >>> 3) & 3,
         mask: data & 7
       };
+    }
+
+    // -- frame formats -------------------------------------------------------
+    //
+    // The app can send in either of two frame formats and must receive in both.
+    // These cover the wiring itself: which format is chosen by default, whether
+    // that choice survives into the manifest, and what each receiver says when
+    // it is handed the other format. They are written against the pure helpers
+    // in core.js and the two protocol modules, not against the DOM, so a
+    // failure here points at a decision rather than at a widget.
+
+    var proto2 = mods.proto2 ||
+      (typeof window !== 'undefined' ? window.RVQRProto2 : null) || null;
+
+    test('format: the default is v1, and anything unrecognised becomes v1', function () {
+      assertEqual(core.DEFAULT_FORMAT, core.FORMAT_V1, 'DEFAULT_FORMAT');
+      assertEqual(core.FORMAT_V1, 'v1', 'FORMAT_V1');
+      assertEqual(core.FORMAT_V2, 'v2', 'FORMAT_V2');
+      var junk = [undefined, null, '', 'v3', 'V2', 0, 2, {}, ['v2']];
+      for (var i = 0; i < junk.length; i++) {
+        assertEqual(core.normalizeFormat(junk[i]), core.FORMAT_V1,
+          'normalizeFormat(' + String(junk[i]) + ')');
+      }
+      // A v2 choice is the only thing that produces v2 — it is never arrived at
+      // by accident, which is the whole point of the default.
+      assertEqual(core.normalizeFormat('v2'), core.FORMAT_V2, 'normalizeFormat("v2")');
+      return 'default v1; 9 unrecognised values all fall back to v1';
+    });
+
+    test('format: a v1 transfer names its format in the manifest, before any data frame', function () {
+      var bytes = rndBytes(1600);
+      var built = core.buildFrames(bytes, { name: 'a.bin', chunk: 512 });
+      assertEqual(core.frameFormat(built.frames[0], proto2), core.FORMAT_V1, 'manifest format');
+      // The manifest is frame 0, so a receiver knows the format from the first
+      // frame of the transfer rather than by inspecting a data frame.
+      var parsed = core.parseFrame(built.frames[0]);
+      assert(parsed.ok, 'manifest did not parse');
+      assertEqual(parsed.frame.kind, 'manifest', 'frame 0 kind');
+      assertEqual(parsed.frame.i, 0, 'manifest index');
+      assertEqual(parsed.frame.v, 1, 'declared protocol version');
+      for (var i = 1; i < built.frames.length; i++) {
+        assertEqual(core.frameFormat(built.frames[i], proto2), core.FORMAT_V1,
+          'data frame ' + i + ' format');
+      }
+      return built.frames.length + ' frames, all v1, manifest at index 0';
+    });
+
+    if (proto2) {
+      test('format: a v2 transfer names its format in the manifest, through the armour', function () {
+        var bytes = rndBytes(1600);
+        var built = proto2.buildFrames(bytes, { name: 'a.bin', chunk: 512 });
+
+        // Canonical bytes and the string the app actually puts in a symbol are
+        // both recognised. The app sends the armoured form because both QR
+        // decoders it can reach return a string and nothing else.
+        assertEqual(proto2.identify(built.frames[0]), 'v2', 'identify on raw bytes');
+        assertEqual(proto2.identify(proto2.toTransport(built.frames[0])), 'v2-armoured',
+          'identify on the armoured form');
+        assertEqual(core.frameFormat(proto2.toTransport(built.frames[0]), proto2),
+          core.FORMAT_V2, 'manifest format');
+
+        var parsed = proto2.parseFrame(proto2.toTransport(built.frames[0]));
+        assert(parsed.ok, 'manifest did not parse: ' + parsed.reason);
+        assertEqual(parsed.frame.kind, 'manifest', 'frame 0 kind');
+        assertEqual(parsed.frame.index, 0, 'manifest index');
+        assertEqual(parsed.frame.version, 2, 'declared protocol version');
+        for (var i = 1; i < built.frames.length; i++) {
+          assertEqual(core.frameFormat(proto2.toTransport(built.frames[i]), proto2),
+            core.FORMAT_V2, 'data frame ' + i + ' format');
+        }
+        return built.frames.length + ' frames, all v2, manifest at index 0';
+      });
+
+      test('format: the choice round-trips through the manifest for both formats', function () {
+        var bytes = rndBytes(2304);
+        var chosen = [core.FORMAT_V1, core.FORMAT_V2];
+        for (var i = 0; i < chosen.length; i++) {
+          var format = core.normalizeFormat(chosen[i]);
+          var manifest = format === core.FORMAT_V2
+            ? proto2.toTransport(proto2.buildFrames(bytes, { name: 'r.bin', chunk: 512 }).frames[0])
+            : core.buildFrames(bytes, { name: 'r.bin', chunk: 512 }).frames[0];
+          assertEqual(core.frameFormat(manifest, proto2), format,
+            'chose ' + format + ', manifest read back as');
+        }
+        return 'v1 and v2 each come back as themselves';
+      });
+
+      test('format: a v1 receiver fed a v2 frame names the format it got', function () {
+        var bytes = rndBytes(1200);
+        var v2 = proto2.buildFrames(bytes, { name: 'b.bin', chunk: 512 });
+        var rx = core.createReceiver();
+
+        // Canonical v2 bytes reach core.parseFrame as text starting "RVQ2",
+        // which it refuses by name rather than mis-decoding.
+        var raw = String.fromCharCode.apply(null, Array.prototype.slice.call(v2.frames[1], 0, 4));
+        var out = core.ingest(rx, raw + 'ignored');
+        assertEqual(out.accepted, false, 'a v2 frame was accepted by a v1 receiver');
+        assertEqual(out.reason, 'v2-frame', 'reason');
+        assertEqual(core.rejectedFormat(out.reason), core.FORMAT_V2, 'named format');
+
+        // Armoured, the frame no longer starts "RVQ2" — that is what the armour
+        // does — so core.parseFrame alone can only call it damage. Naming it is
+        // frameFormat's job, which is why the app routes on that first.
+        var armoured = proto2.toTransport(v2.frames[1]);
+        var blind = core.ingest(core.createReceiver(), armoured);
+        assertEqual(blind.accepted, false, 'an armoured v2 frame was accepted');
+        assertEqual(core.rejectedFormat(blind.reason), null, 'parseFrame alone should not name it');
+        assertEqual(core.frameFormat(armoured, proto2), core.FORMAT_V2, 'frameFormat names it');
+
+        var note = core.formatMismatchText(core.FORMAT_V1, core.FORMAT_V2);
+        assert(note.indexOf('v2') >= 0 && note.indexOf('v1') >= 0, 'note names both formats');
+        assert(note.indexOf('binary') >= 0, 'note says which format arrived in words');
+        return 'refused as ' + out.reason + '; armoured form named by frameFormat';
+      });
+
+      test('format: a v2 receiver fed a v1 frame names the format it got', function () {
+        var bytes = rndBytes(1200);
+        var v1 = core.buildFrames(bytes, { name: 'c.bin', chunk: 512 });
+        var rx = proto2.createReceiver();
+
+        var out = proto2.ingest(rx, v1.frames[0]);
+        assertEqual(out.accepted, false, 'a v1 frame was accepted by a v2 receiver');
+        assertEqual(out.reason, 'v1-frame', 'reason');
+        assertEqual(core.rejectedFormat(out.reason), core.FORMAT_V1, 'named format');
+        assertEqual(rx.status, 'IDLE', 'a refused frame must not start a transfer');
+
+        assertEqual(proto2.identify(v1.frames[0]), 'v1', 'identify on a v1 frame');
+        assertEqual(core.frameFormat(v1.frames[0], proto2), core.FORMAT_V1, 'frameFormat');
+
+        var note = core.formatMismatchText(core.FORMAT_V2, core.FORMAT_V1);
+        assert(note.indexOf('v1') >= 0 && note.indexOf('v2') >= 0, 'note names both formats');
+        assert(note.indexOf('JSON') >= 0, 'note says which format arrived in words');
+        return 'refused as ' + out.reason;
+      });
+
+      test('format: the mismatch note is silent when the formats agree', function () {
+        assertEqual(core.formatMismatchText(core.FORMAT_V1, core.FORMAT_V1), null, 'v1 vs v1');
+        assertEqual(core.formatMismatchText(core.FORMAT_V2, core.FORMAT_V2), null, 'v2 vs v2');
+        // Something that is neither still gets a sentence, because "not a frame
+        // at all" and "the other protocol" are different things to be told.
+        var junk = core.formatMismatchText(core.FORMAT_V1, 'unknown');
+        assert(junk && junk.indexOf('not an rvQR frame') >= 0, 'unknown input note');
+        assertEqual(core.rejectedFormat('bad-json'), null, 'an ordinary reason names no format');
+        return 'silent on agreement, explicit on anything else';
+      });
+
+      test('format: v2 frames survive the transport the app puts them on', function () {
+        // The app armours every v2 frame because both QR decoders it can reach
+        // return a string. This walks a whole transfer through that armour and
+        // out the far side, which is the path a real scan takes.
+        var bytes = rndBytes(3000);
+        var built = proto2.buildFrames(bytes, { name: 'wire.bin', chunk: 512 });
+        var rx = proto2.createReceiver();
+        var order = shuffle(built.frames.map(function (_, i) { return i; }));
+        for (var i = 0; i < order.length; i++) {
+          var text = proto2.toTransport(built.frames[order[i]]);
+          for (var c = 0; c < text.length; c++) {
+            assert(text.charCodeAt(c) <= 0x7f, 'armour emitted a non-ASCII code unit');
+          }
+          proto2.ingest(rx, text);
+        }
+        assert(proto2.isComplete(rx), 'transfer did not complete');
+        var res = proto2.finalize(rx, {});
+        assert(res.ok, 'finalize refused: ' + res.reason);
+        assert(bytesEqual(res.bytes, bytes), 'reconstructed bytes differ from the source');
+        assertEqual(res.name, 'wire.bin', 'name');
+        return built.frames.length + ' frames armoured, shuffled, and reassembled exactly';
+      });
+
+      test('format: v2 numbers its data frames the way the receive grid expects', function () {
+        // The grid is drawn from gridPlan/cellForSequence over the chunk map,
+        // and it is the same code for both formats. That only holds because a
+        // v2 indexed transfer numbers its data frames 1..total-1, manifest at
+        // 0, exactly as v1 does.
+        var bytes = rndBytes(4096);
+        var v1 = core.buildFrames(bytes, { name: 'g.bin', chunk: 512 });
+        var v2 = proto2.buildFrames(bytes, { name: 'g.bin', chunk: 512 });
+        assertEqual(v2.total, v1.total, 'frame count');
+
+        var rx = proto2.createReceiver();
+        for (var i = 0; i < v2.frames.length; i++) proto2.ingest(rx, proto2.toTransport(v2.frames[i]));
+        var plan = core.gridPlan(rx.total);
+        var seen = 0;
+        for (var key in rx.chunks) {
+          var seq = Number(key);
+          assert(seq >= 1 && seq < rx.total, 'data frame index ' + seq + ' is out of range');
+          assert(core.cellForSequence(plan, seq) >= 0, 'sequence ' + seq + ' has no grid cell');
+          seen++;
+        }
+        assertEqual(seen, rx.total - 1, 'data frames in the chunk map');
+        return rx.total + ' frames, ' + plan.cells + ' grid cells, every index placed';
+      });
+
+      if (qrdec) {
+        test('format: an armoured v2 frame survives real pixels', function () {
+          // The claim the whole v2 send path rests on: the armour is chosen so
+          // that what comes back out of a rendered symbol is the frame, byte
+          // for byte. Asserted through the real encoder and the real decoder
+          // rather than trusted, because the armour's alphabet includes every
+          // control character and a decoder that normalised even one of them
+          // would corrupt frames silently.
+          var bytes = rndBytes(2304);
+          var built = proto2.buildFrames(bytes, { name: 'pixels.bin', chunk: 512 });
+          var rx = proto2.createReceiver();
+          for (var i = 0; i < built.frames.length; i++) {
+            var text = proto2.toTransport(built.frames[i]);
+            var qr = qrlib.encodeText(text, { ecl: 'L' });
+            var got = qrdec.decode(rasterize(qr, { scale: 4 }));
+            assert(got.ok, 'frame ' + i + ' (v' + qr.version + ') not found');
+            assertEqual(got.text.length, text.length, 'frame ' + i + ' length');
+            assertEqual(got.text, text, 'frame ' + i + ' text');
+            proto2.ingest(rx, got.text);
+          }
+          var res = proto2.finalize(rx, {});
+          assert(res.ok, 'finalize refused after the pixel round trip: ' + res.reason);
+          assert(bytesEqual(res.bytes, bytes), 'bytes differ after the pixel round trip');
+          return built.total + ' armoured frames through the pixel pipeline';
+        });
+
+        test('format: the receiver tells the two formats apart from pixels', function () {
+          // Both formats rendered, decoded, and then routed by frameFormat —
+          // the same call the app makes before either parser sees a frame.
+          var bytes = rndBytes(900);
+          var v1 = core.buildFrames(bytes, { name: 'mix.bin', chunk: 512 });
+          var v2 = proto2.buildFrames(bytes, { name: 'mix.bin', chunk: 512 });
+          var cases = [
+            [core.FORMAT_V1, v1.frames[0]],
+            [core.FORMAT_V1, v1.frames[1]],
+            [core.FORMAT_V2, proto2.toTransport(v2.frames[0])],
+            [core.FORMAT_V2, proto2.toTransport(v2.frames[1])]
+          ];
+          for (var i = 0; i < cases.length; i++) {
+            var got = qrdec.decode(rasterize(qrlib.encodeText(cases[i][1], { ecl: 'L' }), { scale: 4 }));
+            assert(got.ok, 'case ' + i + ' not decoded');
+            assertEqual(core.frameFormat(got.text, proto2), cases[i][0], 'case ' + i + ' format');
+          }
+          return cases.length + ' symbols, each named correctly from its pixels';
+        });
+      }
+
+      test('format: a v2 manifest has nowhere to put a signature', function () {
+        // The app disables signing for v2 on the strength of this: the body is
+        // a fixed 47-byte record plus the name, and a body of any other length
+        // is refused. It is a property of the frozen format, not a gap in the
+        // wiring, so it is asserted rather than worked around.
+        var bytes = rndBytes(600);
+        var built = proto2.buildFrames(bytes, { name: 's.bin', chunk: 512 });
+        var parsed = proto2.parseFrame(built.frames[0]);
+        assert(parsed.ok, 'manifest did not parse');
+        assertEqual(parsed.frame.payload.length, proto2.MANIFEST_FIXED_BYTES + 's.bin'.length,
+          'manifest body length');
+        assertEqual(parsed.frame.manifest.sig, undefined, 'sig field');
+        assertEqual(parsed.frame.manifest.pub, undefined, 'pub field');
+
+        // One extra byte appended to the body is refused, so there is no slack
+        // a signature could be smuggled into.
+        var longer = Uint8Array.from(built.frames[0]);
+        var padded = new Uint8Array(longer.length + 1);
+        padded.set(longer);
+        padded[18] = (longer.length - proto2.HEADER_BYTES + 1) & 0xff;
+        var out = proto2.parseFrame(padded);
+        assertEqual(out.ok, false, 'a longer manifest body was accepted');
+        return 'body is ' + proto2.MANIFEST_FIXED_BYTES + ' bytes plus the name, exactly';
+      });
     }
 
     return results;
