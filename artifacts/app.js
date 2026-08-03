@@ -1493,7 +1493,7 @@
       renderVerification();
       return;
     }
-    Promise.resolve()
+    rx.verificationPromise = Promise.resolve()
       .then(function () {
         return lib.verifyManifest(
           { name: m.name, size: m.size, sha256: m.sha256 },
@@ -1553,11 +1553,22 @@
     if (!send.sign || !lib) return Promise.resolve(null);
     return ensureIdentity().then(function (identity) {
       if (!identity) return null;
-      return Promise.resolve(lib.signManifest(manifestFields, identity.secret))
+      // signManifest takes (privateKey, manifest) — passing them the other way
+      // round throws inside the canonicaliser, and the catch below turned that
+      // into a silent "unsigned" for every transfer.
+      return Promise.resolve(lib.signManifest(identity.secret, manifestFields))
         .then(function (sig) {
           return { sig: typeof sig === 'string' ? sig : lib.b64uEncode(sig), pub: identity.pubEncoded };
         });
-    }).catch(function () { return null; });
+    }).catch(function (err) {
+      // Signing failing is a real fault, not a reason to quietly downgrade to
+      // unsigned — say so where it can be seen, then continue unsigned so the
+      // transfer still works.
+      if (typeof console !== 'undefined' && console.warn) {
+        console.warn('rvQR: manifest signing failed, sending unsigned:', err && err.message);
+      }
+      return null;
+    });
   }
 
   // One key per browser, kept in local storage. This is a demonstration of the
@@ -1744,13 +1755,30 @@
           s.manifest.sha256.slice(0, 16) + '…, got ' + digest.slice(0, 16) + '…');
         return;
       }
-      s.status = 'VERIFIED';
-      return storeArtifact(s.manifest.name, bytes, 'received').then(function () {
+      // The hash proves the bytes; it does not prove the signer. When a
+      // fingerprint is pinned the signature verdict has to be settled and
+      // admitting BEFORE anything reaches the vault — the check runs
+      // asynchronously, so waiting on it here is what makes the pin a control
+      // rather than a label.
+      return Promise.resolve(rx.pin ? rx.verificationPromise : null)
+        .catch(function () { return null; })
+        .then(function () {
+        var verdict = core.admitArtifact(rx.pin, rx.verification);
+        if (!verdict.admit) {
+          s.status = 'REJECTED';
+          showReceiveResult(false,
+            'Refused — ' + verdict.reason +
+            ' The bytes arrived intact, but nothing was stored.');
+          return;
+        }
+        s.status = 'VERIFIED';
+        return storeArtifact(s.manifest.name, bytes, 'received').then(function () {
         stopCamera();
         showReceiveResult(true,
           'Verified and stored: ' + s.manifest.name + ' (' + core.formatBytes(bytes.length) +
           '). SHA-256 matches the manifest. Nothing was executed.');
         renderVault();
+        });
       });
     }).catch(function (err) {
       showReceiveResult(false, 'Failed to store: ' + err.message);

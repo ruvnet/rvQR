@@ -639,6 +639,49 @@
    * Names arrive from unauthenticated frames, so this runs on receive as well
    * as on import.
    */
+
+  // --- Admission control -----------------------------------------------------
+  // Whether a verified-by-hash artifact may actually be written to the vault.
+  //
+  // Hash verification proves the bytes are the bytes the manifest described. It
+  // says nothing about WHO described them. When the operator has pinned a
+  // fingerprint they have stated which signer they will accept, and the UI
+  // promises a transfer signed by any other key is refused — so that promise
+  // has to be enforced at the point of storage, not merely rendered as a
+  // badge. A pin that only colours a label is worse than no pin, because it
+  // reads as a control while admitting exactly what it claims to stop.
+  //
+  // `verification` is the verdict object the signature check produces, or null
+  // while it is still outstanding. Returns { admit, code, reason }.
+  function admitArtifact(pin, verification) {
+    // No pin: the operator has not named a signer, so integrity is the whole
+    // contract and the surrounding UI is responsible for saying so.
+    if (!pin) return { admit: true, code: 'no-pin', reason: 'No fingerprint pinned; stored on hash alone.' };
+
+    // A pin is set but the verdict has not landed. Never admit on a pending
+    // check — that is the race this function exists to close.
+    if (!verification || !verification.state) {
+      return { admit: false, code: 'pending', reason: 'Signature check has not completed yet.' };
+    }
+
+    switch (verification.state) {
+      case 'pinned':
+        return { admit: true, code: 'pinned', reason: 'Signed by the pinned fingerprint.' };
+      case 'wrong-key':
+        return { admit: false, code: 'wrong-key', reason: 'Signed by a different key than the one pinned.' };
+      case 'bad':
+        return { admit: false, code: 'bad-signature', reason: 'The signature did not verify.' };
+      case 'unsigned':
+        return { admit: false, code: 'unsigned', reason: 'A fingerprint is pinned, but this transfer is unsigned.' };
+      case 'signed':
+        return { admit: false, code: 'unpinned-key', reason: 'Signed, but not by the pinned fingerprint.' };
+      default:
+        // An unrecognised verdict fails closed on purpose: a future state must
+        // not become an accidental bypass.
+        return { admit: false, code: 'unknown-verdict', reason: 'Unrecognised verification state: ' + verification.state };
+    }
+  }
+
   function sanitizeName(name, maxLength) {
     var limit = maxLength || SAFE_NAME_LENGTH;
     var out = String(name === undefined || name === null ? '' : name)
@@ -1170,6 +1213,7 @@
     gridPlan: gridPlan,
     cellForSequence: cellForSequence,
     sanitizeName: sanitizeName,
+    admitArtifact: admitArtifact,
     shouldAdoptNewTransfer: shouldAdoptNewTransfer,
     b64uEncode: b64uEncode,
     b64uDecode: b64uDecode,

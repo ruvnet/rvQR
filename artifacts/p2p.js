@@ -53,6 +53,17 @@
  *     against a decompression bomb, and the reconstructed SDP is validated
  *     line-by-line against a whitelist before it is ever handed to
  *     setRemoteDescription. See parseOfferPayload().
+ *   - A CORRUPTED offer payload — a QR read wrong, not an attacker. Defended,
+ *     and separately from the above: the payload carries a four-byte SHA-256
+ *     tag over the SDP it decodes to, checked on parse. This matters because
+ *     the profile codec is tokenised, so a payload can arrive damaged, decode
+ *     without error to a DIFFERENT valid SDP — another port, another address,
+ *     one byte of a fingerprint — and pass the whitelist, which asks whether
+ *     the text is well-formed and not whether it is the text that was sent.
+ *     The tag is what closes that gap. It detects corruption; it authenticates
+ *     nothing, because it is an unkeyed hash travelling inside the payload it
+ *     covers and anyone substituting an offer just recomputes it. See the
+ *     payload envelope section below.
  *
  * If you supply iceServers you have opted into contacting a third party, and
  * the LAN-only property goes with it. That is why the default is an empty
@@ -983,14 +994,58 @@
   // ===========================================================================
   // Payload envelope
   // ===========================================================================
+  //
+  //   0      codec
+  //   1..4   integrity tag: the first 4 bytes of SHA-256 over the SDP this
+  //          payload decodes to
+  //   5..    codec body
+  //
+  // WHY THE TAG IS THERE, AND WHAT IT IS NOT.
+  //
+  // The profile codec is a tokenised encoding: 549 bytes of SDP become 156
+  // bytes of fields, and not every bit of those 156 is load-bearing. Without a
+  // check over the result, a payload that arrived slightly wrong could decode
+  // to a slightly wrong SDP — a different port, a different address, one byte
+  // of a fingerprint — and every later stage would accept it, because the
+  // whitelist in validateSdp asks whether the text is well-formed, not whether
+  // it is the text that was sent. The payload comes off a camera pointed at a
+  // screen, through a decoder that is doing error correction over blurry
+  // pixels. Bits arriving wrong is the normal case, not the exotic one.
+  //
+  // So: the tag DETECTS CORRUPTION. Four bytes puts a corrupted payload's
+  // chance of decoding to a wrong-but-accepted SDP at about 1 in 4 billion,
+  // which is the same order as the QR code's own CRC and far below the rate at
+  // which anything else here fails.
+  //
+  // The tag DOES NOT AUTHENTICATE. It is an unkeyed hash carried in the same
+  // payload it covers, so anyone who substitutes an offer simply computes a new
+  // one. That is not a weakness this tag was meant to close and it does not
+  // close it — substitution and relay are the documented, undefended cases at
+  // the top of this file, and the human aiming the camera is still the only
+  // authentication in the system.
+  //
+  // The prefix is RVQP2 because RVQP1 payloads have no tag and there is no
+  // sound way to tell one apart from a tagged payload whose first four body
+  // bytes happen to look like a digest. An old payload is refused outright
+  // rather than parsed under a guess.
 
   var CODEC_RAW = 0;
   var CODEC_DEFLATE = 1;
   var CODEC_PROFILE = 2;
   var CODEC_NAMES = ['raw', 'deflate', 'profile'];
 
-  var PAYLOAD_PREFIX = 'RVQP1:';
+  var PAYLOAD_PREFIX = 'RVQP2:';
   var CHUNK_PREFIX = 'RVQPC1:';
+
+  // Four bytes costs six base64url characters — the offer below goes from 214
+  // to 220 characters, which is still inside a version 9 symbol's 230-byte
+  // capacity, so the tag is free in the only unit that matters here.
+  var PAYLOAD_TAG_BYTES = 4;
+
+  /** The tag for an SDP: the leading bytes of SHA-256 over its ASCII. */
+  function sdpTag(sdp) {
+    return core.sha256Bytes(asciiBytes(sdp)).subarray(0, PAYLOAD_TAG_BYTES);
+  }
 
   /**
    * Compresses an SDP to a QR payload.
@@ -1010,17 +1065,21 @@
     var minified = opts.minify === false ? sdp : minifySdp(sdp, opts);
     var text = asciiBytes(minified);
     var sizes = {};
+    // Every codec pays the same envelope — one codec byte plus the tag — so
+    // reporting it here keeps `sizes` comparable with `bytes` below and leaves
+    // the choice between codecs exactly where it was.
+    var envelope = 1 + PAYLOAD_TAG_BYTES;
 
     var candidates = [];
 
     // raw
-    sizes.raw = text.length + 1;
+    sizes.raw = text.length + envelope;
     candidates.push({ codec: CODEC_RAW, body: text, canonical: minified });
 
     // deflate
     try {
       var deflated = deflateRaw(text);
-      sizes.deflate = deflated.length + 1;
+      sizes.deflate = deflated.length + envelope;
       if (bytesEqual(inflateRaw(deflated, MAX_SDP_BYTES), text)) {
         candidates.push({ codec: CODEC_DEFLATE, body: deflated, canonical: minified });
       }
@@ -1033,7 +1092,7 @@
         if (p) {
           var body = encodeProfile(p);
           var regenerated = writeProfileSdp(decodeProfile(body));
-          sizes.profile = body.length + 1;
+          sizes.profile = body.length + envelope;
           candidates.push({ codec: CODEC_PROFILE, body: body, canonical: regenerated });
         } else {
           sizes.profile = null;
@@ -1056,9 +1115,13 @@
     }
     if (!best) fail('no-codec', 'no codec could encode this SDP');
 
-    var payloadBytes = new Uint8Array(best.body.length + 1);
+    // The tag covers `canonical` — the text parseOfferPayload will hand back —
+    // rather than the input or the codec body, so the same four bytes check the
+    // same thing whichever codec won.
+    var payloadBytes = new Uint8Array(1 + PAYLOAD_TAG_BYTES + best.body.length);
     payloadBytes[0] = best.codec;
-    payloadBytes.set(best.body, 1);
+    payloadBytes.set(sdpTag(best.canonical), 1);
+    payloadBytes.set(best.body, 1 + PAYLOAD_TAG_BYTES);
     var payload = PAYLOAD_PREFIX + core.b64uEncode(payloadBytes);
 
     return {
@@ -1091,9 +1154,10 @@
       } catch (e) {
         return { ok: false, reason: 'bad-base64url' };
       }
-      if (bytes.length < 2) return { ok: false, reason: 'payload-too-short' };
+      if (bytes.length < 2 + PAYLOAD_TAG_BYTES) return { ok: false, reason: 'payload-too-short' };
       var codec = bytes[0];
-      var body = bytes.subarray(1);
+      var tag = bytes.subarray(1, 1 + PAYLOAD_TAG_BYTES);
+      var body = bytes.subarray(1 + PAYLOAD_TAG_BYTES);
       var sdp;
       if (codec === CODEC_RAW) {
         if (body.length > MAX_SDP_BYTES) return { ok: false, reason: 'sdp-too-large' };
@@ -1105,6 +1169,10 @@
       } else {
         return { ok: false, reason: 'unknown-codec' };
       }
+      // Integrity before semantics: a payload that did not arrive intact is
+      // refused whether or not the damage happens to leave a well-formed SDP
+      // behind, which is the case validateSdp on its own cannot see.
+      if (!bytesEqual(sdpTag(sdp), tag)) return { ok: false, reason: 'tag-mismatch' };
       var check = validateSdp(sdp);
       if (!check.ok) return { ok: false, reason: check.reason, detail: check.detail };
       return { ok: true, sdp: sdp, codec: CODEC_NAMES[codec] };
@@ -1679,6 +1747,9 @@
     DEFAULT_LOW_THRESHOLD: DEFAULT_LOW_THRESHOLD,
     CHANNEL_LABEL: CHANNEL_LABEL,
     CODEC_NAMES: CODEC_NAMES,
+    PAYLOAD_PREFIX: PAYLOAD_PREFIX,
+    PAYLOAD_TAG_BYTES: PAYLOAD_TAG_BYTES,
+    sdpTag: sdpTag,
     P2PError: P2PError,
 
     deflateRaw: deflateRaw,

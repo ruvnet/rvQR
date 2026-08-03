@@ -1064,6 +1064,52 @@
       return landedSeen + ' landings, filled and looped';
     });
 
+    // -- admission control ---------------------------------------------------
+
+    test('a pinned fingerprint gates the vault write, not just the badge', function () {
+      // The release-blocking case: a valid signature from the WRONG key must
+      // never reach storage when a pin is configured.
+      var refused = core.admitArtifact('21fe-31df-a154-a261', { state: 'wrong-key' });
+      assert(!refused.admit, 'a wrong-key transfer must be refused: ' + refused.code);
+      assert(refused.code === 'wrong-key', 'code should name the cause, got ' + refused.code);
+
+      var ok = core.admitArtifact('21fe-31df-a154-a261', { state: 'pinned' });
+      assert(ok.admit, 'the pinned key must be admitted');
+      return 'wrong-key refused, pinned admitted';
+    });
+
+    test('a pending signature check never admits', function () {
+      // The actual bug: verification is asynchronous, so an artifact could be
+      // stored while the verdict was still outstanding.
+      var pending = core.admitArtifact('21fe-31df-a154-a261', null);
+      assert(!pending.admit, 'a null verdict must not admit');
+      assert(pending.code === 'pending', 'got ' + pending.code);
+      var half = core.admitArtifact('21fe-31df-a154-a261', {});
+      assert(!half.admit, 'a verdict with no state must not admit');
+      return 'both pending shapes refused';
+    });
+
+    test('every non-pinned verdict is refused while a pin is set', function () {
+      var states = ['unsigned', 'signed', 'bad', 'wrong-key', 'something-new'];
+      var admitted = states.filter(function (st) {
+        return core.admitArtifact('aa-bb-cc-dd', { state: st }).admit;
+      });
+      assert(admitted.length === 0, 'these should not admit: ' + admitted.join(', '));
+      // An unknown future verdict must fail closed rather than fall through.
+      assert(
+        core.admitArtifact('aa-bb-cc-dd', { state: 'something-new' }).code === 'unknown-verdict',
+        'an unrecognised verdict should be named as such'
+      );
+      return states.length + ' verdicts refused, unknown fails closed';
+    });
+
+    test('with no pin the operator has named no signer, so hash alone stores', function () {
+      var r = core.admitArtifact(null, { state: 'unsigned' });
+      assert(r.admit, 'no pin means integrity is the whole contract');
+      assert(r.code === 'no-pin', 'got ' + r.code);
+      return 'unpinned path unchanged';
+    });
+
     // -- first-run state -----------------------------------------------------
 
     test('welcome: shows on every load until explicitly silenced', function () {

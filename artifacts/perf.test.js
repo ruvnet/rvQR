@@ -233,6 +233,10 @@ function copyImage(img) {
   return { width: img.width, height: img.height, data: new Uint8Array(img.data) };
 }
 
+// The payload prefix comes from the module rather than a literal here, so a
+// format bump shows up as one failing assertion below instead of forty.
+var PFX = p2p.PAYLOAD_PREFIX;
+
 /**
  * A data-channel offer of the shape Chrome emits: two host candidates, a
  * SHA-256 certificate fingerprint, ICE credentials, no media sections.
@@ -926,7 +930,7 @@ function registerP2PTests(ctx) {
   test('payloadQr agrees with the encoder across the whole capacity range', function () {
     var checked = [];
     [10, 100, 214, 230, 231, 500, 1000, 2953].forEach(function (n) {
-      var payload = 'RVQP1:' + 'A'.repeat(n - 6);
+      var payload = PFX + 'A'.repeat(n - 6);
       var qr = p2p.payloadQr(payload);
       var encoded = qrlib.encodeText(payload, { ecl: 'L' });
       assertEqual(qr.chunks, 1, n + ' chars should be one symbol');
@@ -937,7 +941,7 @@ function registerP2PTests(ctx) {
   });
 
   test('an oversized payload becomes chunks that each fit a version 40 symbol', function () {
-    var payload = 'RVQP1:' + 'B'.repeat(9000);
+    var payload = PFX + 'B'.repeat(9000);
     var qr = p2p.payloadQr(payload);
     assert(qr.chunks > 1, 'expected several symbols, got ' + qr.chunks);
     assertEqual(qr.version, 40, 'chunked carriers use version 40');
@@ -967,7 +971,7 @@ function registerP2PTests(ctx) {
   });
 
   test('a broken chunk set is refused rather than best-effort joined', function () {
-    var chunks = p2p.chunkPayload('RVQP1:' + 'C'.repeat(400), 96);
+    var chunks = p2p.chunkPayload(PFX + 'C'.repeat(400), 96);
     assert(chunks.length >= 4, 'fixture needs several chunks, got ' + chunks.length);
     assertThrows('missing-chunk', function () {
       p2p.joinChunks(chunks.slice(0, chunks.length - 1));
@@ -989,29 +993,36 @@ function registerP2PTests(ctx) {
 
   test('hostile offer payloads are rejected as values, never as exceptions', function () {
     var goodPayload = p2p.compressSdp(OFFER_SDP).payload;
-    var goodBytes = core.b64uDecode(goodPayload.slice('RVQP1:'.length));
 
-    function wrap(bytes) { return 'RVQP1:' + core.b64uEncode(bytes); }
+    /**
+     * Builds [codec][tag][body]. `tagFor` is the SDP the payload is supposed to
+     * decode to; passing the right one matters, because the tag is checked
+     * before the whitelist and a wrong tag would short-circuit every case below
+     * into 'tag-mismatch' and quietly stop testing what it was written to test.
+     * Cases that fail before the tag check (a bad codec, a broken DEFLATE
+     * stream) pass null.
+     */
+    function envelope(codec, body, tagFor) {
+      var out = new Uint8Array(1 + p2p.PAYLOAD_TAG_BYTES + body.length);
+      out[0] = codec;
+      if (tagFor) out.set(p2p.sdpTag(tagFor), 1);
+      out.set(body, 1 + p2p.PAYLOAD_TAG_BYTES);
+      return PFX + core.b64uEncode(out);
+    }
+    function ascii(text) { return Uint8Array.from(Buffer.from(text, 'ascii')); }
 
     // A DEFLATE stream that expands to far more than MAX_SDP_BYTES.
     var bomb = p2p.deflateRaw(new Uint8Array(256 * 1024));
-    var bombPayload = new Uint8Array(bomb.length + 1);
-    bombPayload[0] = 1;
-    bombPayload.set(bomb, 1);
 
     // A well-formed DEFLATE stream with its tail cut off.
-    var whole = p2p.deflateRaw(Uint8Array.from(Buffer.from(p2p.minifySdp(OFFER_SDP), 'ascii')));
-    var cut = new Uint8Array(whole.length - 4);
-    cut.set(whole.subarray(0, whole.length - 5), 1);
-    cut[0] = 1;
+    var whole = p2p.deflateRaw(ascii(p2p.minifySdp(OFFER_SDP)));
+    var cut = whole.subarray(0, whole.length - 5);
 
-    // A valid SDP through the raw codec, but for a session type this module
-    // refuses to hand to setRemoteDescription.
+    // A valid, intact SDP — correct tag and all — for a session type this
+    // module refuses to hand to setRemoteDescription.
     var withVideo = p2p.minifySdp(OFFER_SDP).replace('a=setup:actpass',
       'a=setup:actpass\r\nm=video 9 UDP/TLS/RTP/SAVPF 96');
-    var videoBytes = Uint8Array.from(Buffer.from(withVideo, 'ascii'));
-    var videoPayload = new Uint8Array(videoBytes.length + 1);
-    videoPayload.set(videoBytes, 1);
+    var httpRequest = 'GET / HTTP/1.1\r\nHost: x\r\n';
 
     var cases = [
       ['null', null, 'not-a-payload'],
@@ -1021,27 +1032,34 @@ function registerP2PTests(ctx) {
       ['an array', [1, 2, 3], 'not-a-payload'],
       ['empty string', '', 'not-a-payload'],
       ['plain text', 'scan me', 'not-a-payload'],
-      ['wrong magic', 'RVQP2:' + goodPayload.slice(6), 'not-a-payload'],
+      ['a future prefix', 'RVQP9:' + goodPayload.slice(PFX.length), 'not-a-payload'],
+      ['the retired RVQP1 prefix', 'RVQP1:' + goodPayload.slice(PFX.length), 'not-a-payload'],
       ['delta.js magic', 'RVQPC1:aaaaaaaa:0/1:x', 'not-a-payload'],
-      ['prefix only', 'RVQP1:', 'payload-too-short'],
-      ['one byte body', 'RVQP1:' + core.b64uEncode(new Uint8Array([0])), 'payload-too-short'],
-      ['non-base64url', 'RVQP1:not/valid+base64url!!', 'bad-base64url'],
-      ['unicode body', 'RVQP1:éééé', 'bad-base64url'],
-      ['over MAX_PAYLOAD_CHARS', 'RVQP1:' + 'A'.repeat(p2p.MAX_PAYLOAD_CHARS), 'payload-too-large'],
-      ['unknown codec', wrap(new Uint8Array([9, 1, 2, 3, 4])), 'unknown-codec'],
-      ['codec 255', wrap(new Uint8Array([255, 1, 2, 3, 4])), 'unknown-codec'],
-      ['truncated deflate', wrap(cut), 'bad-deflate'],
-      ['deflate bomb', wrap(bombPayload), 'inflate-too-large'],
-      ['garbage deflate', wrap(new Uint8Array([1, 0xff, 0xff, 0xff, 0xff, 0xff])), 'bad-deflate'],
-      ['truncated profile', wrap(new Uint8Array([2, 1, 2, 3])), 'bad-payload'],
-      ['garbage profile', wrap(new Uint8Array([2].concat(Array.from(rndBytes(64))))), 'bad-payload'],
-      ['raw non-SDP text', wrap(Uint8Array.from([0].concat(Array.from(
-        Buffer.from('GET / HTTP/1.1\r\nHost: x\r\n', 'ascii'))))), 'unknown-line'],
-      ['raw with NUL bytes', wrap(new Uint8Array([0, 118, 61, 48, 0, 13, 10])), 'bad-payload'],
-      ['raw empty SDP', wrap(new Uint8Array([0, 13])), 'non-printable-sdp'],
-      ['a smuggled video section', wrap(videoPayload), 'unexpected-media-section'],
+      ['prefix only', PFX, 'payload-too-short'],
+      ['one byte body', PFX + core.b64uEncode(new Uint8Array([0])), 'payload-too-short'],
+      ['a codec byte and a tag but no body',
+        PFX + core.b64uEncode(new Uint8Array(1 + p2p.PAYLOAD_TAG_BYTES)), 'payload-too-short'],
+      ['non-base64url', PFX + 'not/valid+base64url!!', 'bad-base64url'],
+      ['unicode body', PFX + 'éééé', 'bad-base64url'],
+      ['over MAX_PAYLOAD_CHARS', PFX + 'A'.repeat(p2p.MAX_PAYLOAD_CHARS), 'payload-too-large'],
+      ['unknown codec', envelope(9, new Uint8Array([1, 2, 3]), null), 'unknown-codec'],
+      ['codec 255', envelope(255, new Uint8Array([1, 2, 3]), null), 'unknown-codec'],
+      ['truncated deflate', envelope(1, cut, null), 'bad-deflate'],
+      ['deflate bomb', envelope(1, bomb, null), 'inflate-too-large'],
+      ['garbage deflate', envelope(1, new Uint8Array([0xff, 0xff, 0xff, 0xff, 0xff]), null),
+        'bad-deflate'],
+      ['truncated profile', envelope(2, new Uint8Array([1, 2, 3]), null), 'bad-payload'],
+      ['garbage profile', envelope(2, rndBytes(64), null), 'bad-payload'],
+      ['raw non-SDP text, correctly tagged',
+        envelope(0, ascii(httpRequest), httpRequest), 'unknown-line'],
+      ['raw with NUL bytes', envelope(0, new Uint8Array([118, 61, 48, 0, 13, 10]), null),
+        'bad-payload'],
+      ['raw bare CR, correctly tagged', envelope(0, new Uint8Array([13]), '\r'),
+        'non-printable-sdp'],
+      ['a smuggled video section, correctly tagged',
+        envelope(0, ascii(withVideo), withVideo), 'unexpected-media-section'],
       ['a truncated good payload', goodPayload.slice(0, goodPayload.length - 20), null],
-      ['a good payload with its first byte cut', 'RVQP1:' + goodPayload.slice(7), null]
+      ['a good payload with its first byte cut', PFX + goodPayload.slice(7), null]
     ];
 
     var reasons = [];
@@ -1067,45 +1085,108 @@ function registerP2PTests(ctx) {
       Object.keys(reasons.reduce(function (m, r) { m[r] = 1; return m; }, {})).join(',');
   });
 
-  test('a corrupted payload never decodes back to the original offer', function () {
-    // The honest property. A single flipped bit inside a *profile* payload
-    // often still decodes — the codec's fields are opaque values, an ICE
-    // password or an address, and there is nothing in the format that could
-    // tell a corrupted one from a legitimate one. That is exactly the trust
-    // model p2p.js documents: an offer QR is unauthenticated and what you
-    // scanned is what you get. What must never happen is a corruption that
-    // silently reconstructs the ORIGINAL offer, because then a peer would
-    // connect believing it verified something it did not.
+  test('every single-bit corruption of an offer payload is rejected', function () {
+    // Exhaustive: every bit of every byte, one at a time. Before the integrity
+    // tag existed most of these decoded without complaint, because the profile
+    // codec is tokenised and the whitelist asks whether an SDP is well-formed,
+    // not whether it is the one that was sent. A corrupted payload that decodes
+    // to a DIFFERENT valid offer is the failure that matters — a peer would
+    // connect to the wrong port or the wrong address believing it had read the
+    // code correctly — and it is the failure this sweep is here to catch.
     var good = p2p.compressSdp(OFFER_SDP);
-    var goodBytes = core.b64uDecode(good.payload.slice('RVQP1:'.length));
+    var goodBytes = core.b64uDecode(good.payload.slice(PFX.length));
     var wantSha = shaText(good.canonical);
-    var accepted = 0, rejected = 0;
+    var rejected = 0, byTag = 0, byStructure = {};
+    var survivors = [];
     for (var i = 0; i < goodBytes.length; i++) {
-      for (var bit = 0; bit < 8; bit += 3) {
+      for (var bit = 0; bit < 8; bit++) {
         var b = new Uint8Array(goodBytes);
         b[i] ^= (1 << bit);
+        var where = 'byte ' + i + ' bit ' + bit;
         var out;
         try {
-          out = p2p.parseOfferPayload('RVQP1:' + core.b64uEncode(b));
+          out = p2p.parseOfferPayload(PFX + core.b64uEncode(b));
         } catch (e) {
-          throw new Error('byte ' + i + ' bit ' + bit + ': parseOfferPayload threw ' + e.message);
+          throw new Error(where + ': parseOfferPayload threw ' + e.message);
         }
-        if (!out.ok) {
-          assert(typeof out.reason === 'string' && out.reason.length,
-            'byte ' + i + ' bit ' + bit + ': rejection with no reason');
-          rejected++;
+        if (out.ok) {
+          survivors.push(where + ' → ' + (shaText(out.sdp) === wantSha
+            ? 'the ORIGINAL SDP' : 'a different SDP'));
           continue;
         }
-        accepted++;
-        assert(shaText(out.sdp) !== wantSha,
-          'byte ' + i + ' bit ' + bit + ' was corrupted but reconstructed the original SDP');
-        assertEqual(p2p.validateSdp(out.sdp).ok, true,
-          'byte ' + i + ' bit ' + bit + ': an accepted SDP must still pass the whitelist');
+        assert(typeof out.reason === 'string' && out.reason.length,
+          where + ': rejection with no reason');
+        rejected++;
+        if (out.reason === 'tag-mismatch') byTag++;
+        else byStructure[out.reason] = (byStructure[out.reason] || 0) + 1;
       }
     }
-    assert(rejected > 0, 'no corruption was rejected at all, which would mean no checking');
-    return (accepted + rejected) + ' bit flips: ' + rejected + ' rejected, ' + accepted +
-      ' decoded to a different offer, 0 to the original';
+    assertEqual(survivors.length, 0,
+      survivors.length + ' corrupted payloads were accepted, e.g. ' + survivors.slice(0, 3).join('; '));
+    assert(byTag > 0, 'nothing was caught by the tag — the integrity check is not running');
+    return (goodBytes.length * 8) + ' bit flips, all rejected: ' + byTag +
+      ' by the integrity tag, ' + (rejected - byTag) + ' by structural checks (' +
+      Object.keys(byStructure).map(function (k) { return k + '×' + byStructure[k]; }).join(' ') + ')';
+  });
+
+  test('a payload whose tag does not match its SDP is refused, valid SDP or not', function () {
+    // Built by hand rather than by corrupting bytes, so the tag is the only
+    // thing wrong: a perfectly well-formed offer with somebody else's digest.
+    var good = p2p.compressSdp(OFFER_SDP);
+    var bytes = core.b64uDecode(good.payload.slice(PFX.length));
+    assertEqual(bytes.length, good.bytes, 'payload length');
+
+    // The honest tag is the leading bytes of SHA-256 over the canonical SDP.
+    var honest = bytes.subarray(1, 1 + p2p.PAYLOAD_TAG_BYTES);
+    assertBytesEqual(honest, p2p.sdpTag(good.canonical), 'the tag the encoder wrote');
+    assertBytesEqual(honest,
+      Uint8Array.from(Buffer.from(shaText(good.canonical), 'hex')).subarray(0, p2p.PAYLOAD_TAG_BYTES),
+      'and it is genuinely SHA-256 of the SDP, per node:crypto');
+
+    // Swap in the tag of a different (but equally valid) offer.
+    var other = p2p.compressSdp(ANSWER_SDP);
+    var forged = new Uint8Array(bytes);
+    forged.set(p2p.sdpTag(other.canonical), 1);
+    var out = p2p.parseOfferPayload(PFX + core.b64uEncode(forged));
+    assertEqual(out.ok, false, 'a mismatched tag was accepted');
+    assertEqual(out.reason, 'tag-mismatch', 'reason');
+
+    // An all-zero tag, and an all-ones tag.
+    [0x00, 0xff].forEach(function (fill) {
+      var f = new Uint8Array(bytes);
+      for (var i = 0; i < p2p.PAYLOAD_TAG_BYTES; i++) f[1 + i] = fill;
+      var r = p2p.parseOfferPayload(PFX + core.b64uEncode(f));
+      assertEqual(r.ok, false, 'tag filled with 0x' + fill.toString(16));
+      assertEqual(r.reason, 'tag-mismatch', 'reason for a 0x' + fill.toString(16) + ' tag');
+    });
+
+    // And the unmodified payload still passes, so this is a check and not a wall.
+    assertEqual(p2p.parseOfferPayload(good.payload).ok, true, 'the honest payload still parses');
+    return p2p.PAYLOAD_TAG_BYTES + '-byte tag; 3 forged tags refused, honest payload accepted';
+  });
+
+  test('an untagged RVQP1-era payload is refused rather than parsed under a guess', function () {
+    // The old envelope was [codec][body] with no tag. Its first body bytes are
+    // not a digest, so parsing one as if it were tagged would silently decode
+    // the wrong thing. The prefix bump makes it a clean rejection instead.
+    var minified = p2p.minifySdp(OFFER_SDP);
+    var text = Uint8Array.from(Buffer.from(minified, 'ascii'));
+    var legacy = new Uint8Array(text.length + 1);
+    legacy[0] = 0;                       // CODEC_RAW
+    legacy.set(text, 1);
+    var legacyPayload = 'RVQP1:' + core.b64uEncode(legacy);
+
+    assertEqual(p2p.parseOfferPayload(legacyPayload).reason, 'not-a-payload',
+      'an RVQP1 payload under its own prefix');
+    // Even relabelled with the new prefix it cannot pass: the first four SDP
+    // bytes are not the digest of anything.
+    var relabelled = PFX + core.b64uEncode(legacy);
+    var out = p2p.parseOfferPayload(relabelled);
+    assertEqual(out.ok, false, 'a relabelled legacy payload');
+    assert(out.reason === 'tag-mismatch' || out.reason === 'non-printable-sdp' ||
+      out.reason === 'unknown-line',
+      'relabelled legacy payload reason, got ' + out.reason);
+    return 'RVQP1 → not-a-payload; relabelled → ' + out.reason;
   });
 
   test('MAX_SDP_BYTES is enforced on the way out and on the way in', function () {
@@ -1113,11 +1194,15 @@ function registerP2PTests(ctx) {
     assert(huge.length > p2p.MAX_SDP_BYTES, 'fixture is over the ceiling');
     assertThrows('sdp-too-large', function () { p2p.minifySdp(huge); }, 'minify refuses');
     assertEqual(p2p.validateSdp(huge).reason, 'sdp-too-large', 'validate refuses');
-    // And the raw codec cannot smuggle one past on the way in.
-    var body = new Uint8Array(p2p.MAX_SDP_BYTES + 2);
-    body[0] = 0;
-    for (var i = 1; i < body.length; i++) body[i] = 0x41;
-    var out = p2p.parseOfferPayload('RVQP1:' + core.b64uEncode(body));
+    // And the raw codec cannot smuggle one past on the way in. The size check
+    // has to fire before the SDP is ever materialised, so this deliberately
+    // carries no valid tag — reaching a tag comparison at all would mean the
+    // ceiling was applied too late.
+    var envelopeLen = 1 + p2p.PAYLOAD_TAG_BYTES;
+    var payload = new Uint8Array(envelopeLen + p2p.MAX_SDP_BYTES + 1);
+    payload[0] = 0;
+    for (var i = envelopeLen; i < payload.length; i++) payload[i] = 0x41;
+    var out = p2p.parseOfferPayload(PFX + core.b64uEncode(payload));
     assertEqual(out.ok, false, 'oversized raw body');
     assertEqual(out.reason, 'sdp-too-large', 'oversized raw body reason');
     // An SDP one byte under the ceiling is a size rejection nowhere.
@@ -1169,7 +1254,7 @@ function registerP2PTests(ctx) {
   test('MAX_PAYLOAD_CHARS bounds the joiner as well as the parser', function () {
     var giant = 'RVQPC1:aaaaaaaa:0/1:' + 'z'.repeat(p2p.MAX_PAYLOAD_CHARS);
     assertThrows('bad-chunks', function () { p2p.joinChunks([giant]); }, 'an oversized chunk');
-    assertEqual(p2p.parseOfferPayload('RVQP1:' + 'A'.repeat(p2p.MAX_PAYLOAD_CHARS)).reason,
+    assertEqual(p2p.parseOfferPayload(PFX + 'A'.repeat(p2p.MAX_PAYLOAD_CHARS)).reason,
       'payload-too-large', 'an oversized payload');
     return 'ceiling ' + p2p.MAX_PAYLOAD_CHARS + ' chars enforced at both entry points';
   });
@@ -1373,6 +1458,202 @@ function registerP2PTests(ctx) {
 }
 
 // ===========================================================================
+// Connection setup — driven through the injectable factory
+// ===========================================================================
+
+function registerHandshakeTests(ctx) {
+
+  test('defaultFactory refuses an environment with no RTCPeerConnection', function () {
+    assertEqual(typeof RTCPeerConnection, 'undefined', 'Node must have no RTCPeerConnection');
+    var e = assertThrows('no-webrtc', function () { p2p.defaultFactory({}); },
+      'the default factory');
+    return e.message;
+  });
+
+  test('createOffer builds a payload the peer can parse back to the offer it sent', function () {
+    var chan = new FakeChannel();
+    chan.readyState = 'connecting';
+    var pc = null;
+    return p2p.createOffer({
+      factory: function (cfg) {
+        pc = new FakePeerConnection(cfg, {
+          offer: OFFER_SDP, localChannel: chan,
+          onRemote: function () { chan.open(); }
+        });
+        return pc;
+      }
+    }).then(function (session) {
+      // The LAN-only default: nothing was configured to contact a third party.
+      assertEqual(session.pc.config.iceServers.length, 0,
+        'the default ICE configuration must be empty or the LAN-only promise is gone');
+      assertEqual(pc.dataChannelLabel, p2p.CHANNEL_LABEL, 'channel label');
+      assertEqual(pc.dataChannelOptions.ordered, true, 'the channel is ordered');
+      assertEqual(session.gathering, 'complete', 'gathering finished');
+      assertEqual(pc.calls.join(','), 'createDataChannel,createOffer,setLocalDescription',
+        'the calls createOffer makes, in order');
+
+      var back = p2p.parseOfferPayload(session.qrPayload);
+      assertEqual(back.ok, true, 'the payload parses (reason ' + back.reason + ')');
+      assertEqual(shaText(back.sdp), shaText(session.sdpText),
+        'what the peer reconstructs is what sdpText promised');
+      assertEqual(session.rawSdp, OFFER_SDP, 'rawSdp is what the connection produced');
+      assertEqual(session.qr.chunks, 1, 'one symbol');
+      assertEqual(session.qr.version, qrlib.encodeText(session.qrPayload, { ecl: 'L' }).version,
+        'reported QR version');
+
+      // A hostile answer is refused before setRemoteDescription is reached.
+      return session.connect('nonsense').then(
+        function () { throw new Error('a garbage answer was accepted'); },
+        function (e) {
+          assertEqual(e.reason, 'not-a-payload', 'garbage answer reason');
+          assertEqual(pc.remoteDescription, null,
+            'setRemoteDescription must not be reached for a rejected answer');
+          // And a real answer completes the handshake.
+          var answer = p2p.compressSdp(ANSWER_SDP);
+          return session.connect(answer.payload).then(function (ch) {
+            assertEqual(ch, chan, 'connect resolves with the data channel');
+            assertEqual(ch.readyState, 'open', 'the channel opened');
+            assertEqual(pc.remoteDescription.type, 'answer', 'remote description type');
+            assertEqual(shaText(pc.remoteDescription.sdp), shaText(answer.canonical),
+              'the SDP handed to setRemoteDescription is the parsed one, byte for byte');
+            session.close();
+            assertEqual(pc.closed, true, 'close() closed the connection');
+            return session.codec + ' codec, ' + session.qrPayload.length + ' chars, QR v' +
+              session.qr.version + ', handshake completed';
+          });
+        }
+      );
+    });
+  });
+
+  test('acceptOffer refuses a hostile offer before it constructs a peer connection', function () {
+    var built = 0;
+    function factory() { built++; throw new Error('the factory should never have run'); }
+    var hostile = ['not a payload', PFX + '!!!', PFX + 'A'.repeat(p2p.MAX_PAYLOAD_CHARS)];
+    return hostile.reduce(function (chain, payload) {
+      return chain.then(function () {
+        return p2p.acceptOffer(payload, { factory: factory }).then(
+          function () { throw new Error('accepted the hostile offer ' + show(payload)); },
+          function (e) {
+            assert(typeof e.reason === 'string' && e.reason.length, 'rejection carries a reason');
+            assertEqual(e.name, 'P2PError', 'rejection type');
+          }
+        );
+      });
+    }, Promise.resolve()).then(function () {
+      assertEqual(built, 0, 'a peer connection was constructed for a hostile offer');
+      return hostile.length + ' hostile offers, 0 peer connections constructed';
+    });
+  });
+
+  test('a full QR handshake round-trips and then carries a verified artifact', function () {
+    // Offerer and answerer, connected only by the two payloads a camera would
+    // carry. No signalling server exists in this test because none exists in
+    // the design.
+    var offererChannel = new FakeChannel();
+    var answererChannel = new FakeChannel();
+    offererChannel.readyState = 'connecting';
+    answererChannel.readyState = 'connecting';
+
+    var offererPc = null, answererPc = null;
+
+    return p2p.createOffer({
+      factory: function (cfg) {
+        offererPc = new FakePeerConnection(cfg, {
+          offer: OFFER_SDP, localChannel: offererChannel,
+          onRemote: function () { offererChannel.open(); }
+        });
+        return offererPc;
+      }
+    }).then(function (offer) {
+      return p2p.acceptOffer(offer.qrPayload, {
+        factory: function (cfg) {
+          answererPc = new FakePeerConnection(cfg, {
+            answer: ANSWER_SDP,
+            onRemote: function (pc) {
+              if (pc.ondatachannel) pc.ondatachannel({ channel: answererChannel });
+              answererChannel.open();
+            }
+          });
+          return answererPc;
+        }
+      }).then(function (accepted) {
+        // The answerer received exactly the offer the offerer meant to send.
+        assertEqual(shaText(accepted.offerSdp), shaText(offer.sdpText),
+          'the offer that crossed the optical channel');
+        assertEqual(answererPc.remoteDescription.type, 'offer', 'remote description type');
+        assertEqual(accepted.qr.chunks, 1, 'the answer fits one symbol');
+        assertEqual(accepted.qr.version, qrlib.encodeText(accepted.answerPayload,
+          { ecl: 'L' }).version, 'answer QR version');
+        return Promise.all([
+          offer.connect(accepted.answerPayload),
+          accepted.channel
+        ]).then(function (chans) {
+          assertEqual(chans[0].readyState, 'open', 'offerer channel open');
+          assertEqual(chans[1].readyState, 'open', 'answerer channel open');
+          assertEqual(shaText(offererPc.remoteDescription.sdp), shaText(accepted.sdpText),
+            'the answer that crossed back');
+
+          // Both sides connected. Now move an artifact and let core verify it.
+          var bytes = rndBytes(48 * 1024);
+          var delivered = [];
+          var rejectedOut = [];
+          var rxLink = p2p.link(chans[1], {
+            onData: function (v) { delivered.push(v); },
+            onReject: function (v) { rejectedOut.push(v); }
+          });
+          var txLink = p2p.link(chans[0], {});
+          // Deliver through the receiver's own onmessage handler, which link()
+          // installed, rather than calling handleMessage behind its back.
+          chans[0].onSend = function (d) { chans[1].onmessage({ data: d }); };
+          return txLink.send(bytes, { name: 'handshake.bin' }).then(function (r) {
+            assertEqual(rejectedOut.length, 0, 'nothing rejected');
+            assertEqual(delivered.length, 1, 'one artifact delivered');
+            assertEqual(delivered[0].ok, true, 'core.finalize verdict');
+            assertEqual(delivered[0].sha256, nodeSha(bytes), 'verified sha256 vs node:crypto');
+            assertBytesEqual(delivered[0].bytes, bytes, 'delivered bytes');
+            assertEqual(rxLink.state.status, 'VERIFIED', 'receiver status');
+            offer.close();
+            accepted.close();
+            return 'offer ' + offer.qrPayload.length + ' chars (v' + offer.qr.version +
+              '), answer ' + accepted.answerPayload.length + ' chars (v' + accepted.qr.version +
+              '), then ' + r.frames + ' frames verified as ' + r.sha256.slice(0, 12);
+          });
+        });
+      });
+    });
+  });
+
+  test('gathering that never completes ships whatever candidates it has', function () {
+    // The deadline only matters when a caller has opted into STUN and the
+    // server does not answer; without it createOffer would hang for ever.
+    var stop = keepAlive();
+    var chan = new FakeChannel();
+    chan.readyState = 'open';
+    var started = Date.now();
+    return p2p.createOffer({
+      gatherMs: 60,
+      iceServers: [{ urls: 'stun:example.invalid:19302' }],
+      factory: function (cfg) {
+        return new FakePeerConnection(cfg, {
+          offer: OFFER_SDP, localChannel: chan, gathering: 'gathering'
+        });
+      }
+    }).then(function (session) {
+      stop();
+      assertEqual(session.gathering, 'timeout', 'gathering outcome');
+      assert(Date.now() - started >= 55, 'it waited for the deadline, not less');
+      assertEqual(session.pc.config.iceServers.length, 1,
+        'the opt-in ICE server was passed through');
+      var back = p2p.parseOfferPayload(session.qrPayload);
+      assertEqual(back.ok, true, 'the offer is still usable (reason ' + back.reason + ')');
+      assertEqual(shaText(back.sdp), shaText(session.sdpText), 'and still round-trips');
+      return 'gave up after ' + (Date.now() - started) + 'ms and shipped a valid offer';
+    }, function (e) { stop(); throw e; });
+  });
+}
+
+// ===========================================================================
 // Integrity — the data channel goes through core.js's verification, unchanged
 // ===========================================================================
 
@@ -1428,6 +1709,72 @@ function registerIntegrityTests(ctx) {
       return r.frames + ' frames, ' + bytes.length + ' bytes verified as ' + want.slice(0, 12) +
         ', name → ' + v.name;
     });
+  });
+
+  test('a hostile manifest name is sanitised on delivery and preserved for inspection', function () {
+    // buildSend sanitises on the way out, so a hostile name cannot come from
+    // p2p's own sender — it has to come from a peer that wrote its own
+    // manifest. That is the case worth testing, so the manifest is injected
+    // straight into core.ingest here rather than going through buildSend.
+    var bytes = rndBytes(3000);
+    var chunk = 1024;
+    var hash = nodeSha(bytes);
+    var total = core.frameCount(bytes.length, chunk);
+    var hostileNames = [
+      '../../etc/passwd',
+      '..\\..\\Windows\\System32\\drivers\\etc\\hosts',
+      '.hidden',
+      '/absolute/path.bin',
+      'trailing\u0000nul.bin',
+      'x'.repeat(200) + '.tar.gz'
+    ];
+
+    var checked = [];
+    hostileNames.forEach(function (name) {
+      var state = core.createReceiver();
+      var manifest = JSON.stringify({
+        v: 1, t: 'deadbeef', h: hash.slice(0, 8), i: 0, n: total,
+        m: { name: name, size: bytes.length, sha256: hash, chunk: chunk }
+      });
+      var m = core.ingest(state, manifest, Date.now());
+      assertEqual(m.accepted, true, 'manifest for ' + JSON.stringify(name) +
+        ' accepted (reason ' + m.reason + ')');
+      for (var seq = 1; seq < total; seq++) {
+        core.ingest(state, {
+          kind: 'data', v: 1, t: 'deadbeef', h: hash.slice(0, 8), i: seq, n: total,
+          mode: core.MODE_INDEXED,
+          payload: bytes.subarray((seq - 1) * chunk, Math.min(seq * chunk, bytes.length))
+        }, Date.now());
+      }
+      var v = core.finalize(state);
+      assertEqual(v.ok, true, 'verified (reason ' + v.reason + ')');
+      assertEqual(v.sha256, hash, 'sha256 vs node:crypto');
+
+      // declaredName is the sender's string, untouched — the defence is
+      // visible rather than silent.
+      assertEqual(v.declaredName, name, 'declaredName preserves what the peer claimed');
+      // name is core.sanitizeName's, and is safe to use as a filename.
+      assertEqual(v.name, core.sanitizeName(name), 'name is the sanitised form');
+      assert(v.name.indexOf('/') < 0 && v.name.indexOf('\\') < 0,
+        'sanitised name still holds a path separator: ' + JSON.stringify(v.name));
+      assert(v.name.charAt(0) !== '.',
+        'sanitised name starts with a dot: ' + JSON.stringify(v.name));
+      assert(!/[\x00-\x1f\x7f]/.test(v.name),
+        'sanitised name holds a control character: ' + JSON.stringify(v.name));
+      assert(v.name.length <= core.SAFE_NAME_LENGTH,
+        'sanitised name is ' + v.name.length + ' chars, over SAFE_NAME_LENGTH');
+      assert(v.name.length > 0, 'sanitised name is empty');
+      checked.push(JSON.stringify(name).slice(0, 22) + '→' + JSON.stringify(v.name).slice(0, 22));
+    });
+
+    // An over-length name is clamped, but not truncated blind: sanitizeName
+    // takes the extension from the LAST dot, so a compound suffix keeps its
+    // final component and the file still opens with the right handler.
+    var longVerdict = core.sanitizeName(hostileNames[5]);
+    assertEqual(longVerdict.length, core.SAFE_NAME_LENGTH, 'clamped to the safe length');
+    assertEqual(longVerdict.slice(-3), '.gz', 'the extension survives clamping');
+    assertEqual(longVerdict.slice(0, 4), 'xxxx', 'the stem is kept from the front');
+    return hostileNames.length + ' hostile names: ' + checked.slice(0, 3).join(', ');
   });
 
   test('one flipped bit in one data frame is refused by the manifest hash', function () {
@@ -1629,7 +1976,7 @@ function runQueue() {
 function main() {
   var ctx = { report: {} };
 
-  ctx.imageText = 'RVQP1:rvQR offload round trip fixture';
+  ctx.imageText = 'rvQR offload round trip fixture';
   ctx.image = rasterize(qrlib.encodeText(ctx.imageText, { ecl: 'L' }), { scale: 5, quiet: 4 });
 
   ctx.inline = offload.create({ fallback: 'always' });
@@ -1653,6 +2000,7 @@ function main() {
     }
     registerOffloadTests(ctx);
     registerP2PTests(ctx);
+    registerHandshakeTests(ctx);
     registerIntegrityTests(ctx);
     return runQueue();
   }).then(function () {
