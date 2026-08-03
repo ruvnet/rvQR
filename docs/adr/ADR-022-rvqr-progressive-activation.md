@@ -140,3 +140,28 @@ if closures 1–3 are very small, and that should be stated rather than assumed.
    achievable at this artifact size" where that is the answer.
 7. **Signature and closure overhead is reported in `bench/`** as a fraction of
    the artifact, since on small artifacts it may exceed the payload.
+
+> **Where this list stands at [aef010d](https://github.com/ruvnet/rvQR/commit/aef010d).**
+> Met and unmet entries are labelled rather than counted, because a list where
+> they look alike will be read as satisfied.
+>
+> | # | State | Evidence |
+> |---|---|---|
+> | 1 | **met** | Corrupting each closure in turn refuses that one and nothing downstream runs; each is checked against its own digest and its own signature, digest first, so a wrong digest never reaches a verifier. |
+> | 2 | **met** | Closure 3 offered before closure 1 or 2 is refused without being looked at; a valid closure 3 from a different artifact is refused; so is the same closure relabelled with this artifact's name; and a closure cannot nominate the key that checks it. |
+> | 3 | **met** | Tested adversarially, not by inspection: no refusal puts an offered byte into the session, a running agent has no path to the cold closure, and what was activated cannot be changed by writing into the buffer that was offered. |
+> | 4 | **met** | All three places. The receipt reports `complete: false`; the vault badge reads "incomplete — sealed" against "verified whole"; and sealed is kept distinct from still-arriving, because a sealed artifact is terminal while an outstanding one may yet complete. |
+> | 5 | **NOT MET, and not claimed** | There is no radio tier in this repository and no ML-DSA implementation, so no p95 is quoted. `describeUnimplemented()` says so at runtime: simulating a radio and reporting the result as observed would be worse than reporting nothing. An Ed25519 timing is never labelled a criterion-5 result. |
+> | 6 | **met, and the answer is no** | Computed twice independently — by `opticalBudget()` and again by the bench — and the two agree. At the measured 2,440 B/s a 3 s budget is 7,320 B, while three hybrid signatures cost 10,119 B: the floor exceeds the whole budget by 38% before any content. Swept across 7 sizes from 1 KB to 1 MB, none fits, so the honest answer is stronger than the "not achievable at this artifact size" this criterion anticipated — it is **not achievable at any artifact size**. On the module's own wire the signatures are hex, making the real floor 20,238 B, or 2.76× the budget. |
+> | 7 | **met** | Overhead exceeds payload below **671 B** with the Ed25519 signatures this repository has, and below **13,910 B** under ADR-012's hybrid scheme. The activation set is three quarters of the verification work at every size measured. |
+>
+> **A constraint the bench found that this ADR does not mention.** `verifyClosure`
+> compares its verifier against `true`, so an asynchronous verifier returns a
+> promise, a promise is not `true`, and the closure is refused as `unverified`.
+> That is the correct failure mode, but it decides which verifier may be
+> injected: `crypto.verifySync` (pure JS, 4.850 ms) qualifies and
+> `crypto.verify` (WebCrypto, 0.063 ms) does not, because it is asynchronous.
+> **The synchronous contract costs 78× on the measured platform**, and splitting
+> multiplies the work by the closure count — four closures pay four signature
+> checks, +14.50 ms. Neither cost is fatal against transfers measured in
+> seconds, and neither was written down before it was measured.

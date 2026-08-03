@@ -20,7 +20,7 @@ guide is built into the app under the **Guide** tab.
 | | |
 |---|---|
 | **Hosted** | [ruvnet.github.io/rvQR](https://ruvnet.github.io/rvQR/artifacts/) — the normal app. |
-| **One file** | [`standalone.html`](https://ruvnet.github.io/rvQR/standalone.html) — the whole app, both demo artifacts and the RVF microkernel inlined into a single ~1.0 MB page. Save it and open it from disk: it makes **no network requests at all**, so it keeps working on a machine that has never been online. Handy for the air-gapped side of a transfer. |
+| **One file** | [`standalone.html`](https://ruvnet.github.io/rvQR/standalone.html) — the whole app, both demo artifacts and the RVF microkernel inlined into a single ~1.1 MB page. Save it and open it from disk: it makes **no network requests at all**, so it keeps working on a machine that has never been online. Handy for the air-gapped side of a transfer. |
 
 Receiving needs a camera, which browsers only grant on `https://` or a local
 file — both of the above qualify. The photo-upload and paste paths work
@@ -56,6 +56,7 @@ Both ship in the repo, and both are real.
 - **Integrity verified**. Every byte accepted into your vault is checked against the SHA-256 hash from the manifest. A single-bit error causes the entire transfer to be rejected and discarded.
 - **RVF-aware**. Detects RVF containers (append-only segment streams with tail-discovered 4096-byte root manifest) and shows their type. Sends and receives them as-is.
 - **Real RVF parsing**. Containers are parsed by the actual RVF WebAssembly microkernel — header, segment table, per-segment CRC, vector count and dimensionality — and then searched, with a working nearest-neighbour query over the vectors inside.
+- **Starts before the whole file arrives — and says when that cannot help**. An artifact can be split into four separately signed closures, so an agent runs once the first three verify while the cold state is still coming. The gate is not relaxed to do it; it simply runs four times instead of once. An artifact stuck on three closures is marked **incomplete and sealed**, which is a terminal state rather than a nearly-finished one: a later closure, however valid, is refused *on the seal* without being examined, because "it does not silently acquire the cold state later" only holds if you stop looking. **Over the optical channel this buys nothing**, and the app says so rather than offering it: at the measured 2,440 B/s a three-second budget is 7,320 bytes, while three post-quantum signatures cost 10,119 — the signatures alone exceed the whole budget by 38% before a single content byte, so no split, at any artifact size, reaches a three-second start. That is a radio-tier feature, and there is no radio tier here.
 - **Device attestation as evidence, never as permission**. A receiver can present evidence about what it measured at boot, and rvQR checks it — but a device that is measured, approved and current can still be the wrong device to send a credential to, so the permission check is separate and always runs. The screen keeps them apart: "attested, and *separately* granted" is a different outcome from "unattested, and permitted because nobody asked", which is different again from refused. The middle one is deliberately not styled as success, because nobody asking is not an endorsement. **None of the four roots of trust — DICE, TPM 2.0, Secure Enclave, Android hardware keys — is implemented**: the app recognises them as values in the evidence format and says "unexercised" next to each one rather than offering a choice that cannot work. And because attestation evidence identifies a device durably, the page says so above the control that would turn it on.
 - **Compresses only when the whole transfer shrinks**. Not when the *payload* shrinks — the transfer. A payload that sheds 8% while the frame count stays put has bought nothing, and the receiver gains a decompressor on its critical path for its trouble. Measured on synthetic float32 vectors, the two rules genuinely disagree in both directions: at 2,816 bytes the payload sheds 8.20% and the transfer only 7.65%, so compression is declined; at 2,304 bytes the payload sheds 7.81% and the transfer 8.31%, so it is accepted — a whole frame dropped out, taking its header and padding with it. Both figures are always on screen. On incompressible input the transfer *grows* and compression is refused, and the panel says so rather than quietly sending it uncompressed.
 - **Honest about what your browser can do**. rvQR runs in a browser, and browsers offer `deflate-raw` but neither Brotli nor Zstd (verified by construction in Chrome 140). So the app uses what the platform actually has and names it: **55.91%** smaller on the demo WASM module where Brotli would manage 63.69%, and **21.07%** on the demo container against 23.39%. A six-to-eight point gap, stated as a fact rather than dressed up as a limitation — and the app never offers a codec the platform lacks.
@@ -225,11 +226,11 @@ single-symbol case rvQR complements by streaming.
 
 Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
 
-That page covers the app suite — 142 assertions. Eleven further suites run under
+That page covers the app suite — 153 assertions. Twelve further suites run under
 Node only, because they need timing, forced garbage collection or containers too
-large to be comfortable in a browser tab: perf (60), planner (47), compress (44), crypto (44), attest (38),
+large to be comfortable in a browser tab: perf (60), planner (47), compress (44), crypto (44), closure (46), attest (38),
 fountain (39), semdelta (34), delta (31), proto2 (30), expiry (25) and
-provenance (23). 560 in total.
+provenance (23). 617 in total.
 
 ```bash
 for f in artifacts/*.test.js; do node "$f"; done
