@@ -135,3 +135,35 @@ forbids.
 5. **The broadcast codec is named accurately**, per §2.4, and if it is not RFC
    6330 conformant that is stated wherever the tier is described.
 6. **Source traffic is measured directly**, not inferred from chunk accounting.
+
+> **Where this list stands at [e9d276b](https://github.com/ruvnet/rvQR/commit/e9d276b).**
+> Four criteria are demonstrated, two are not met and were not attempted.
+> `artifacts/swarm.describeCriteria()` reports the same at runtime, so the state
+> is discoverable from the code and not only from this file.
+>
+> | # | State | Evidence |
+> |---|---|---|
+> | 1 Fleet-10 | **not met, not attempted** | Needs TEN PHYSICAL DEVICES on one site and a wall clock. There is no device fleet here. The simulation can run ten simulated receivers, but its tick count is not a second and must never be quoted as one. |
+> | 2 Fleet-100 | **not met, not attempted** | Needs ONE HUNDRED physical devices. Fails for criterion 1's reason and one order of magnitude more of it. |
+> | 3 Per-device verification | **demonstrated** | A peer serving genuinely signed chunks from a DIFFERENT artifact is refused by every receiver, because each derives its expectation from the manifest *it* verified. A manifest for another artifact is refused as FOREIGN even when the pin names its own digest, and foreign deliveries never reach the digest function at all. |
+> | 4 Malicious peers measured | **demonstrated in simulation** | Advertise-and-withhold, slow-drip and corrupt-chunk, each with its effect on completion in SIMULATION TICKS against a no-adversary baseline, and `wrongChunksStored: 0` for every one. Advertise-and-withhold and corrupt-chunk fall below the scheduling floor after one attempt. |
+> | 5 Broadcast codec named | **met** | Named through a single constant that carries its own qualification — "RaptorQ-structured (NOT RFC 6330 conformant; interoperates with nothing)" — so it cannot be quoted without the caveat. `describeBroadcastTier()` reports `rfc6330Conformant: false`, and no broadcast tier is wired into the transfer at all. |
+> | 6 Source traffic measured directly | **demonstrated in simulation** | The meter sits on the line that emits the bytes, and the report carries what chunk accounting *would* have claimed beside it, so the size of that error is visible rather than assumed away. |
+>
+> **The distinction this ADR's numbers rest on.** A deterministic simulation
+> produces real measurements *of the simulation* — byte counts, chunk counts,
+> rejection outcomes are all genuinely measured. Its **timings are not
+> measurements of any fleet**. Every timing reports `simulation: true`,
+> `wallClockMeasured: false`, `timingUnit: "ticks"`. The §2.1 target of "under
+> 3 GB of source traffic for 100 devices × 1 GB" is described by this ADR itself
+> as a target rather than a measurement, and nothing here promotes it to one.
+>
+> **Not reachable from the app, and deliberately so.** `swarm.js` distributes an
+> artifact across a fleet exchanging chunks over a peer transport. rvQR is a
+> two-device optical tool, and `p2p.js` — the WebRTC transport that would carry
+> such an exchange — is itself unwired: no script tag, no call site. Adding a
+> swarm panel would imply a fleet capability the application does not have, so
+> the module ships as a measured, tested library that the page does not load.
+> The standing rule that "a module the app cannot reach is not shipped" exists to
+> stop orphaned code being counted as delivered; satisfying it theatrically here
+> would mislead a user, which is the opposite of its purpose.
