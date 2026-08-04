@@ -227,11 +227,28 @@ single-symbol case rvQR complements by streaming.
 
 Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
 
-That page covers the app suite — 166 assertions. Thirteen further suites run under
+That page covers the app suite — 166 assertions. Fourteen further suites run under
 Node only, because they need timing, forced garbage collection or containers too
-large to be comfortable in a browser tab: perf (60), planner (47), compress (44), crypto (44), closure (46), attest (38), pipeline (30),
-fountain (39), semdelta (34), delta (31), proto2 (30), expiry (25) and
-provenance (23). 693 in total.
+large to be comfortable in a browser tab: perf (60), swarm (52), planner (47), closure (46), compress (44), crypto (44),
+fountain (39), attest (38), semdelta (34), delta (31), pipeline (30), proto2 (30), expiry (25) and
+provenance (23). 709 in total.
+
+### Two modules the page does not load
+
+`swarm.js` and `p2p.js` ship in this repository and are **not reachable from the
+app**, which is stated here rather than left for someone to discover.
+
+`swarm.js` distributes one artifact across a fleet of devices trading verified
+chunks, so a source link sends far less than one copy per device — measured at
+**1.42× the artifact for 100 devices** against 100× point-to-point. But that
+measurement is of a *simulation*: byte and chunk counts are real, timings are
+simulation ticks, and no fleet exists here to run it on. It also needs a peer
+transport, and `p2p.js` — the WebRTC one — is itself unwired. A swarm panel in a
+two-device optical tool would imply a capability the app does not have, so the
+module ships as a tested library and the page does not load it. The security
+property is the part worth having regardless: a peer is a transport, not an
+authority, and chunks from a different signed artifact are refused by every
+receiver before they are even hashed.
 
 ```bash
 for f in artifacts/*.test.js; do node "$f"; done
