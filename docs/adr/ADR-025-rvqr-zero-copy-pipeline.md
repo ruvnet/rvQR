@@ -126,3 +126,40 @@ everything running.
    demo artifacts and on a 1 GB container.
 6. **The scalar fallback is exercised in CI** on every SIMD path.
 7. **The budget is checked in CI**, so it degrades loudly rather than silently.
+
+> **Where this list stands at [23350e3](https://github.com/ruvnet/rvQR/commit/23350e3).**
+> This ADR specifies a **Rust** pipeline — memory mapping, SIMD BLAKE3, SIMD
+> compression, 4–8 bounded streams. rvQR is JavaScript in a browser, so three of
+> the seven criteria describe machinery that does not exist here and cannot be
+> made to. They are recorded as not applicable with the reason rather than
+> quietly skipped, because a criterion list where unmet and inapplicable entries
+> look alike will be read as satisfied.
+>
+> | # | State | Evidence |
+> |---|---|---|
+> | 1 | **met** | `artifacts/pipeline.js` counts full payload copies per transfer and the instrument THROWS above 2 — asserted, not inspected. A test feeds it the shipped receivers and asserts they trip it, so the guard is proven to fire rather than merely present. |
+> | 2 | **not applicable** | Peak RSS for a **1 GB** transfer. At the measured 2,440 B/s optical rate a 1 GB transfer takes 4.7 days; the largest artifact this repository ships is 1.25 MB. Peak RSS *is* measured at 75.4 MiB against the 128 MiB budget on what does exist. |
+> | 3 | **not applicable** | Internal throughput ≥ 2× the radio ceiling. There is no radio tier and no QUIC transport in this repository, so there is no ceiling to be twice. |
+> | 4 | **met** | The offloaded `sha256` and keyframe `signature` paths are no slower than inline — the ADR-033 §4.1 criterion, carried here. |
+> | 5 | **met** | Streaming verification is byte-exact against the buffered result on both demo artifacts, and under four shuffle seeds with duplicate frames, on both protocols. Not on a 1 GB container, per criterion 2. |
+> | 6 | **not applicable** | Scalar fallback exercised on every SIMD path. There are no SIMD paths in JavaScript, so there is nothing to fall back from. |
+> | 7 | **met** | `bench/suites/memory.mjs` measures the budget and reports it; the copy count degrades loudly because the instrument throws. |
+>
+> **The measurement that mattered, and the correction it forced.** The receiver
+> held **3.00×**, not the 2.42× this project reported from increment 2 onward.
+> The older figure sampled *retained* memory at the end of the stage, so it was
+> taken after `core.sha256Bytes`' 64-byte-aligned padded copy of the whole
+> artifact had already been collected — it was not wrong about what it measured,
+> it measured the wrong moment. §2.2 bounds copies that COEXIST, so peak is the
+> quantity the budget is about. The streaming receiver measures **1.0024×**, and
+> there the three independent accountings — peak, handover, retained — converge,
+> because there is no transient copy for one of them to miss.
+>
+> **Two limits the implementation does not hide.** Below about **5,891 bytes**
+> the fixed index and carry dominate and the ratio climbs to 1.32× on the 2.3 KB
+> demo container, so the megabyte figure describes megabyte artifacts only. And
+> two transfer shapes cannot stream at all: a fountain symbol has no fixed
+> position to stream *into*, and a declared codec means the manifest digest
+> covers bytes that do not exist until the end. Both fall back to the buffered
+> receiver, and the app names which receiver is holding the transfer and why —
+> an unnamed fallback would make 1.0024× a claim about a path the user is not on.
