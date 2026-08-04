@@ -126,3 +126,40 @@ Gate conditions before any of this is treated as more than research:
 6. **Colour re-enters only through
    [ADR-008](./ADR-008-rvqr-colour-channels.md) §4's conditions**, which are not
    relaxed by being part of a research track.
+
+> **GATE CLOSED. This track was reached in sequence and deliberately not
+> started.** Criterion 1 is a gate, not a task: ADR-031 and ADR-018 must both
+> have been *measured on hardware* first, "without [which] every number here is a
+> projection on a projection". Checked, and neither has been:
+>
+> | dependency | state |
+> |---|---|
+> | [ADR-018](./ADR-018-rvqr-device-physics.md) device physics | **Proposed** — unmeasured |
+> | [ADR-031](./ADR-031-rvqr-multi-symbol-lanes.md) multi-symbol lanes | **Proposed** — unmeasured |
+> | **P**, decode success probability | [ADR-015](./ADR-015-rvqr-adaptive-control.md) §2.1: "the term no simulation in this repository can supply" |
+> | a v2 transfer through a camera | [ADR-002](./ADR-002-rvqr-binary-frame-protocol.md): "nobody has measured" |
+>
+> No ADR in this directory contains the phrase "measured on hardware". Criterion
+> 3 compounds it: a measured **3× over the multi-lane baseline on at least two
+> device pairs, or the track stops** — two device pairs being hardware that does
+> not exist here either.
+>
+> **What building it anyway would have produced.** A module targeting 0.5–1 MB/s
+> against a measured channel of 2.44 KB/s — a 200–400× claim — resting on a
+> baseline nobody has measured and a P nobody has measured, in a repository whose
+> every other increment has been held to measured numbers. The output would be
+> projections stacked on projections, and the projection at the bottom is the one
+> §2.2 already calls out: rvQR is **13× behind the best comparator, and closing
+> that gap wins a race nobody is scoring**.
+>
+> §2.2 also states the stop condition plainly — "the reason to do this work is
+> strict mode, not competitiveness, and **if that reason weakens the track should
+> stop**". Nothing in the increments delivered so far strengthened it. §2.1 is why
+> stopping is cheap: this track blocks nothing, and a failure here costs
+> strict-mode throughput and nothing else.
+>
+> **What would open the gate**, in order: measure ADR-018's device physics on real
+> phones to obtain a real P; measure ADR-031's multi-lane baseline on the same
+> hardware; then, and only then, measure each technique here independently
+> against that baseline. Until the first of those exists, work on this track
+> produces numbers that cannot be checked against anything.
