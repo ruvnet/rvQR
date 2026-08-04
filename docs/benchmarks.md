@@ -258,6 +258,13 @@ node bench/index.mjs --suite planner     # strategy choice, the hard rules, inve
 node bench/index.mjs --suite attest      # the attestation state matrix, fail-closed coverage, decision cost
 node bench/index.mjs --suite closure     # closure.js: signature and closure overhead, verification cost
 node bench/index.mjs --suite swarm       # swarm.js: source traffic, malicious peers, the cost of the defence
+node bench/index.mjs --suite presence    # presence.js: the fusion decision matrix, the pair relation, decision cost
+
+# `presence` measures a decision procedure over three channels NONE of which is
+# implemented anywhere in this repository. Every signal it feeds the module comes
+# from an injected stub reader, so it measures the FUSION RULE and nothing about
+# physical presence. It does not simulate a relay: ADR-023 §4's criterion 4 wants
+# one measured, with two devices and two rooms, and it is unmet.
 
 # `closures` and `closure` differ by one letter and are different suites. `closures`
 # is §12, a model of how long a split artifact takes to arrive, and runs no module.
@@ -2241,6 +2248,286 @@ signatures this repository has and below a projected **13,910 bytes** under the
 scheme ADR-012 selects; and the activation set is three quarters of the
 verification work at every size measured.
 
+### Physical presence fusion: a rule over three channels that do not exist
+
+`node bench/index.mjs --suite presence`
+
+**Read this paragraph before any number below it.** ADR-023 §1 names three
+presence channels — **optical line-of-sight**, an **ultrasonic
+challenge-response** and **radio ranging**. This repository implements **none of
+them**, and `presence.describeChannels()` reports all three
+`status: "unimplemented"`, `readerSupplied: false`. There is no acoustic code
+anywhere here — no `AudioContext`, no oscillator, no encoder, no decoder. There
+is no ranging code, and **no browser exposes a UWB API at all**, so there is not
+even a platform surface to build one on. The optical transport exists and
+measures nothing whatever about presence: a photograph of a screen is exactly the
+substitution ADR-023 §2.2 names.
+
+So this subsection measures **the fusion rule** and nothing about physical
+presence. **rvQR does not sense proximity.** Every channel takes its answer from
+`opts.readers[channel]`, an injected function supplied by a caller that has
+hardware, and there is no such caller — so **every signal in every table below is
+a simulation of a signal**, never a signal, and where a table says a channel
+passed, what passed was a stub returning `true`. Run as this repository actually
+stands — a perfect report on all three channels and no reader anywhere — the
+verdict is `uncorroborated` with **0 of 3 channels passing** and all three
+`unread`. **`corroborated` is unreachable on this platform**, and that is the
+honest state rather than a limitation of the harness.
+
+**Two of ADR-023 §4's six acceptance criteria are unmet and nothing here
+approaches them.** Criterion 4 asks for a relay attempt to be *measured* — two
+devices, two rooms, a relay in between, and a report of which channels it
+defeats. That is hardware. **No relay is simulated anywhere in this suite**,
+because simulating one and reporting which channels it defeated would be
+reporting an invention as an observation. Criterion 6 asks for the UI wording to
+be reviewed against §3's over-claiming risk; nothing is wired to a UI, so there
+is no wording to review. `describeAcceptance()` marks both `unmet` from inside
+the running module and the suite reads that out rather than restating it.
+
+What the module *does* publish is which channels a relay would have to defeat
+**simultaneously** for a claim to exist at all under the pair relation. It labels
+itself `evidence: "reasoning"`, `measured: false`, and it is reproduced here as
+reasoning about the rule and not as a measurement of an attack:
+
+| corroborating pair | a relay must defeat, at the same moment, each against its own fresh challenge |
+|---|---|
+| `optical + acoustic` | optical line-of-sight **and** ultrasonic challenge-response |
+| `optical + ranging` | optical line-of-sight **and** radio ranging |
+| `acoustic + ranging` | ultrasonic challenge-response **and** radio ranging |
+
+*A determined relay with equipment in both rooms remains possible. Fusion raises
+the cost of the attack; it does not close it.*
+
+The fixtures are `artifacts/presence.test.js`'s, reproduced exactly, and that
+test file is run against the same module in the same process as a check on the
+copy: **51/51 passed**. The three challenges are **per channel**, which is the
+part that cannot be simplified — one shared challenge would leave two of three
+channels `unbound` on every row, and the matrix would report a very strict module
+instead of an untested one.
+
+#### The decision matrix
+
+Every one of the module's seven per-channel outcomes on each of its three
+channels, with the other two channels absent, crossed against six policy shapes:
+`requires` (requires presence, grants this peer this class), `permits` (does not
+require presence, same grant), `requires+optical` (also names a required
+channel), `requires,no-grant`, `undeclared` (has not said), and `incoherent`
+(names a required channel while saying presence is not required). Every verdict
+is produced by the shipped `verifyPresence`; none is written by hand.
+
+All 21 recipes reached the outcome they name. The result is uniform enough to
+state rather than tabulate in full: **9 of the 126 cells admit, and every one of
+them is `presence-not-required` in the `permits` column** — the sender that is
+not relying on presence at all. **Not one admission is attributable to a
+channel.** `undeclared` and `incoherent` never admit on any row: a policy that
+has not said whether it requires presence is refused rather than handed a
+default, and a policy whose two statements collide is refused rather than letting
+one silently win.
+
+| one channel driven to → | `passed` | `absent` | `malformed` | `unbound` | `replayed` | `unread` | `forged` |
+|---|---|---|---|---|---|---|---|
+| fused state | `uncorroborated` | `absent` | `malformed` | `unbound` | `replayed` | `uncorroborated` | `forged` |
+| under `requires` | `uncorroborated-refused` | `absent-refused` | `malformed-signal` | `unbound-signal` | `replayed-signal` | `uncorroborated-refused` | `forged-signal` |
+| under `permits` | **admit** `presence-not-required` | **admit** `presence-not-required` | `malformed-signal` | `unbound-signal` | `replayed-signal` | **admit** `presence-not-required` | `forged-signal` |
+
+The three channels are identical row for row, which is itself the finding: there
+is no privileged channel and optical — the only one rvQR has any transport for —
+buys nothing the other two do not.
+
+**And the whole product.** Every combination of the 7 outcomes over the 3
+channels: **343 verdicts**, each driven through the shipped verifier, then
+through the gate under all six shapes for **2,058 decisions**.
+
+| fused state | combinations | share |
+|---|---|---|
+| `corroborated` | 7 | 2.0% |
+| `uncorroborated` | 19 | 5.5% |
+| `absent` | 1 | 0.3% |
+| `malformed` | 37 | 10.8% |
+| `unbound` | 61 | 17.8% |
+| `replayed` | 127 | 37.0% |
+| `forged` | 91 | 26.5% |
+
+All 343 reached the state an independent reading of the module's precedence
+predicts — a refusing outcome anywhere refuses the fusion, then two passing
+channels corroborate, then nothing attempted is absent. Nothing threw. **Not one
+combination with fewer than two passing channels reached `corroborated`**, and of
+the 39 admissions across all six policy shapes, **none carries
+`corroborated-and-approved` on one channel or fewer**. No refusing state
+publishes a pair list, so a gate reading `pairs` off a refused verdict finds
+nothing there to match.
+
+| policy shape | admissions of 343 | codes |
+|---|---|---|
+| `requires` | 7 | `corroborated-and-approved` ×7 |
+| `permits` | 27 | `corroborated-and-approved` ×7, `presence-not-required` ×20 |
+| `requires+optical` | 5 | `corroborated-and-approved` ×5 |
+| `requires,no-grant` | 0 | — |
+| `undeclared` | 0 | — |
+| `incoherent` | 0 | — |
+
+#### The pair relation is not a count, demonstrated rather than asserted
+
+`presence.js` enumerates `CORROBORATING_PAIRS` from every combination of two
+*distinct* channel indices rather than comparing a tally against a bound, for the
+reason its own docblock gives: **a number that can be set to 2 can be set to 1.**
+The declared list is `optical+acoustic`, `optical+ranging`, `acoustic+ranging` —
+3 pairs, 0 of them self-pairs, which is what `i < j` construction guarantees. Read
+off the shipped `passingPairs` over all 343 outcome combinations, a pair is
+produced **exactly when two distinct channels passed and never otherwise**: 0
+disagreements, 0 self-pairs emitted.
+
+**A caller-supplied threshold is dropped, and here is it being dropped.**
+`normalizePolicy` returns a fixed key set — `declared`, `grants`,
+`requirePresence`, `requiredChannels` — of which **0 are numbers**. Thirteen
+invented fields were each offered on an otherwise valid policy —
+`minChannels: 1`, `minChannels: 0`, `threshold: 1`, `quorum: 1`,
+`minCorroboratingPairs: 0`, `maxChannels: 1`, `requiredPairs: 0`,
+`corroborationCount: 1`, `channelsRequired: 1`, `pairs: [['optical','optical']]`,
+`CORROBORATING_PAIRS: [['optical','optical']]`, `allowSingleChannel: true`,
+`requireCorroboration: false` — and **all 13 were dropped with the returned key
+set unchanged.** There is no field on a normalised policy for a threshold to live
+in.
+
+That is the structural claim. The behavioural one: **440 policy inputs** — every
+combination of 5 `requirePresence` values, 4 `requiredChannels` sets, 2 grant
+tables and 11 invented-knob shapes — crossed with 4 request shapes and the three
+one-perfect-channel verdicts, for **5,280 decisions**. 33 of them admit and **not
+one carries `corroborated-and-approved`**.
+
+**The counterfactual is the stronger form of the same question**, and it is the
+one that makes the refusal counts mean something: a module that refused
+everything would score perfectly on them. So every one of those decisions is
+compared against what the **empty report** gets under the identical policy and
+request. 5,280 comparisons, of which the baseline admits 11 — and **adding one
+perfect channel changed `admit` in exactly 0 of them.** If a channel never
+changes the decision it never authorized anything, and the baseline admitting in
+some of the comparisons is what makes that a measurement rather than a module
+that says no to everything.
+
+**And the rule itself, corrupted on purpose.** `CORROBORATING_PAIRS` is exported
+by reference and `Object.isFrozen` on it is **false**, so a page script sharing
+this module can push a self-pair straight into the fusion rule. That is not
+hypothetical, so it is measured rather than argued: an `['optical', 'optical']`
+pair was pushed onto the live list, one perfect optical channel was run through
+the verifier — and the **verifier did reach `corroborated`** with 1 pair. **The
+gate refused it anyway**, `missing-corroboration`, because `unmetRequirements`
+re-checks `pair[0] !== pair[1]` against the channel records rather than trusting
+the list it was handed. The distinctness rule is enforced twice, in the
+construction and in the gate, and only the second is reachable by a caller. The
+list was restored afterwards and the restoration verified.
+
+#### Fail-closed coverage
+
+65 inputs a hostile device, a confused caller or an unfinished policy could
+produce, each run under a policy that requires presence and one that does not.
+Three outcomes are counted and not two, because a security path that throws is as
+broken as one that admits, just louder.
+
+| group | cases | refused under both | threw | admitted |
+|---|---|---|---|---|
+| malformed report | 27 | 25 | 0 | 2 |
+| fabricated verdict | 19 | 18 | 0 | 1 |
+| policy or request shape | 19 | 18 | 0 | 1 |
+
+**61 of 65 — 93.8% — refuse under both policies, 0 throw, 4 admit.** None of the
+four is a bypass and each is accounted for: two are well-formed reports that
+declare and attempt nothing, which reach `absent` correctly; one is
+`uncorroborated` with a pair list bolted on, admitted **under the permitting
+policy only** with `presence-not-required` rather than
+`corroborated-and-approved`, so the bolted-on list bought nothing; and the fourth
+is the defect below. Separately, 20 junk shapes in every argument position of the
+four public functions — **32,000 calls** — produced 0 throws, 0 admissions and 0
+`corroborated`.
+
+The three fabricated `corroborated` verdicts are the ones worth reading, because
+they are what a caller who copied the state field and built the rest would
+produce. A bare `state: "corroborated"`, a pair list over channels whose own
+records say `passed: false`, and a channel corroborating itself: **all three are
+refused with `missing-corroboration` under both policies.** The gate reads the
+pair list the verifier published and checks it against the channel records, so
+the state string alone is not the claim.
+
+#### A stated channel requirement that is silently dropped
+
+**This is a defect, and it is reported here rather than smoothed over.**
+`normalizePolicy` filters `requiredChannels` through the channel vocabulary and
+keeps what survives, so a name that is not one of the three is **discarded and
+the policy proceeds as though the sender had asked for nothing.** Measured
+against a corroborated verdict carrying optical and acoustic:
+
+| sender asked for | policy kept | dropped | decision |
+|---|---|---|---|
+| `optical` | `optical` | — | **admit** `corroborated-and-approved` |
+| `ranging` | `ranging` | — | `required-channel-did-not-pass` |
+| `lidar` | *nothing* | **`lidar`** | **admit** `corroborated-and-approved` |
+| `ultrasonic` | *nothing* | **`ultrasonic`** | **admit** `corroborated-and-approved` |
+| `optical, lidar` | `optical` | **`lidar`** | **admit** `corroborated-and-approved` |
+| `ranging, lidar` | `ranging` | **`lidar`** | `required-channel-did-not-pass` |
+| `Optical` | *nothing* | **`Optical`** | **admit** `corroborated-and-approved` |
+| `optical ` (trailing space) | *nothing* | **`optical `** | **admit** `corroborated-and-approved` |
+| `'optical'` as a string, not an array | *nothing* | **`optical`** | **admit** `corroborated-and-approved` |
+
+**6 of these 9 policies had a channel requirement silently dropped and were then
+admitted.** That is the same failure mode the `policy-incoherent` refusal exists
+to prevent one step earlier: the module refuses a policy that names a required
+channel while saying presence is not required, on the stated grounds that neither
+of two colliding statements may silently win — and then quietly discards a
+required channel it does not recognise. `ultrasonic` is the case that matters,
+because it is **ADR-023's own word** for the channel whose module id is
+`acoustic`: a sender copying the ADR gets an activation it believes was gated on
+a channel that was never checked.
+
+**This is not a violation of ADR-023 §2.2.** Every one of those admissions still
+required two distinct channels to corroborate, so no single channel authorized
+anything and the pair relation is intact. It is a security setting being ignored
+without saying so. The receipt does carry `senderRequiredChannels`, but it
+carries the *normalised* list, so it agrees with the gate rather than with what
+the sender wrote and an auditor reading it would never see the drop.
+
+#### What deciding costs
+
+| function | p50 | p95 |
+|---|---|---|
+| `parseReport` (well-formed, two channels) | 0.124 µs | 0.146 µs |
+| `verifyPresence` → corroborated (two stub readers) | 0.626 µs | 1.267 µs |
+| `verifyPresence` as this repository stands (three channels, no reader) | 0.674 µs | 0.702 µs |
+| `verifyPresence` → absent (no report) | 0.054 µs | 0.092 µs |
+| `admitActivation` (corroborated, three stages, grant table) | 0.263 µs | 0.462 µs |
+| `presenceTranscript` | 0.104 µs | 0.262 µs |
+| `presenceReceipt` | 0.304 µs | 0.520 µs |
+
+A **fusion decision** — verify once, gate once — costs **0.89 µs**. Building the
+**transcript and the receipt** costs a further **0.41 µs**. One activation pays
+all four once: **1.30 µs**. Against the **shortest** transfer measured anywhere
+in this document — **0.4 s**, the 2,304-byte demo container at 1024 B and 10 fps
+(§6) — that is **5 orders of magnitude cheaper than the transfer it gates**;
+against the **16.4 s** the 40,989-byte demo WASM takes at the app's own defaults
+it is **7**. So yes, negligible — but that word is the conclusion and the two
+ratios are the reason, rather than the other way round. Figures are the mean within a
+batch of 2,000 calls and the median across 25 batches, on the machine in the
+header.
+
+#### What this subsection does not establish
+
+It says nothing about optical presence, ultrasound or radio ranging, because it
+runs none of them and neither does anything else in this repository — and two of
+the three cannot be run from a web page at all today. **It has not measured a
+relay and does not simulate one**, so ADR-023 §4's criterion 4 is unmet and no
+statement anywhere above says which channels a relay defeats. It has not reviewed
+a UI wording, because there is no UI, so criterion 6 is unmet. Binding is checked
+here as a plain field comparison, exactly as the module checks it; in a real
+channel the challenge is *inside* the measurement — a tone that answers, a ranging
+exchange that completes — so binding and reading would be one check and not two,
+and that is precisely the part no reader implements.
+
+What it does establish is narrower and worth having on its own: across 343
+outcome combinations and 440 policy inputs, **no single channel and no invented
+threshold ever reaches an authorization**, and adding a perfect channel never
+moves a decision; every admission passes the capability check; 93.8% of hostile
+inputs refuse rather than throw or admit and the exceptions are each accounted
+for; and the whole decision costs 1.3 µs.
+
 ---
 
 # Part II — MODELLED
@@ -2907,6 +3194,7 @@ in the brief for this work. Reported rather than smoothed.
 | ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps (§12, counting frames). Reached independently in §10's closure subsection by counting bytes instead: **10,119 B of hybrid signature against a 7,320 B budget at the measured 2,440 B/s, a floor 38% larger than the whole budget** | **Jointly infeasible, and now by two routes that do not share a model.** Neither ADR is wrong alone. The byte-rate route also settles the wording ADR-022 §4.6 leaves open: because the floor does not move with the artifact, the answer is not "not achievable at this artifact size" but **not achievable at any**. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
 | ADR-022 and ADR-012 budget signatures in raw bytes; `closure.js` `parseOffer` requires `signature` to be a run of lowercase hex | Measured: a 64-byte Ed25519 signature occupies **128 bytes as offered**. Every signature budget in both ADRs is therefore half the wire cost of this encoding — the hybrid optical floor is 20,238 B rather than 10,119 B, 2.76× the 3-second budget rather than 1.38× | **Both are right about different things and the gap is a factor of two.** The ADRs size a signature; the module encodes one. It moves `closure.js`'s own overhead crossover from 671 B to 927 B, and it makes the infeasibility in the row above worse rather than better, so it changes no conclusion — but a byte budget quoted from an ADR and compared against this module's wire is out by 2× and nothing currently says so. |
 | ADR-003 §2.2 reasons about the 8% gate "at v2's measured 764 payload bytes per frame" | 764 B is the binary framing, which the shipped decoder cannot return (§1). The reachable figure at version 19-L is 665 B | The 8% rule survives — §2 measures every corpus artifact clearing it — but the supporting arithmetic is 15% optimistic: 8% of 40 KB is 5.0 frames and 1.0 s at 665 B, not the 4.3 frames and 0.9 s the ADR states. The conclusion does not move. |
+| `presence.js` refuses a policy whose two statements collide, on the stated grounds that "a stated channel requirement was quietly ignored… is the failure mode a security setting must never have" | `normalizePolicy` filters `requiredChannels` through the channel vocabulary and **silently discards** any name it does not recognise. 6 of 9 probed policies had a requirement dropped and were then admitted, including `requiredChannels: ['ultrasonic']` — **ADR-023's own word** for the channel whose module id is `acoustic` | **The module states the principle and then breaks it one field over.** It is not an ADR-023 §2.2 violation: every one of those admissions still required two distinct channels to corroborate, so no single channel authorized anything. It is a security setting ignored without saying so, and the receipt cannot reveal it because `senderRequiredChannels` records the *normalised* list rather than what the sender wrote. A refusal on an unrecognised channel name, matching the `policy-incoherent` refusal, would close it. |
 | `core.SIGNATURE_SIZE = 16` | 16 bytes is not a signature size for any standard scheme | Modelled with 64 B (Ed25519) instead, with the discrepancy stated. Whatever 16 means, it is a truncated tag. |
 | Decode cost at 512 B symbols is 3.86 ms (previous revision of this document) | 2.63 ms this run | Same code, same seed, warmer JIT. Millisecond figures on this machine vary by tens of percent between runs; byte and frame counts do not vary at all. |
 
@@ -2995,6 +3283,9 @@ store and the camera buffers are not.
 | Energy, in joules | **Not measurable here at all.** No power measurement of any kind exists in this repository, which is why the planner's E term (§10, the planner subsection) is a relative proxy in arbitrary units against one optical slot, and why it is the only one of J's four terms whose weight buys a number nobody has checked against a battery. |
 | Whether a plan was the *right* plan | **Not measured.** The planner subsection measures what is decided, what the alternatives would have cost in the same model, and what deciding costs. Whether the model ranks real transfers correctly needs the two devices in the first row of this table. |
 | **Any root of trust — DICE, TPM 2.0, Secure Enclave, Android hardware-backed keys** | **Not measurable, because none is implemented.** ADR-021 §2.1 names all four; `attest.describeRoots()` reports all four `unexercised`, and nothing in this repository has produced or checked an attestation on hardware or otherwise. The attestation subsection (§10, after the planner) uses an **injected stub verifier** wherever a chain check is needed, and so measures the verdict-and-gate logic only. On this platform the `attested` state is unreachable without a verifier that does not exist here. **rvQR does not attest devices**, and no figure in that subsection should be read as evidence that it does. |
+| **Any physical presence signal — optical presence, ultrasound, radio ranging** | **Not measurable, because none of the three is implemented.** ADR-023 §1 names all three; `presence.describeChannels()` reports all three `unimplemented` with `readerSupplied: false`. There is no `AudioContext`, no oscillator and no acoustic code of any kind in this repository, there is no ranging code, and **no browser exposes a UWB API at all**. The presence subsection (§10, after the closure subsection) drives every channel from an **injected stub reader** and so measures the fusion rule only. Run as this repository stands, 0 of 3 channels can pass and `corroborated` is unreachable. **rvQR does not sense proximity**, and no figure in that subsection should be read as evidence that it does. |
+| **ADR-023 criterion 4: a measured relay attempt** | **Not measured, and deliberately not simulated.** The criterion asks for two devices, two rooms and a relay in between, and a report of which channels it defeats. That is hardware this repository does not have. Nothing anywhere in this document states which channels a relay defeats. What the presence subsection reports instead is which channels a relay would have to defeat *simultaneously* for a claim to exist under the pair relation — `describeRelayRequirement()` labels itself `evidence: "reasoning"`, `measured: false`, and it is reproduced as reasoning. Simulating a relay and reporting the result as observed would be worse than reporting nothing. |
+| **ADR-023 criterion 6: the UI wording reviewed against the over-claiming risk** | **Not applicable yet, because there is no UI.** Nothing is wired to `presence.js`, so there is no wording to review. `describeAcceptance()` marks it `unmet`. The transcript carries the caveat itself so that whatever is eventually written cannot quietly drop it. |
 | A hardware-held signing key | **Not measured, and not present.** `describeKeyCustody()` reports the key still in plaintext `localStorage`, readable by page script. Nothing here has signed anything with a key held outside the page, so ADR-035 is **not** superseded. `hardwareKeyAvailability()` reports whether an environment exposes WebAuthn — presence, never a demonstration — and no decision reads it. |
 | Whether an attested device id and a pinned peer id are the same party | **Not measured, and not a rule the module states.** A peer that signs the session and a device that attests to its boot could be two different things. §10's identity table records which of the two a grant was matched against; nothing checks that they agree. |
 | Resume-after-termination behaviour | **Not measured.** `artifacts/resume.js` is not covered by this harness. |

@@ -9,13 +9,22 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory, semdelta, planner, attest, closure, swarm.
+ *         fleet, closures, memory, semdelta, planner, attest, closure, swarm,
+ *         presence.
  *
  * `closures` and `closure` differ by one letter and are different suites.
  * `closures` (suite 10) is a MODEL of how long a split artifact takes to
  * arrive and runs no module; `closure` (suite 15) drives artifacts/closure.js
  * with the real SHA-256 and Ed25519 from artifacts/crypto.js and measures what
  * the split costs in bytes and in verification time.
+ *
+ * `presence` (suite 17) drives artifacts/presence.js. NONE of ADR-023's three
+ * presence channels is implemented anywhere in this repository — there is no
+ * acoustic code, no ranging code, and no browser exposes a UWB API at all — so
+ * every signal it feeds the module comes from an INJECTED STUB READER and the
+ * suite measures the FUSION RULE and nothing about physical presence. ADR-023
+ * §4's criterion 4 needs a measured relay attempt with two devices and two
+ * rooms, and criterion 6 needs a UI; both are unmet and neither is simulated.
  *
  * `swarm` (suite 16) is the only suite here whose timings are SIMULATION TICKS
  * rather than anything measured off a clock. Its byte and chunk counts are real
@@ -64,6 +73,7 @@ import { runPlannerSuite } from './suites/planner.mjs';
 import { runAttestSuite } from './suites/attest.mjs';
 import { runClosureModuleSuite, runSignatureBackends } from './suites/closure.mjs';
 import { runSwarmSuite } from './suites/swarm.mjs';
+import { runPresenceSuite } from './suites/presence.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -3604,6 +3614,602 @@ function printSwarmSuite(res) {
   say('');
 }
 
+function printPresenceSuite(res) {
+  say('### Physical presence fusion: a rule over three channels that do not exist — `artifacts/presence.js`');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+
+  // The disclaimer comes first, before any number. A reader who takes the tables
+  // below for evidence that rvQR senses proximity has been misled by this
+  // report, not by the module — `presence.js` says the same in its own docblock
+  // and `describeChannels()` says it from inside the running system.
+  const unimplemented = res.channels.filter((c) => c.status === 'unimplemented');
+  say(
+    `**None of the three channels is implemented. Not one.** \`describeChannels()\` reports ` +
+      `${unimplemented.length} of ${res.channels.length} as \`status: "unimplemented"\` with ` +
+      '`readerSupplied: false` — ' +
+      res.channels.map((c) => `${c.label} (\`${c.status}\`)`).join(', ') +
+      '. There is no ultrasonic code in this repository at all — no AudioContext, no oscillator, no ' +
+      'encoder, no decoder — there is no ranging code and **no browser exposes a UWB API**, and the ' +
+      'optical transport exists while measuring nothing whatever about presence. So this section ' +
+      'measures **the fusion rule** and nothing about physical presence. **rvQR does not sense ' +
+      'proximity.**'
+  );
+  say('');
+  say(
+    `Every channel takes its answer from \`opts.readers[channel]\`, an injected function supplied by a ` +
+      `caller that has hardware. There is no such caller, so the reader everywhere below is an ` +
+      `**${res.reader}**: every signal in every table is a *simulation of a signal* and never a signal, ` +
+      'and where a table says a channel passed, what passed was a stub returning `true`. Run as this ' +
+      `repository stands — a perfect report on all three channels and no reader anywhere — the verdict ` +
+      `is \`${res.fixtureCheck.asShippedState}\` with **${res.fixtureCheck.asShippedPasses} of 3 ` +
+      `channels passing** and all three \`${res.fixtureCheck.asShippedOutcomes[0]}\`. \`corroborated\` ` +
+      'is unreachable on this platform, and that is the honest state rather than a limitation of the suite.'
+  );
+  say('');
+
+  const c4 = res.acceptance.find((a) => a.criterion === 4);
+  const c6 = res.acceptance.find((a) => a.criterion === 6);
+  say(
+    `**ADR-023 §4 criteria 4 and 6 are NOT MET and nothing here approaches them.** Criterion 4 asks for ` +
+      'a relay attempt to be **measured** — two devices, two rooms, a relay in between, and a report of ' +
+      `which channels it defeats. That is hardware; \`describeAcceptance()\` marks it \`${c4.status}\` ` +
+      'and **no relay is simulated anywhere in this suite**, because simulating one and reporting which ' +
+      'channels it defeated would be reporting an invention as an observation. What the module does ' +
+      'publish is which channels a relay would have to defeat *simultaneously* for a claim to exist ' +
+      `under the pair relation, and it labels itself \`evidence: "${res.relay.evidence}"\`, ` +
+      `\`measured: ${res.relay.measured}\` — that is **reasoning about the rule, not a measurement of an ` +
+      `attack**. Criterion 6 is \`${c6.status}\` too: nothing is wired to a UI, so there is no wording ` +
+      'to review against §3\'s over-claiming risk.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['ADR-023 §4', 'status', 'why'],
+      res.acceptance.map((a) => [
+        String(a.criterion),
+        a.status === 'unmet' ? '**unmet**' : a.status,
+        a.note
+      ])
+    )
+  );
+  say('');
+  say(
+    '**Which channels a relay would have to defeat at once — REASONING, not measurement.** No relay ' +
+      'has been built, run or observed by this repository:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['corroborating pair', 'a relay must defeat, simultaneously and each against its own fresh challenge'],
+      res.relay.pairs.map((p) => [`\`${p.pair.join(' + ')}\``, p.mustDefeatSimultaneously.join(' **and** ')])
+    )
+  );
+  say('');
+  say(`*${res.relay.residual}*`);
+  say('');
+
+  say(
+    `Driving ${path.relative(REPO_ROOT, res.path)} end to end — ${res.exports} exports, ` +
+      `${res.states.length} fused states, ${res.outcomes.length} per-channel outcomes, ` +
+      `${res.pairRelation.declaredPairs.length} corroborating pairs. ` +
+      (res.testSuite.available
+        ? `The fixtures are \`artifacts/presence.test.js\`'s, reproduced exactly, and that test file is ` +
+          `run against the same module in this same process: **${res.testSuite.passed}/${res.testSuite.total} ` +
+          `passed**` +
+          (res.testSuite.failed
+            ? `, ${res.testSuite.failed} FAILED — ${res.testSuite.failures.join('; ')}.`
+            : '. So the copied fixtures are not drifting from the ones the module is tested with.')
+        : `The test file could not be run (${res.testSuite.reason}), so the copied fixtures are ` +
+          'unchecked against it.') +
+      ' The three challenges are **per channel**, which is the part that cannot be simplified: one ' +
+      'shared challenge would leave two of three channels `unbound` on every row and the matrix would ' +
+      'report a very strict module instead of an untested one.'
+  );
+  say('');
+  const fc = res.fixtureCheck;
+  say(
+    `Fixture self-check before any table is built on them: the two-channel recipe reaches ` +
+      `\`${fc.corroboratedState}\` with ${fc.corroboratedPairs} pair, the one-channel recipe reaches ` +
+      `\`${fc.singleState}\` with ${fc.singlePassed} channel passing, and the control — the same ` +
+      `corroborated verdict under a policy that requires presence and grants this peer — ` +
+      `${fc.controlAdmitted ? `**admits** with \`${fc.controlCode}\`` : `**does not admit** (\`${fc.controlCode}\`), so every refusal below could have been caused by the fixture and proves nothing`}.`
+  );
+  say('');
+
+  // --- 1. The decision matrix ------------------------------------------------
+
+  say(
+    '**The decision matrix.** Each of the three channels driven to each of the seven outcomes the ' +
+      'module defines, with the other two channels absent, so a row measures that channel in that ' +
+      'outcome and not a mixture. Every verdict is produced by the shipped `verifyPresence`; none is ' +
+      'written by hand. The six policy columns are the shapes a sender can take:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['policy shape', 'what it says'],
+      res.policyShapes.map((s) => [`\`${s.id}\``, s.label])
+    )
+  );
+  say('');
+  const shapeIds = res.policyShapes.map((s) => s.id);
+  say(
+    markdownTable(
+      ['channel', 'outcome', 'fused state', 'passed', 'pairs', ...shapeIds.map((s) => `\`${s}\``)],
+      res.isolation.map((row) => [
+        row.channel,
+        `\`${row.outcome}\`${row.reachedIntendedOutcome ? '' : ` **(recipe reached ${row.actualOutcome})**`}`,
+        `\`${row.fusedState}\``,
+        String(row.passed),
+        String(row.pairs),
+        ...shapeIds.map((id) => {
+          const cell = row.cells.find((x) => x.policy === id);
+          if (cell.outcome === 'threw') return '**THREW**';
+          return cell.admit ? `**ADMIT** \`${cell.code}\`` : `\`${cell.code}\``;
+        })
+      ])
+    )
+  );
+  say('');
+  const missedRecipes = res.isolation.filter((r) => !r.reachedIntendedOutcome);
+  const isolationAdmits = res.isolation.flatMap((r) => r.cells.filter((c) => c.admit).map((c) => ({ ...r, cell: c })));
+  say(
+    (missedRecipes.length
+      ? `**${missedRecipes.length} recipe(s) did not reach the outcome they name, so those rows measure ` +
+        `something else: ${missedRecipes.map((r) => `${r.channel}/${r.outcome}→${r.actualOutcome}`).join(', ')}.**`
+      : `All ${res.isolation.length} recipes reached the outcome they name, so every row measures the ` +
+        'outcome it names.') +
+      ' ' +
+      `${isolationAdmits.length} of the ${res.isolation.length * shapeIds.length} cells admit, and ` +
+      (isolationAdmits.every((a) => a.cell.code === 'presence-not-required')
+        ? '**every one of them is `presence-not-required`** — the `permits` column, where the sender is ' +
+          'not relying on presence at all. Not one admission anywhere in this table is attributable to ' +
+          'a channel, which is the property the whole matrix exists to test.'
+        : `**${isolationAdmits.filter((a) => a.cell.code !== 'presence-not-required').length} of them ` +
+          'carry a presence-based code on a single channel, which is a defect and is reported here ' +
+          'rather than adjusted away.**')
+  );
+  say('');
+  say(
+    'The `undeclared` and `incoherent` columns never admit on any row and that is the point of them: a ' +
+      'policy that has not said whether it requires presence is refused rather than handed a default, ' +
+      'and a policy naming a required channel while saying presence is not required is refused rather ' +
+      'than letting one of its two statements silently win.'
+  );
+  say('');
+
+  // --- The exhaustive product ------------------------------------------------
+
+  const sw = res.sweep;
+  say(
+    `**And the whole product.** Every combination of the ${res.outcomes.length} per-channel outcomes ` +
+      `over the ${res.channelNames.length} channels — **${sw.total} verdicts**, each driven through the ` +
+      `shipped verifier, then through the gate under all six policy shapes for ` +
+      `**${sw.decisions.toLocaleString('en-US')} decisions**. The fused state each combination reaches:`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['fused state', 'combinations', 'share'],
+      res.states.map((s) => [
+        `\`${s}\``,
+        String(sw.byState[s] || 0),
+        pct((sw.byState[s] || 0) / sw.total, 1)
+      ])
+    )
+  );
+  say('');
+  say(
+    (sw.mismatches.length
+      ? `**${sw.mismatches.length} of ${sw.total} combinations reached a state the module's documented ` +
+        'precedence does not predict** — ' +
+        sw.mismatches.slice(0, 5).map((m) => `${m.outcomes.join('/')} → \`${m.got}\` (predicted \`${m.predicted}\`)`).join(', ') +
+        '.'
+      : `All ${sw.total} combinations reached the state an independent reading of the module's ` +
+        'precedence predicts — a refusing outcome anywhere refuses the fusion, then two passing ' +
+        'channels corroborate, then nothing attempted is absent — so the sweep and the rule agree.') +
+      ' ' +
+      (sw.threw ? `**${sw.threw} call(s) threw.**` : 'Nothing threw.') +
+      ' ' +
+      (sw.singlePassCorroborated.length === 0
+        ? '**Not one combination with fewer than two passing channels reached `corroborated`.**'
+        : `**${sw.singlePassCorroborated.length} combination(s) reached \`corroborated\` on fewer than ` +
+          'two passing channels. That is the defect this suite exists to find.**') +
+      ' ' +
+      (sw.singlePassAdmittedOnPresence.length === 0
+        ? `Of the ${sw.admissions.toLocaleString('en-US')} admissions across all six policy shapes, ` +
+          '**none carries `corroborated-and-approved` on one channel or fewer**.'
+        : `**${sw.singlePassAdmittedOnPresence.length} admission(s) carry a presence-based code on one ` +
+          'channel or fewer.**') +
+      ' ' +
+      (sw.pairsOnRefusingState.length === 0
+        ? 'No refusing state publishes a pair list, so a hand-built gate reading `pairs` off a refused ' +
+          'verdict finds nothing there to match.'
+        : `**${sw.pairsOnRefusingState.length} refusing state(s) publish a pair list.**`)
+  );
+  say('');
+  say(
+    markdownTable(
+      ['policy shape', 'admissions', 'of', 'codes'],
+      res.policyShapes.map((s) => {
+        const p = sw.perShape[s.id];
+        return [
+          `\`${s.id}\``,
+          p.admitted.toLocaleString('en-US'),
+          sw.total.toLocaleString('en-US'),
+          Object.entries(p.byCode).map(([code, n]) => `\`${code}\` ×${n}`).join(', ') || '—'
+        ];
+      })
+    )
+  );
+  say('');
+
+  // --- 2. The pair relation is not a count -----------------------------------
+
+  say(
+    '**Corroboration is a pair relation, and there is nothing in it to set to one.** `presence.js` ' +
+      'enumerates `CORROBORATING_PAIRS` from every combination of two *distinct* channel indices rather ' +
+      'than comparing a tally against a bound, and the reason is stated in the module: a number that ' +
+      `can be set to 2 can be set to 1. The declared list is ` +
+      res.pairRelation.declaredPairs.map((p) => `\`${p.join('+')}\``).join(', ') +
+      ` — ${res.pairRelation.declaredPairs.length} pairs, ${res.pairRelation.declaredSelfPairs} of them ` +
+      'self-pairs, which is what `i < j` construction guarantees.'
+  );
+  say('');
+  say(
+    `Read off the shipped \`passingPairs\` over all ${res.pairRelation.combos} outcome combinations: a ` +
+      'pair is produced ' +
+      (res.pairRelation.disagreements.length === 0
+        ? '**exactly when two distinct channels passed, and never otherwise** — ' +
+          `${res.pairRelation.disagreements.length} disagreements, ${res.pairRelation.selfPairs} ` +
+          'self-pairs emitted.'
+        : `in **${res.pairRelation.disagreements.length} cases where the passing count does not justify ` +
+          'it**, which contradicts the rule.')
+  );
+  say('');
+  const ns = res.normalizedShape;
+  say(
+    `**A caller-supplied threshold is DROPPED, and here is it being dropped.** \`normalizePolicy\` ` +
+      `returns a fixed key set — \`${ns.keys.join('`, `')}\` — of which ` +
+      `${ns.numericFields.length} are numbers and ${ns.knobNamedFields.length} read as a knob. Each ` +
+      'invented field below was offered on an otherwise valid policy and the returned key set inspected:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['field a caller invented', 'value offered', 'survived normalisation?', 'key set after'],
+      ns.droppedRows.map((r) => [
+        `\`${r.field}\``,
+        `\`${r.value}\``,
+        r.survived ? '**YES — the policy carries it**' : 'no',
+        r.keysUnchanged ? 'unchanged' : `**${r.keysAfter}**`
+      ])
+    )
+  );
+  say('');
+  const th = res.threshold;
+  say(
+    (ns.allDropped
+      ? `**All ${ns.droppedRows.length} were dropped and the key set never moved.** There is no field ` +
+        'on a normalised policy for a threshold to live in.'
+      : '**At least one invented field survived normalisation.**') +
+      ' That is the structural claim; the behavioural one is the sweep beneath it. ' +
+      `**${th.policyInputs} policy inputs** — every combination of ${th.requireValues} ` +
+      `\`requirePresence\` values, ${th.requiredSets} \`requiredChannels\` sets, ${th.grantSets} grant ` +
+      `tables and ${th.inventedShapes} invented-knob shapes — were ` +
+      `crossed with four request shapes and the three one-perfect-channel verdicts, for ` +
+      `**${th.decisions.toLocaleString('en-US')} decisions**. ` +
+      (th.presenceCodedAdmissions === 0
+        ? `${th.admissions.toLocaleString('en-US')} of them admit and **not one carries ` +
+          '`corroborated-and-approved`**: no policy input anyone can write, invented fields included, ' +
+          'turns one channel into an authorization.'
+        : `**${th.presenceCodedAdmissions} of them admit with a presence-based code on a single ` +
+          'channel. That is the failure the pair relation exists to prevent.**')
+  );
+  say('');
+  say(
+    '**The counterfactual, which is the stronger form of the same question.** Counting refusals proves ' +
+      'little on its own — a module that refused everything would score perfectly. So each of those ' +
+      'decisions is compared against what the **empty report** gets under the identical policy and ' +
+      `request: ${th.comparisons.toLocaleString('en-US')} comparisons, of which the baseline admits ` +
+      `${th.baselineAdmissions.toLocaleString('en-US')}. ` +
+      (th.flips.length === 0
+        ? '**Adding one perfect channel changed `admit` in exactly 0 of them.** If a channel never ' +
+          'changes the decision, it never authorized anything — and the baseline admitting in some of ' +
+          'them is what makes that a measurement rather than a module that says no to everything.'
+        : `**${th.flips.length} of them flipped**, so one channel does move a decision: ` +
+          th.flips.slice(0, 5).map((f) => `${f.verdict} under requirePresence=${f.requirePresence} (${f.code})`).join('; ') +
+          '.')
+  );
+  say('');
+  const mr = res.mutatedRule;
+  say(
+    '**And the rule itself, corrupted on purpose.** `CORROBORATING_PAIRS` is exported by reference and ' +
+      `is \`Object.isFrozen\` **${mr.frozen}**, so a page script sharing this module can push a ` +
+      'self-pair straight into the fusion rule. That is not hypothetical, so it is measured: a ' +
+      `\`['optical', 'optical']\` pair was pushed onto the live list, one perfect optical channel was ` +
+      `run through the verifier, and the verifier did reach \`${mr.verifierState}\` with ` +
+      `${mr.verifierPairs} pair. ` +
+      (mr.admitted
+        ? '**The gate then admitted it**, so a mutated pair list is a complete bypass of ADR-023 §2.2.'
+        : `**The gate refused it anyway** — \`${mr.code}\`, unmet: ` +
+          `${mr.unmet.map((u) => `\`${u}\``).join(', ')} — because \`unmetRequirements\` re-checks ` +
+          '`pair[0] !== pair[1]` against the channel records rather than trusting the list. The ' +
+          'distinctness rule is enforced twice, in the construction and in the gate, and only the ' +
+          'second one is reachable by a caller. The list was restored afterwards and the restoration ' +
+          `verified: **${mr.restored}**.`)
+  );
+  say('');
+
+  // --- 3. Fail-closed --------------------------------------------------------
+
+  const cov = res.coverage;
+  say(
+    `**Fail-closed coverage.** ${cov.total} inputs a hostile or broken device, a confused caller or an ` +
+      'unfinished policy could produce, each run under a policy that requires presence and one that ' +
+      'does not. Three outcomes are counted and not two, because a security path that throws is as ' +
+      'broken as one that admits, just louder:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['group', 'cases', 'refused under both policies', 'threw', 'admitted'],
+      ['malformed report', 'fabricated verdict', 'policy or request shape'].map((g) => {
+        const rows = res.failClosed.filter((r) => r.group === g);
+        return [
+          g,
+          String(rows.length),
+          String(rows.filter((r) => r.strictOutcome === 'refused' && r.laxOutcome === 'refused').length),
+          String(rows.filter((r) => r.strictOutcome === 'threw' || r.laxOutcome === 'threw' || r.parseThrew || r.verifyThrew).length),
+          String(rows.filter((r) => r.strictOutcome === 'admitted' || r.laxOutcome === 'admitted').length)
+        ];
+      })
+    )
+  );
+  say('');
+  say(
+    `**${cov.refusedUnderBoth} of ${cov.total} — ${pct(cov.fraction, 1)} — produce a refusal under both ` +
+      `policies, ${cov.threw} throw and ${cov.admitted} are admitted.** ` +
+      (cov.admitted
+        ? 'The admitted rows are: ' +
+          cov.admittedNames.map((a) => `**${a.name}** (\`${a.strict}\` / \`${a.lax}\`)`).join('; ') + '.'
+        : 'Nothing malformed is admitted anywhere.') +
+      ' ' +
+      (cov.parseNeverThrew
+        ? '`parseReport` is documented never to throw and it never did, on any of these.'
+        : '**`parseReport` threw**, which contradicts its own docblock.')
+  );
+  say('');
+  say(
+    `**Where each one was caught, which is not the same question as whether it was caught.** ` +
+      `\`parseReport\` reads the CONTAINER and \`parseSignal\` reads each signal separately, ` +
+      'deliberately, so that one broken signal does not erase the other two from the transcript. Of the ' +
+      `${res.failClosed.filter((r) => r.group === 'malformed report').length} reports in that group, ` +
+      `**${cov.parseRefused} were refused by \`parseReport\` outright** and ` +
+      `**${cov.parseAcceptedThenRefused.length} passed the container check and were then refused at the ` +
+      `signal** — ` +
+      cov.parseAcceptedThenRefused.map((a) => `${a.name} → \`${a.state}\``).join(', ') +
+      `. The remaining ${cov.parseAcceptedAsAbsent.length} are **not malformed at all** and are named ` +
+      'rather than counted as parser misses: ' +
+      cov.parseAcceptedAsAbsent.map((a) => `**${a.name}** → \`${a.state}\``).join(', ') +
+      ' — well-formed reports that declare and attempt nothing, which is the ordinary case for two web ' +
+      'pages and a state rather than a failure. ' +
+      (cov.refusedParseReachesMalformed
+        ? 'Every report `parseReport` refused reached `malformed`, and none of them landed on `absent`, ' +
+          'which is the distinction the downgrade paragraph below turns on.'
+        : '**At least one refused report landed on a state other than `malformed`.**')
+  );
+  say('');
+  say(
+    (res.downgrade.kept
+      ? '**A malformed report is refused rather than treated as an absent one**, which is the pair of ' +
+        'cells that prevents a downgrade: under the *same* permitting policy, `absent` admits with ' +
+        `\`${res.downgrade.absentCode}\` and \`malformed\` refuses with \`${res.downgrade.malformedCode}\`. ` +
+        'A pair that could reach the absent path by sending garbage would have found the widest ' +
+        'permission in the system by making its evidence worse.'
+      : '**Malformed and absent are NOT kept apart under a permitting policy**, so a pair can change ' +
+        'its treatment by corrupting its own report.') +
+      ' `uncorroborated` under the same permitting policy ' +
+      (res.downgrade.uncorroboratedAdmitted
+        ? `admits with \`${res.downgrade.uncorroboratedCode}\` — deliberately, and it is the same code ` +
+          '`absent` gets: a sender not relying on presence must not treat a partial report as *worse* ' +
+          'than no report, which would only teach devices to send nothing.'
+        : `refuses with \`${res.downgrade.uncorroboratedCode}\`.`)
+  );
+  say('');
+  say(
+    '**The three fabricated `corroborated` verdicts are the ones worth reading**, because they are what ' +
+      'a caller who copied the state field and built the rest would produce. A bare `state: ' +
+      '"corroborated"`, a pair list over channels whose own records say `passed: false`, and a channel ' +
+      'corroborating itself:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['fabricated verdict', 'what it is', 'requiring policy', 'permitting policy'],
+      res.failClosed
+        .filter((r) => r.group === 'fabricated verdict' && /corroborated/.test(r.name))
+        .map((r) => [
+          r.name,
+          r.what,
+          r.strictOutcome === 'admitted' ? `**ADMITTED** \`${r.strictCode}\`` : `\`${r.strictCode}\``,
+          r.laxOutcome === 'admitted' ? `**ADMITTED** \`${r.laxCode}\`` : `\`${r.laxCode}\``
+        ])
+    )
+  );
+  say('');
+  say(
+    'The last row of that table is the one to read carefully, because it is admitted and it is not a ' +
+      'bypass: `uncorroborated` with a pair list bolted on is admitted **under the permitting policy ' +
+      'only**, with `presence-not-required` and not `corroborated-and-approved`. The permitting policy ' +
+      'admits every `uncorroborated` verdict, with or without a pair list; the bolted-on list bought ' +
+      'nothing, and that is visible in the code rather than having to be argued.'
+  );
+  say('');
+
+  // A defect this suite found and is reporting rather than adjusting away.
+  say(
+    '**A stated channel requirement that is silently dropped — reported here rather than smoothed ' +
+      'over.** `normalizePolicy` filters `requiredChannels` through the channel vocabulary and keeps ' +
+      'what survives, so a name that is not one of the three is **discarded and the policy proceeds as ' +
+      'though the sender had asked for nothing**. Measured against a corroborated verdict carrying ' +
+      'optical and acoustic:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['sender asked for', 'what it is', 'policy kept', 'dropped', 'decision'],
+      res.requiredChannelDrop.map((r) => [
+        `\`${r.asked.join(', ')}\``,
+        r.what,
+        r.kept.length ? `\`${r.kept.join(', ')}\`` : '*nothing*',
+        r.dropped.length ? `**\`${r.dropped.join(', ')}\`**` : '—',
+        r.admitted ? `**ADMIT** \`${r.code}\`` : `\`${r.code}\``
+      ])
+    )
+  );
+  say('');
+  say(
+    (res.silentDrops.length
+      ? `**${res.silentDrops.length} of these ${res.requiredChannelDrop.length} policies had a channel ` +
+        'requirement silently dropped and were then ADMITTED.** That is the same failure mode the ' +
+        '`policy-incoherent` refusal exists to prevent one step earlier — the module refuses a policy ' +
+        'that names a required channel while saying presence is not required, on the stated grounds ' +
+        'that neither of two colliding statements may silently win, and then quietly discards a ' +
+        'required channel it does not recognise. A sender that writes `requiredChannels: ' +
+        "['ultrasonic']` — the ADR's own word for the acoustic channel, and not the module's — gets an " +
+        'activation it believes was gated on a channel that was never checked. ' +
+        '**This is not a violation of ADR-023 §2.2:** every one of these admissions still required two ' +
+        'distinct channels to corroborate, so no single channel authorized anything, and the pair ' +
+        'relation is intact. It is a security setting being ignored without saying so, which is worth ' +
+        'a refusal or at least a field on the receipt. The receipt does record ' +
+        '`senderRequiredChannels` — but it records the *normalised* list, so it agrees with the gate ' +
+        'and not with what the sender wrote, and an auditor reading it would never see the drop.'
+      : 'No policy had a channel requirement silently dropped.')
+  );
+  say('');
+  const js = res.junkSweep;
+  say(
+    `And the blunt instrument: ${js.shapes} junk shapes in every argument position of ` +
+      `\`admitActivation\`, \`verifyPresence\`, \`presenceTranscript\` and \`presenceReceipt\` — ` +
+      `**${js.calls.toLocaleString('en-US')} calls** over ${js.triples.toLocaleString('en-US')} argument ` +
+      `triples. ${js.threw} threw, ${js.admitted} admitted, ${js.corroborated} reached ` +
+      '`corroborated`' +
+      (js.threw || js.admitted || js.corroborated
+        ? `. **Throw sites: ${js.throwSites.join(', ') || 'none'}.**`
+        : '. Total functions over hostile input, which is what lets the matrix above be read as ' +
+          'exhaustive rather than as the cases that happened not to crash.')
+  );
+  say('');
+  const rc = res.receipts;
+  say(
+    '**The receipt never conflates "corroborated and approved" with "nobody asked".** Both end in an ' +
+      'activation proceeding and they are entirely different claims, so they are carried in separate ' +
+      'named fields:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['', 'presence', 'report presented', 'sender required presence', 'pairs', 'decision', 'summary'],
+      [
+        ['corroborated', rc.corroborated],
+        ['nobody asked', rc.nobodyAsked]
+      ].map(([label, r]) => [
+        label,
+        `\`${r.presence}\``,
+        String(r.reportPresented),
+        String(r.requiredPresence),
+        String(r.pairs),
+        `\`${r.code}\``,
+        r.summary
+      ])
+    )
+  );
+  say('');
+  say(
+    rc.distinguished
+      ? '`admitted: true` alone says nothing, which is exactly why it is never recorded alone.'
+      : '**The two read the same**, so a reader of the receipt cannot tell them apart.'
+  );
+  say('');
+
+  // --- 4. Cost ---------------------------------------------------------------
+
+  const k = res.cost;
+  say(
+    `**What deciding costs.** Per-call figures are the mean within a batch of ` +
+      `${k.batch.toLocaleString('en-US')} calls and the median across ${k.reps} batches — batched ` +
+      'because these run in single-digit microseconds and a clock read costs tens of nanoseconds:'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['function', 'p50', 'p95', 'min', 'max'],
+      [
+        ['`parseReport` (well-formed, two channels)', k.parseReport],
+        ['`verifyPresence` → corroborated (two stub readers)', k.verifyCorroborated],
+        ['`verifyPresence` as this repository stands (three channels, no reader)', k.verifyAsShipped],
+        ['`verifyPresence` → absent (no report)', k.verifyAbsent],
+        ['`admitActivation` (corroborated, three stages, grant table)', k.admitActivation],
+        ['`presenceTranscript`', k.presenceTranscript],
+        ['`presenceReceipt`', k.presenceReceipt]
+      ].map(([label, st]) => [
+        label,
+        `${fmt(st.p50, 3)} µs`,
+        `${fmt(st.p95, 3)} µs`,
+        `${fmt(st.min, 3)} µs`,
+        `${fmt(st.max, 3)} µs`
+      ])
+    )
+  );
+  say('');
+  const anchorSeconds = 1;
+  const orders = Math.floor(Math.log10(anchorSeconds / (k.perActivationUs / 1e6)));
+  say(
+    `A **fusion decision** — verify once, gate once — costs **${fmt(k.fusionDecisionUs, 2)} µs**. ` +
+      `Building the **transcript and the receipt** costs a further **${fmt(k.transcriptAndReceiptUs, 2)} µs**. ` +
+      `One activation pays all four once: **${fmt(k.perActivationUs, 2)} µs**, which is ` +
+      `${Math.round(k.decisionsPerFramePeriod).toLocaleString('en-US')} activations inside a single ` +
+      `${k.framePeriodMs} ms frame period at the app's default 5 fps, or ${pct(k.shareOfFramePeriod, 4)} ` +
+      `of one frame. Against a transfer of ${anchorSeconds} second that is **${orders} orders of ` +
+      'magnitude cheaper than the transfer it gates**. One second is a round anchor chosen so the ' +
+      'arithmetic is checkable by hand and not a transfer this suite measured — this suite measures no ' +
+      'transfer at all, and borrowing a duration from another suite here would be quoting a number the ' +
+      'harness has not produced at this point in the run; the report\'s own transfer sections supply ' +
+      'the range around this anchor. That is the claim these numbers support; "negligible" on its own ' +
+      'is not. The 5 fps is a configured constant of this ' +
+      'application and not a measurement, and the microseconds are of this machine and this run — the ' +
+      '`--quick` batch size moves them.'
+  );
+  say('');
+  say(
+    '**What this suite does not establish.** It says nothing about optical presence, ultrasound or ' +
+      'radio ranging, because it runs none of them and neither does anything else in this repository — ' +
+      'and two of the three could not be run from a web page at all today. It has not measured a relay ' +
+      'and does not simulate one. It has not reviewed a UI wording, because there is no UI. Binding is ' +
+      'checked here as a plain field comparison, exactly as the module checks it, and in a real channel ' +
+      'the challenge is *inside* the measurement — a tone that answers, a ranging exchange that ' +
+      'completes — so binding and reading would be one check and not two, and that is precisely the ' +
+      'part no reader implements. What the tables above establish is narrower and worth having on its ' +
+      `own: that across ${res.sweep.total} outcome combinations and ` +
+      `${res.threshold.policyInputs} policy inputs, no single channel and no invented threshold ever ` +
+      'reaches an authorization; that every admission passes the capability check; that ' +
+      `${pct(res.coverage.fraction, 0)} of hostile inputs refuse rather than throw or admit; and that ` +
+      `it costs ${fmt(k.perActivationUs, 1)} µs. ` +
+      (res.silentDrops.length
+        ? `It also found one thing the module gets wrong, stated above rather than tidied away: a ` +
+          `\`requiredChannels\` entry the module does not recognise is dropped without a refusal in ` +
+          `${res.silentDrops.length} of ${res.requiredChannelDrop.length} probes.`
+        : '')
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 // Asynchronous solely because one measurement is: the browser's own
@@ -3992,6 +4598,20 @@ async function main() {
       crossCheckDevices: args.quick ? 5 : 10
     });
     printSwarmSuite(results.swarm);
+  }
+
+  if (want('presence')) {
+    say('---');
+    say('');
+    // Batched rather than trial-counted, for the same reason the attestation
+    // suite is: these are microsecond-scale pure functions, so --trials is the
+    // wrong dial and --quick moves the batch instead. The coverage sweeps are
+    // exhaustive over the module's own vocabularies and do not vary with either.
+    results.presence = runPresenceSuite({
+      batch: args.quick ? 200 : 2000,
+      reps: args.quick ? 5 : 25
+    });
+    printPresenceSuite(results.presence);
   }
 
   if (args.json) {
