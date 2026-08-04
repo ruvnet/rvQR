@@ -206,6 +206,33 @@ three-second budget is 7,320 B while three hybrid signatures alone are 10,119 B,
 **the floor exceeds the whole budget by 38% before one content byte** and the
 honest answer is "not achievable at *any* artifact size", not "not at this one".
 
+**16. A hostile peer costs bandwidth and time and cannot put one wrong byte on
+one device — and the cheapest attack to detect is the most expensive one to
+suffer.** SIMULATED through `artifacts/swarm.js` (§14), whose byte and chunk
+counts are measurements of the simulation and whose **timings are ticks, not
+seconds — ADR-024's Fleet-10 and Fleet-100 need physical devices and are NOT
+met**. Source traffic measured at the link stays at **1.422× the artifact for 100
+simulated devices** against a projected 409,600 B point-to-point — a 70.3×
+reduction, inside ADR-024 §2.1's 3× target with more than half the budget unused
+— with **98.6% of admitted chunks coming from a peer rather than the source**.
+Under each of the three behaviours ADR-024 §4.4 names, `auditReceivers()`
+re-digested all 6,400 stored chunks independently of the path that stored them
+and found **zero wrong chunks and zero wrong reassemblies**. The ordering of the
+costs is the finding: **slow-drip costs +271 ticks against a control of one
+honest peer in the same slot, while corrupt-chunk costs +21 and
+advertise-and-withhold −3** — the two detectable behaviours land inside the 22
+ticks that merely adding a peer moves the schedule, so at that fleet size the
+tick column establishes no cost for either, and only the byte columns separate
+them. A peer that is never *wrong* is never refused, which is deliberate:
+refusing on latency would refuse a weak radio. The defence itself is not free and
+is measured — the score floor drops a failing peer after **exactly one attempt
+per device** (one failure scores −2 against a floor of −0.5), and at 100 devices
+that cost 88 device-slot ticks for a withholder and **5,824 B, 1.42× the whole
+artifact, received and discarded** for a corrupter. Also measured: `swarm.js`'s
+own claim that chunk accounting "understates the link by roughly the fleet size"
+is **wrong in a working swarm** — the inference saturates at the artifact size,
+so the error is 1.42×, not 100×.
+
 ---
 
 ## Reproducing this
@@ -230,11 +257,18 @@ node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
 node bench/index.mjs --suite planner     # strategy choice, the hard rules, inventory granularity
 node bench/index.mjs --suite attest      # the attestation state matrix, fail-closed coverage, decision cost
 node bench/index.mjs --suite closure     # closure.js: signature and closure overhead, verification cost
+node bench/index.mjs --suite swarm       # swarm.js: source traffic, malicious peers, the cost of the defence
 
 # `closures` and `closure` differ by one letter and are different suites. `closures`
 # is §12, a model of how long a split artifact takes to arrive, and runs no module.
 # `closure` is §10's last subsection, which drives artifacts/closure.js with the real
 # SHA-256 and Ed25519 and measures what the split costs.
+
+# `fleet` and `swarm` are both about ADR-024's 100-device target and are also
+# different suites. `fleet` is §11, an optical broadcast model that runs no module.
+# `swarm` is §14, which drives artifacts/swarm.js over a simulated peer network with
+# no broadcast tier in it at all. Every timing `swarm` reports is a SIMULATION TICK
+# and no wall-clock gate is evaluated by it.
 
 # The memory suite spawns its own child process; to run that probe directly:
 node --expose-gc bench/lib/memprobe.mjs
@@ -244,7 +278,9 @@ node bench/index.mjs --quick
 ```
 
 The harness makes no network requests, reads nothing outside the repository,
-and takes about 3 minutes 15 seconds for the full 500-trial run. It prints a
+and takes about 3 minutes 15 seconds for the full 500-trial run, plus about 90
+seconds for the swarm suite, whose cost is the simulation itself rather than the
+trial count — `--trials` does not move it and `--quick` drops its 100-device rows. It prints a
 markdown report on stdout and optionally writes the raw per-cell statistics as
 JSON.
 
@@ -1522,7 +1558,7 @@ B is a ratio against one fixed reference strategy — v1 JSON, indexed, 512 B
 chunk, whole artifact, complete verification, which is what this app does today
 when nobody chooses anything — evaluated in the same situation. R is already a
 probability. **T's inputs are measured (§4, §10); E's are not, and there is no
-power measurement anywhere in this document (§17), so the energy term is a
+power measurement anywhere in this document (§18), so the energy term is a
 relative proxy in arbitrary units.**
 
 This suite was run on the machine and seed recorded above but **at
@@ -2212,6 +2248,13 @@ verification work at every size measured.
 Everything in this part is arithmetic or simulation over measured inputs. None
 of it observes a running system, because none of these systems exists yet.
 
+§14 is the awkward member of this part and is placed here deliberately. It runs
+a real module over real bytes and its byte and chunk counts are measurements —
+but of a simulated network of simulated devices, and its clock is a tick counter,
+so under this document's three-way taxonomy it is a simulation over measured
+inputs and belongs with the models. Which of its numbers are measurements of
+what is stated inside the section, table by table.
+
 ## 11. Fleet: N receivers on one site
 
 `node bench/index.mjs --suite fleet`
@@ -2438,11 +2481,324 @@ near 85 because both are dominated by the changed fraction plus rounding rather
 than by anything about span size. The ~85–100× family is robust to the details;
 our projection did not predict their measurement.
 
+## 14. Fleet swarm distribution: `artifacts/swarm.js`
+
+`node bench/index.mjs --suite swarm`
+
+**This is not §11, and the two are easy to confuse because they are about the
+same ADR-024 target.** §11 (`--suite fleet`) models an OPTICAL broadcast: one
+painted symbol reaching every camera in the same slot, with a rateless code and
+independent erasure, and it runs no module. This section drives
+`artifacts/swarm.js` end to end — `buildManifest` → `beginReceive` →
+`offerManifest` → `offerChunk` ×n → `reassemble` — over a network of simulated
+devices exchanging content-addressed chunks. There is no broadcast tier in it at
+all. §11's saving is dominated by a hundred cameras watching one screen; this
+section's saving is entirely peer exchange, which is the mechanism ADR-024 §2.1
+calls "a chunk a peer already holds is a chunk the source never sends".
+
+**Every timing in this section is a SIMULATION TICK.** The module says so from
+inside itself — `simulation: true`, `wallClockMeasured: false`,
+`physicalDevices: 0`, `timingUnit: "ticks"` — and those four fields are carried
+into every table below rather than paraphrased. A tick is a unit `swarm.js`
+defines; nothing in this repository has calibrated one against a device, a radio
+or a clock. The **byte counts and chunk counts are measurements of the
+simulation**: every chunk in every table went through the shipped verification
+pipeline on a simulated receiver that derived its expectation from a manifest it
+verified itself.
+
+**ADR-024 §4.1 Fleet-10 and §4.2 Fleet-100 are NOT MET and are not approached
+here.** They require ten and one hundred PHYSICAL DEVICES against wall-clock
+gates of 3 s and 60 s. `describeCriteria()` marks both `requires-device-fleet`
+and `met: false`; this section reports them the same way and quotes no seconds
+anywhere. Running a hundred simulated receivers is not Fleet-100 — heterogeneity
+(different radios, thermal limits, older roots) is most of what that criterion
+tests and is exactly what a simulation cannot supply.
+
+**The digest and signer are stand-ins, and one configuration is re-run with real
+ones to prove it does not matter.** `swarm.js` takes `digest`, `sign` and
+`verifySignature` as injected functions and requires the digest to return
+lowercase hex; one that returns bytes fails every comparison, every chunk is
+refused, and the run reports well-formed zeroes that look exactly like a result.
+The sweeps use `artifacts/swarm.test.js`'s own FNV-based digest and signer, which
+are **not cryptography**. The ten-device configuration is then run a second time
+with `crypto.sha256` and `crypto.signSync`/`verifySync` wired in: **all 13
+compared fields — source bytes, responses, ratio, chunks from source, chunks from
+peers, ticks to first and last completion, rejections, timeouts, audited chunks,
+wrong chunks, correct reassemblies, completion — are identical.** So nothing
+below is a report about FNV. Ed25519 is half of ADR-012's hybrid scheme; there is
+no ML-DSA-65 in this repository and no post-quantum signature was produced,
+verified or timed anywhere in this suite.
+
+**The broadcast tier is `RaptorQ-structured (NOT RFC 6330 conformant;
+interoperates with nothing)`,** reproduced verbatim from the module's single
+`BROADCAST_CODEC` constant. Nothing in this suite encodes or decodes a fountain
+symbol, and `describeBroadcastTier()` reports `wiredIntoThisModule: false`. The
+only mechanism measured here is the second of ADR-024 §2.1's three.
+
+### Source traffic against the 3× target
+
+The meter is the one `swarm.js` writes on the line the bytes leave the source,
+which is criterion 6's "measured directly, not inferred from chunk accounting".
+Artifact 4,096 B in 64 chunks of 64 B, seed 7, one request in flight per receiver
+and one response in flight per provider.
+
+| devices (simulated) | source B measured | **× artifact** | under 3×? | point-to-point B (projected) | saving | chunks from source | chunks from peers | peer share | ticks to last complete |
+|---|---|---|---|---|---|---|---|---|---|
+| 2 | 4,096 | **1.000×** | yes | 8,192 | 2.0× | 64 | 64 | 50.0% | 65 |
+| 10 | 4,288 | **1.047×** | yes | 40,960 | 9.6× | 67 | 573 | 89.5% | 73 |
+| 25 | 4,544 | **1.109×** | yes | 102,400 | 22.5× | 71 | 1,529 | 95.6% | 88 |
+| 50 | 4,928 | **1.203×** | yes | 204,800 | 41.6× | 77 | 3,123 | 97.6% | 113 |
+| **100** | **5,824** | **1.422×** | **yes** | **409,600** | **70.3×** | **91** | **6,309** | **98.6%** | **135** |
+
+**The 3× target is met in simulation at every fleet size measured, and at 100
+devices the measured figure is 1.422× the artifact** — 5,824 B off the source
+link against 409,600 B for the same fleet point-to-point, a 70.3× reduction, and
+less than half the 3× the ADR allows. That sentence carries its qualifier: **a
+simulation result is not a fleet result.** What is established is that this
+scheduling policy, run against the real verification pipeline over real bytes,
+sends the source link 1.42× the artifact. What is not established is anything
+about a hundred devices on a site, because there are none.
+
+**The point-to-point column is a projection over a measured single-device run.**
+That run served 4,096 B — exactly the artifact, checked rather than assumed —
+and the column is that figure multiplied by the fleet size. The peer tier cannot
+be switched off by configuration: a device advertises what it has verified and
+`advertise()` is derived from the store, so there is no flag to clear. The
+one-device run is the only honest "peers off" arm available, and it is also
+exactly the quantity ADR-024 §1 quotes ("a 100-device site taking a 1 GB image is
+up to 100 GB of source traffic"), which makes it the right comparison rather than
+merely the available one.
+
+**The mechanism, measured directly:** at 100 devices, 6,309 of the 6,400 admitted
+chunks — **98.6%** — came from another device rather than from the source. The
+source still sends 1.42 copies of the artifact because early in the run nobody
+holds anything and it is the only holder there is.
+
+**One correction to the module's own note.** `sourceTraffic()` says chunk
+accounting "understates the link by roughly the fleet size". **It does not, here.**
+At 100 devices the meter reads 5,824 B and "distinct chunks served × chunk size"
+would have claimed 4,096 B — 1.42× low, not 100× low. The inference saturates:
+every chunk is served at least once, so distinct chunks reach 64 of 64 and the
+inferred figure is pinned at exactly the artifact size whatever the link did. The
+fleet-size error the note describes is the point-to-point case; **in a working
+swarm the inference is nearly right precisely because the swarm works.** It is
+still the wrong instrument — bounded above by the artifact size, it can never
+report the overshoot the target is about — but the error is small here and is
+reported as measured rather than as predicted.
+
+**Seed spread at 100 devices** (five seeds): ratio 1.406×–1.453×, ticks 135 in
+every case. **Granularity, not artifact size, is what the ratio tracks**, which
+is what carries to ADR-024's own 1 GB example:
+
+| chunks | artifact B | source B measured | × artifact | peer share |
+|---|---|---|---|---|
+| 16 | 1,024 | 2,176 | 2.125 | 97.9% |
+| 32 | 2,048 | 3,648 | 1.781 | 98.2% |
+| 64 | 4,096 | 5,824 | 1.422 | 98.6% |
+| 128 | 8,192 | 9,792 | 1.195 | 98.8% |
+
+A 1 GB image chunked at any practical size has thousands of chunks, so the trend
+runs in the direction that helps — **a trend, not a measurement of a 1 GB
+transfer, and there is no such transfer here.**
+
+**Concurrency moves the two quantities in opposite directions**, and every other
+table in this section is the pessimistic corner of it. At 100 devices: one slot
+each gives 135 ticks and 1.422×; giving receivers two outstanding requests
+without giving providers two responses finishes sooner (129 ticks) and costs the
+source MORE (1.609×), because a receiver with two requests in flight finds peers
+busy and falls back to the source; four and four gives 67 ticks and 1.031×. The
+ADR does not discuss this trade and it is reported as measured, not as a
+recommendation.
+
+### The three malicious behaviours (criterion 4)
+
+Each row is one adversarial seed peer added to the fleet, against 8 ticks per
+timeout, 1 tick per prompt delivery and 6 ticks per slow one — passed into the
+configuration by the suite rather than inherited from a default, so the tick
+columns can be read against the numbers that produced them.
+
+**Two comparators, and neither is "the" cost.** The baseline is the same swarm
+with no extra peer, which is what `compareBehaviours()` returns — but adding any
+peer changes the holder counts a rarest-first scheduler sorts on, so that
+difference contains a reordering as well as an attack. The control is the
+identical run with one extra **honest** peer in the same slot, holding the whole
+artifact from the start, which is exactly what each adversary claims to be. The
+control is not a noise floor — an honest seed really does supply bytes — so the
+difference against it is the **opportunity cost** of that slot holding a liar
+rather than the seeder it advertised itself as.
+
+**100 simulated devices.** Baseline 135 ticks and 5,824 B; control 113 ticks
+(−22) and 4,864 B (−960 B), serving 77 chunks itself.
+
+| behaviour | ticks | Δ ticks vs baseline | Δ ticks vs control | source B | Δ source B vs control | rejected | timed out | bytes accepted from it | **wrong chunks stored** |
+|---|---|---|---|---|---|---|---|---|---|
+| `advertise-and-withhold` | 110 | −25 | −3 | 5,504 | +640 | 0 | 11 | 0 | **0** |
+| `corrupt-chunk` | 134 | −1 | +21 | 5,824 | +960 | 91 | 0 | 0 | **0** |
+| `slow-drip` | 384 | +249 | +271 | 5,248 | +384 | 0 | 0 | 4,096 | **0** |
+
+**10 simulated devices**, where the fleet is small enough that the attacks are
+not swamped. Baseline 73 ticks and 4,288 B; control 68 ticks (−5) and 2,624 B
+(−1,664 B).
+
+| behaviour | ticks | Δ ticks vs baseline | Δ ticks vs control | source B | Δ source B vs control | rejected | timed out | bytes accepted from it | **wrong chunks stored** |
+|---|---|---|---|---|---|---|---|---|---|
+| `corrupt-chunk` | 73 | +0 | +5 | 4,352 | +1,728 | 10 | 0 | 0 | **0** |
+| `advertise-and-withhold` | 79 | +6 | +11 | 4,608 | +1,984 | 0 | 9 | 0 | **0** |
+| `slow-drip` | 384 | +311 | +316 | 3,840 | +1,216 | 0 | 0 | 4,096 | **0** |
+
+**The zero that is the security claim is `wrong chunks stored`, and it is shown
+rather than asserted.** After each run, `auditReceivers()` re-digests every
+stored chunk on every device against the source's manifest — 6,400 chunks at 100
+devices — and compares every complete device's reassembled artifact byte for byte
+against the source's, independently of the path that stored them. **Zero wrong
+chunks and zero wrong reassemblies under all three behaviours at both fleet
+sizes.** A test of the storage path that read the storage path's own bookkeeping
+would test nothing, which is why the audit re-derives the digests.
+
+**"Bytes accepted from it" is NOT required to be zero, and for slow-drip it is
+the whole artifact.** ADR-024 §4.1 says "one malicious peer contributes zero
+accepted data", and read as bytes-from-a-hostile-peer that sentence is false here
+by 4,096 bytes — deliberately. A slow peer's chunks digest to the value the
+signed manifest commits, so they are admitted **because they are the right bytes
+and not because of who sent them**, which is what "a peer is a transport, not an
+authority" means when it is working. The criterion's real content is carried by
+`wrong chunks stored`. Reporting the wrong field here would be a false claim in
+one direction and a false alarm in the other, and `swarm.js` names both fields so
+that they cannot be swapped.
+
+**The tick cost of the two DETECTABLE behaviours is below this instrument's
+resolution at 100 devices, and saying so is the honest reading.** Merely adding
+an honest peer moves the run by 22 ticks; corrupt-chunk and advertise-and-withhold
+move it by 21 and 3 against that control, and by 1 and 25 against the baseline —
+**some of them negative**, which is a swarm finishing in fewer ticks with an
+adversary in it and is a rarest-first schedule reordering, not an attack that
+helps. Neither exceeds the reordering, so **the tick column does not establish a
+cost for either**. What does separate them is the byte columns, which no
+reordering moves in an adversary's favour: +960 B and +640 B off the source link,
+and 5,824 B the corrupter put on peer links that were discarded on arrival.
+
+**Slow-drip is the expensive one, by two orders of magnitude, and it is the one
+behaviour nothing refuses.** +271 ticks against the control at 100 devices and
++316 at 10, where the other two are single or low double digits. The cost of a
+behaviour tracks **how detectably wrong it is**: a corrupter is refused by one
+digest comparison, a withholder by one timeout, and a slow peer is never wrong at
+all — its chunks are correct, its score stays at the honest 1.0, and only latency
+demotes it. `swarm.js` deliberately does not refuse it, because refusing a peer
+for being slow would refuse a device with a weak radio, which in a real fleet is
+the ordinary case rather than the attack.
+
+### What the defence costs
+
+A defence with no measured cost has not been measured. Deprioritisation is not
+free: a peer is dropped for failing, and finding out that it fails means giving
+it work.
+
+**How many attempts a failing peer gets, re-derived from the exported
+`peerScore` and `rankProviders` rather than inferred from a run.** The score is
+(accepted − 2 × failures) / requested and the floor is −0.5, so one failure
+against one request scores **−2** and the peer is ineligible from then on:
+**1 attempt on a timeout, 1 on a rejection — per device.** Per device, because a
+ledger belongs to one receiver and reputation is never shared; a reputation
+arriving from a peer would be a claim, and this design does not act on claims. A
+peer that is never *wrong*, meanwhile, is never dropped: after four accepted
+deliveries at 6 ticks each the slow peer still scores 1.0 and is still eligible.
+
+| behaviour | devices | floor fires? | attempts (fleet) | per device | device-slot ticks | bytes discarded on arrival | Δ source B vs control |
+|---|---|---|---|---|---|---|---|
+| `corrupt-chunk` | 10 | yes | 10 | 1.00 | 10 | 640 | +1,728 |
+| `advertise-and-withhold` | 10 | yes | 9 | 0.90 | 72 | 0 | +1,984 |
+| `slow-drip` | 10 | no | 64 | 6.40 | 0 | 0 | +1,216 |
+| `advertise-and-withhold` | 100 | yes | 11 | 0.11 | 88 | 0 | +640 |
+| `corrupt-chunk` | 100 | yes | 91 | 0.91 | 91 | 5,824 | +960 |
+| `slow-drip` | 100 | no | 64 | 0.64 | 0 | 0 | +384 |
+
+**At 10 devices the floor is what binds**, and the contrast is the measurement:
+the two behaviours it drops were asked 1.00 and 0.90 times per device — the bound
+is 1 — while slow-drip, on which the floor never fires, drew 6.40. That is the
+value of the floor as a measurement rather than as arithmetic, and it is the only
+measured no-deprioritisation arm available, because the floor is not configurable
+and the suite does not modify `swarm.js`.
+
+**At 100 devices that contrast disappears, and the reason is worth more than the
+contrast was.** Slow-drip drew 64 attempts at 100 devices — the same 64 it drew
+at 10 — because an adversary with one serving slot can hold exactly one request
+open at a time. **Its own concurrency limit, not the floor, is what caps it.**
+The same cap explains the withholder's 11 requests across 100 devices: it holds
+each one for the full 8-tick timeout, so a run of a few hundred ticks has room
+for barely a dozen. Only the corrupter, which answers in 1 tick, is capped by the
+floor rather than by itself — 91 attempts across 100 devices, 0.91 each. **A
+defence and a bottleneck can produce the same number, and only one of them is the
+defence.**
+
+**What those attempts cost, in the units they are spent in.** At 100 devices the
+withholder consumed 88 device-slot ticks (11 timeouts × 8) during which those
+receivers had nothing else in flight, and 640 B off the source link. The
+corrupter consumed 91 device-slot ticks and made the fleet receive and throw away
+**5,824 B — 1.42× the artifact** — on peer links, plus 960 B off the source.
+Those bytes crossed a link and were discarded on arrival, before they were stored
+and therefore before they could be forwarded: `advertise()` is derived from the
+store, so there is no container a refused chunk could be forwarded out of.
+
+**The counterfactual is arithmetic and is labelled as such.** With no floor a
+failing peer would be asked again for the next chunk, so the fleet would spend up
+to devices × chunks = **6,400 attempts** instead of 11 or 91 — 51,200 device-slot
+ticks for a withholder, 409,600 B discarded for a corrupter. **Nothing in this
+repository ran with the floor disabled**; the floor is not configurable and the
+suite does not modify the module.
+
+### ADR-024's acceptance criteria, read out of the running module
+
+`describeCriteria()` is read out of `swarm.js` rather than restated, for the
+reason `attest.js`'s `describeRoots()` exists: a caveat that lives only in a
+report is a caveat that stops being read. **4 of 6 met.**
+
+| # | criterion | status | met? |
+|---|---|---|---|
+| 1 | Fleet-10: ten isolated devices, first closure within 3 s, fleet within 60 s | `requires-device-fleet` | **no** |
+| 2 | Fleet-100: one hundred heterogeneous devices, same gates, 30% interruption recovery | `requires-device-fleet` | **no** |
+| 3 | Verification is per-device, shown by a peer serving another artifact's chunks | `demonstrated` | yes |
+| 4 | The three malicious behaviours, each with a stated effect | `demonstrated` | yes |
+| 5 | The broadcast codec is named accurately | `stated` | yes |
+| 6 | Source traffic is measured directly, not inferred | `demonstrated` | yes |
+
+`describeUnimplemented()` lists **6 things absent** — `bitchat`, `chunk-store`,
+`custody-receipts`, `broadcast-tier`, `device-fleet`, `interruption-recovery` —
+and **2 injected and absent by default**: `content-digest` and
+`manifest-signature`. That first list is why most of ADR-024 is not measurable
+here at all. There is no BitChat, so peer discovery and the pre-link control
+channel sit outside the module and the peer set arrives as data. There is no
+chunk store, so store-and-carry across a reboot and "interrupted receivers resend
+at most one chunk" are properties of something that does not exist. And there is
+no device fleet.
+
+### What this section does not establish
+
+It measures no seconds and evaluates neither wall-clock gate. It measures no
+radio, no site, no reboot, no interruption and no custody receipt. It does not
+exercise the broadcast tier, which is not wired into `swarm.js` at all. Its
+digest and signer are stand-ins, and the configuration re-run with real SHA-256
+and Ed25519 shows only that the choice does not move a counted quantity — not
+that anything here is cryptographically evaluated. It does not establish a tick
+cost for corrupt-chunk or advertise-and-withhold at fleet scale, for the reason
+given above. And the artifact is 4,096 bytes: the simulation is roughly quadratic
+in devices × chunks, so the largest cell here (100 devices, 128 chunks) already
+takes about 13 seconds of wall time to simulate, and nothing the size of ADR-024's
+1 GB example can be run at all.
+
+What the tables do establish is narrower and is what criteria 4 and 6 asked for:
+source traffic **measured at the link** stays at 1.42× the artifact for 100
+simulated devices against a projected 70× point-to-point; each of the three named
+behaviours has a stated, measured effect — in source bytes and discarded bytes for
+all three, and in ticks for slow-drip, which clears the noise by two orders of
+magnitude; the cost of deprioritising is one attempt per device, bounded by the
+score floor, and the slot-ticks and bytes that attempt consumes; and no hostile
+peer put one wrong byte on one device under any of them.
+
 ---
 
 # Part III — CITED
 
-## 14. State of the art
+## 15. State of the art
 
 ### A category distinction that matters
 
@@ -2530,7 +2886,7 @@ disagreement rather than picking one.
 
 ---
 
-## 15. Contradictions found
+## 16. Contradictions found
 
 Measurements that disagree with something stated elsewhere in this repository or
 in the brief for this work. Reported rather than smoothed.
@@ -2556,7 +2912,7 @@ in the brief for this work. Reported rather than smoothed.
 
 ---
 
-## 16. Threats to validity
+## 17. Threats to validity
 
 **No camera, no screen, no optics.** This is the big one. The harness models
 frame loss as a probability and says nothing about where that probability comes
@@ -2612,7 +2968,7 @@ store and the camera buffers are not.
 
 ---
 
-## 17. What could not be measured, and why
+## 18. What could not be measured, and why
 
 | Wanted | Status |
 |---|---|
@@ -2657,7 +3013,7 @@ store and the camera buffers are not.
 - Blockchain Commons, ["Animated QRs"](https://developer.blockchaincommons.com/animated-qrs/) and [BCR-2024-001, Multipart UR](https://github.com/BlockchainCommons/Research/blob/master/papers/bcr-2024-001-multipart-ur.md), 9 January 2024.
 - [RFC 6330, "RaptorQ Forward Error Correction Scheme for Object Delivery"](https://www.rfc-editor.org/rfc/rfc6330.html), August 2011.
 - [Raptor code (Wikipedia)](https://en.wikipedia.org/wiki/Raptor_code) — the >99% / >99.99% / >99.9999% recovery figures, which do not appear in RFC 6330 itself.
-- [catid/wirehair](https://github.com/catid/wirehair) — the N+0.02 reception-overhead claim cited in §14, which is Wirehair's own published figure.
+- [catid/wirehair](https://github.com/catid/wirehair) — the N+0.02 reception-overhead claim cited in §15, which is Wirehair's own published figure.
 - M. Luby, ["LT Codes"](https://doi.org/10.1109/SFCS.2002.1181950), FOCS 2002 — the robust soliton distribution used by the harness's `lt` reference codec.
 - T. Hao, R. Zhou, G. Xing, ["COBRA: color barcode streaming for smartphone systems"](https://dl.acm.org/doi/10.1145/2307636.2307645), MobiSys '12.
 - [RFC 7932, "Brotli Compressed Data Format"](https://www.rfc-editor.org/rfc/rfc7932.html), July 2016.

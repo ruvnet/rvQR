@@ -91,10 +91,23 @@
  * `meterSource()` returns a counter and `serveFromSource()` is the only thing
  * that writes to it, on the same line that emits the bytes. The report carries
  * that number and also carries what chunk accounting WOULD have said, so the
- * gap is visible rather than assumed away. The gap is large and it is
- * structural: the source serves the same chunk to several devices, so counting
- * distinct chunks understates the link by a factor of the fleet size, which is
- * exactly the number the whole ADR is about.
+ * gap is visible rather than assumed away.
+ *
+ * This paragraph used to claim the gap was "a factor of the fleet size, which
+ * is exactly the number the whole ADR is about". THE BENCHMARK MEASURED IT AND
+ * THAT IS WRONG. At 100 simulated devices the meter reads 5,824 B and chunk
+ * accounting would have claimed 4,096 B — 1.42x low, not 100x low. The
+ * inference SATURATES: every chunk is served to somebody at least once, so
+ * distinct-chunks-served reaches the whole artifact and the inferred figure is
+ * pinned at exactly the artifact size no matter what the link actually did.
+ * The fleet-size error described above is the POINT-TO-POINT case, where the
+ * source serves every chunk to every device. In a working swarm the inference
+ * is nearly right precisely because the swarm works.
+ *
+ * Measuring rather than inferring is still correct, for a better reason than
+ * the one first written here: the inferred figure is BOUNDED ABOVE by the
+ * artifact size, so it can never report an overshoot — and an overshoot is the
+ * only thing the under-3x target can fail on.
  *
  * ---------------------------------------------------------------------------
  * THE BROADCAST TIER IS NOT RFC 6330 CONFORMANT — ADR-024 §2.4 and §4.5

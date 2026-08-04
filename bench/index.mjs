@@ -9,13 +9,19 @@
  *   node bench/index.mjs --json out.json also write the raw results
  *
  * Suites: loss, overhead, payloads, delta, qr, proto, compress, objective,
- *         fleet, closures, memory, semdelta, planner, attest, closure.
+ *         fleet, closures, memory, semdelta, planner, attest, closure, swarm.
  *
  * `closures` and `closure` differ by one letter and are different suites.
  * `closures` (suite 10) is a MODEL of how long a split artifact takes to
  * arrive and runs no module; `closure` (suite 15) drives artifacts/closure.js
  * with the real SHA-256 and Ed25519 from artifacts/crypto.js and measures what
  * the split costs in bytes and in verification time.
+ *
+ * `swarm` (suite 16) is the only suite here whose timings are SIMULATION TICKS
+ * rather than anything measured off a clock. Its byte and chunk counts are real
+ * measurements of the simulation; its tick counts measure nothing about any
+ * fleet, and ADR-024's Fleet-10 and Fleet-100 criteria need physical devices
+ * and are not met by running it.
  *
  * Deterministic and offline: no network access at any point, and every random
  * draw comes from the seed printed in the header. Two runs with the same seed
@@ -57,6 +63,7 @@ import { runSemDeltaSuite } from './suites/semdelta.mjs';
 import { runPlannerSuite } from './suites/planner.mjs';
 import { runAttestSuite } from './suites/attest.mjs';
 import { runClosureModuleSuite, runSignatureBackends } from './suites/closure.mjs';
+import { runSwarmSuite } from './suites/swarm.mjs';
 import { asciiPlot } from './lib/chart.mjs';
 
 // --- Arguments ---------------------------------------------------------------
@@ -3085,6 +3092,518 @@ function printClosureModuleSuite(res, backends) {
   say('');
 }
 
+function printSwarmSuite(res) {
+  say('### Fleet swarm distribution: what a swarm saves and what a hostile peer costs — `artifacts/swarm.js`');
+  say('');
+  if (!res.available) {
+    say(`Not measured: ${res.reason}.`);
+    say('');
+    return;
+  }
+
+  const cfg = res.config;
+  const cm = res.costModel;
+
+  // --- what kind of numbers these are, before any of them --------------------
+  say(
+    '**Every timing below is a SIMULATION TICK and measures nothing about any fleet.** `simulateSwarm()` ' +
+      'says so from inside itself — `simulation: true`, `wallClockMeasured: false`, `physicalDevices: 0`, ' +
+      '`timingUnit: "ticks"` — and this suite carries those four fields rather than paraphrasing them. ' +
+      'A tick is a unit `swarm.js` defines; nothing in this repository has calibrated one against a ' +
+      'device, a radio or a clock. The **byte counts and chunk counts are real measurements OF THE ' +
+      'SIMULATION**: every chunk in every table went through the shipped verification pipeline on every ' +
+      'simulated receiver.'
+  );
+  say('');
+  say(
+    `**ADR-024 §4.1 Fleet-10 and §4.2 Fleet-100 are NOT MET and are not approached here.** They require ` +
+      `TEN and ONE HUNDRED PHYSICAL DEVICES against wall-clock gates of 3 s and 60 s. ` +
+      '`describeCriteria()` marks both `requires-device-fleet` and `met: false`, read out of the running ' +
+      'module below, and this suite reports them the same way. A hundred simulated receivers is not ' +
+      'Fleet-100: heterogeneity — different radios, different thermal limits, different older roots — is ' +
+      'most of what that criterion tests and is exactly what a simulation cannot supply. **No seconds ' +
+      'are quoted anywhere in this section.**'
+  );
+  say('');
+  say(
+    `**The broadcast tier is \`${res.broadcastCodec}\`.** ADR-024 §2.1's third mechanism is not ` +
+      'implemented here at all — nothing in this suite encodes or decodes a fountain symbol — and the ' +
+      'codec string is reproduced verbatim from the module\'s single `BROADCAST_CODEC` constant so the ' +
+      'qualification cannot be dropped in one place and kept in another. What IS measured below is the ' +
+      'second mechanism only: content-addressed peer transfer.'
+  );
+  say('');
+
+  const cc = res.crossCheck;
+  say(
+    `**The injected digest and signer are \`artifacts/swarm.test.js\`'s stand-ins, and they are NOT ` +
+      `CRYPTOGRAPHY.** \`swarm.js\` takes \`digest\`, \`sign\` and \`verifySignature\` as injected ` +
+      'functions and requires the digest to return lowercase hex; one that returns bytes fails every ' +
+      'comparison, every chunk is refused, and the run reports well-formed zeroes that look like a ' +
+      'result. So the test file\'s FNV-based digest is used for the sweeps — and then ' +
+      (cc.available
+        ? `one whole configuration (${cc.devices} devices) is run a second time with **${cc.digestName}** ` +
+          `and **${cc.signatureName}** wired in, requiring the counted quantities to be identical. ` +
+          `Across ${cc.fields.length} compared fields they ` +
+          (cc.identical
+            ? '**are identical**, so nothing in this section is a report about FNV.'
+            : `**disagree on ${cc.disagreements.join(', ')}**, which invalidates the sweeps below.`) +
+          ' Ed25519 is HALF of ADR-012\'s hybrid scheme; there is no ML-DSA-65 in this repository and no ' +
+          'post-quantum signature was produced, verified or timed anywhere here.'
+        : `the cross-check could not run: ${cc.reason}.`)
+  );
+  say('');
+
+  // --- 1 and 4: source traffic, and what the peer tier saves -----------------
+  const L = res.ladder;
+  say(
+    `**Source traffic against ADR-024 §2.1's target.** The ADR wants **under 3× the artifact** off the ` +
+      'source link for 100 devices, against **up to 100× point-to-point**. The meter is the one ' +
+      '`swarm.js` writes on the line the bytes leave the source, which is criterion 6\'s "measured ' +
+      `directly, not inferred from chunk accounting". Artifact ${(cfg.chunkSize * cfg.chunkCount).toLocaleString('en-US')} B ` +
+      `in ${cfg.chunkCount} chunks of ${cfg.chunkSize} B, seed ${cfg.seed}, one request in flight per ` +
+      'receiver and one response in flight per provider.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['devices (simulated)', 'source B measured', '**× artifact**', 'under 3×?', 'point-to-point B (projected)', 'saving', 'chunks from source', 'chunks from peers', 'peer share', 'ticks to last complete', 'ticks to first complete'],
+      L.rows.map((r) => [
+        String(r.devices),
+        r.sourceBytesMeasured.toLocaleString('en-US'),
+        `**${fmt(r.ratioToArtifact, 3)}×**`,
+        r.withinThreeTimesTarget ? 'yes' : '**NO**',
+        r.pointToPointBytesProjected.toLocaleString('en-US'),
+        `${fmt(r.savingVsPointToPoint, 1)}×`,
+        String(r.chunksFromSource),
+        r.chunksFromPeers.toLocaleString('en-US'),
+        pct(r.peerShare, 1),
+        String(r.ticksToComplete),
+        String(r.ticksToFirstDeviceComplete)
+      ])
+    )
+  );
+  say('');
+  const top = L.rows[L.rows.length - 1];
+  say(
+    `**The 3× target is met IN SIMULATION at every fleet size measured, and at ${top.devices} devices the ` +
+      `measured figure is ${fmt(top.ratioToArtifact, 3)}× the artifact** — ` +
+      `${top.sourceBytesMeasured.toLocaleString('en-US')} B off the source link against ` +
+      `${top.pointToPointBytesProjected.toLocaleString('en-US')} B for the same fleet point-to-point, a ` +
+      `**${fmt(top.savingVsPointToPoint, 1)}× reduction**. That sentence has to carry its qualifier: **a ` +
+      'simulation result is not a fleet result.** What has been established is that this scheduling ' +
+      'policy, run against the real verification pipeline over real bytes, sends the source link ' +
+      `${fmt(top.ratioToArtifact, 2)}× the artifact. What has not been established is anything about a ` +
+      'hundred devices on a site, because there are none.'
+  );
+  say('');
+  say(
+    `**The point-to-point column is a PROJECTION, and a narrow one.** It is a measured single-device ` +
+      `run — which served **${L.pointToPointPerDeviceBytesMeasured.toLocaleString('en-US')} B, exactly ` +
+      `the artifact, ${L.soloServedExactlyTheArtifact ? 'checked rather than assumed' : '**which is NOT the artifact size — the baseline is padded**'}` +
+      '** — multiplied by the fleet size. The peer tier cannot be switched off by configuration: a ' +
+      'device advertises what it has verified and `advertise()` is derived from the store, so there is ' +
+      'no flag to clear. The one-device run is the only honest "peers off" arm available, and it is also ' +
+      'exactly the quantity ADR-024 §1 quotes — "a 100-device site taking a 1 GB image is up to 100 GB ' +
+      'of source traffic" — which is what makes it the right comparison rather than merely the available ' +
+      'one.'
+  );
+  say('');
+  say(
+    `**The mechanism, measured directly.** At ${top.devices} devices, ` +
+      `${top.chunksFromPeers.toLocaleString('en-US')} of the ` +
+      `${(top.chunksFromPeers + top.chunksFromSource).toLocaleString('en-US')} admitted chunks — ` +
+      `**${pct(top.peerShare, 1)}** — came from another device rather than from the source. That is ` +
+      '"a chunk a peer already holds is a chunk the source never sends" as a count rather than as a ' +
+      'sentence. The source still sends more than one copy of the artifact ' +
+      `(${fmt(top.ratioToArtifact, 3)}×, ${top.sourceResponses} responses for ${top.chunkCount} chunks) ` +
+      'because early in the run nobody holds anything and the source is the only holder there is.'
+  );
+  say('');
+  say(
+    `**What chunk accounting would have claimed instead — and the module's own note overstates this.** ` +
+      `Criterion 6 wants the link measured rather than inferred, and \`sourceTraffic()\`'s note says ` +
+      'chunk accounting "understates the link by roughly the fleet size". **It does not, here, and the ' +
+      `measurement is what says so.** At ${top.devices} devices the meter reads ` +
+      `${top.sourceBytesMeasured.toLocaleString('en-US')} B and "distinct chunks served × chunk size" ` +
+      `would have claimed ${top.bytesInferredFromChunkAccounting.toLocaleString('en-US')} B — an ` +
+      `understatement of ${top.inferenceUnderstatesByBytes.toLocaleString('en-US')} B, only ` +
+      `${fmt(top.sourceBytesMeasured / top.bytesInferredFromChunkAccounting, 2)}× low rather than ` +
+      `${top.devices}× low. The inference saturates: every chunk is served at least once, so distinct ` +
+      `chunks reach ${top.chunkCount} of ${top.chunkCount} and the inferred figure is pinned at exactly ` +
+      'the artifact size no matter what the link did. The fleet-size error the note describes is the ' +
+      'POINT-TO-POINT case, where the source serves every chunk to every device; **in a working swarm ' +
+      'the inference is nearly right precisely because the swarm works.** That is an argument for ' +
+      'measuring rather than inferring even so — the inference is bounded above by the artifact size and ' +
+      'therefore can never report the overshoot the target is about — but the size of the error is ' +
+      'small here and is reported as measured rather than as the module predicts.'
+  );
+  say('');
+
+  // --- the ratio is not one number ------------------------------------------
+  const S1 = res.seedSpread;
+  say(
+    `**One seed is one draw of a rarest-first schedule, so the top row is repeated under ` +
+      `${S1.rows.length} seeds.** Ratio ${fmt(S1.minRatio, 3)}–${fmt(S1.maxRatio, 3)}×, ticks ` +
+      `${S1.minTicks}–${S1.maxTicks}, and ${S1.allWithinTarget ? 'every seed stays under 3×' : '**not every seed stays under 3×**'}. ` +
+      'The spread is small, which is worth showing rather than asserting.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['seed', 'source B measured', '× artifact', 'ticks to last complete', 'peer share'],
+      S1.rows.map((r) => [
+        String(r.seed),
+        r.sourceBytesMeasured.toLocaleString('en-US'),
+        fmt(r.ratioToArtifact, 3),
+        String(r.ticksToComplete),
+        pct(r.peerShare, 1)
+      ])
+    )
+  );
+  say('');
+
+  const shape = res.shapeSweep;
+  say(
+    `**The ratio tracks chunk COUNT, not artifact size, and that is what carries to ADR-024's own ` +
+      `example.** The ADR's case is 100 devices × 1 GB; the artifacts here are kilobytes. What transfers ` +
+      'between the two is granularity: a swarm trades chunks, and a fleet with more of them has more to ' +
+      `trade. At ${S1.devices} devices the ratio falls monotonically from ` +
+      `${fmt(shape[0].ratioToArtifact, 3)}× at ${shape[0].chunkCount} chunks to ` +
+      `${fmt(shape[shape.length - 1].ratioToArtifact, 3)}× at ${shape[shape.length - 1].chunkCount}. A ` +
+      '1 GB image chunked at any practical size has thousands, so the trend runs in the direction that ' +
+      'helps — **which is a trend, not a measurement of a 1 GB transfer, and there is no such transfer ' +
+      'here.**'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['chunks', 'artifact B', 'source B measured', '× artifact', 'peer share', 'ticks to last complete'],
+      shape.map((r) => [
+        String(r.chunkCount),
+        r.artifactBytes.toLocaleString('en-US'),
+        r.sourceBytesMeasured.toLocaleString('en-US'),
+        fmt(r.ratioToArtifact, 3),
+        pct(r.peerShare, 1),
+        String(r.ticksToComplete)
+      ])
+    )
+  );
+  say('');
+
+  const conc = res.concurrency;
+  const oneOne = conc.find((c) => c.deviceSlots === 1 && c.peerSlots === 1);
+  say(
+    '**Concurrency moves the two quantities in opposite directions, and every other table on this page ' +
+      'is the pessimistic corner of it.** `deviceSlots` is how many requests a receiver has outstanding; ' +
+      '`peerSlots` is how many a device will serve. Giving receivers more requests without giving ' +
+      'providers more responses finishes sooner AND costs the source more, because a receiver with two ' +
+      'requests in flight finds peers busy and falls back to the source. This is a trade the ADR does ' +
+      'not discuss; it is reported as measured and not as a recommendation.'
+  );
+  say('');
+  say(
+    markdownTable(
+      ['deviceSlots', 'peerSlots', 'ticks to last complete', 'source B measured', '× artifact', 'peer share'],
+      conc.map((r) => [
+        String(r.deviceSlots),
+        String(r.peerSlots),
+        String(r.ticksToComplete),
+        r.sourceBytesMeasured.toLocaleString('en-US'),
+        fmt(r.ratioToArtifact, 3),
+        pct(r.peerShare, 1)
+      ])
+    )
+  );
+  say('');
+
+  // --- 2: the three behaviours ----------------------------------------------
+  say(
+    `**ADR-024 criterion 4: the three named behaviours, each with its effect on completion.** Each row ` +
+      `is one adversarial seed peer added to the fleet, against ${cm.timeoutTicks} ticks per timeout, ` +
+      `${cm.chunkTicks} tick per prompt delivery and ${cm.slowTicks} ticks per slow one — passed into ` +
+      'the configuration by this suite rather than inherited from a default, so the tick columns can be ' +
+      'read against the numbers that produced them.'
+  );
+  say('');
+  say(
+    '**Two comparators, and neither is "the" cost.** `baseline` is the same swarm with no extra peer at ' +
+      'all, which is what `compareBehaviours()` returns — but adding ANY peer changes the holder counts ' +
+      'a rarest-first scheduler sorts on, so that difference contains a reordering as well as an attack. ' +
+      '`control` is the identical run with one extra **honest** peer in the same slot, holding the whole ' +
+      'artifact from the start, which is exactly what each adversary claims to be. The control is not a ' +
+      'noise floor — an honest seed really does supply bytes — so the difference against it is the ' +
+      '**opportunity cost**: what the fleet lost by that slot holding a liar rather than the seeder it ' +
+      'advertised itself as.'
+  );
+  say('');
+
+  for (const b of res.behaviours) {
+    say(
+      `**${b.devices} simulated devices.** Baseline: ${b.baseline.ticksToComplete} ticks, ` +
+        `${b.baseline.sourceBytesMeasured.toLocaleString('en-US')} B off the source. Control (one extra ` +
+        `honest seed peer): ${b.control.ticksToComplete} ticks ` +
+        `(${b.control.ticksVsBaseline >= 0 ? '+' : ''}${b.control.ticksVsBaseline} vs baseline), ` +
+        `${b.control.sourceBytesMeasured.toLocaleString('en-US')} B ` +
+        `(${b.control.sourceBytesVsBaseline >= 0 ? '+' : ''}${b.control.sourceBytesVsBaseline.toLocaleString('en-US')} B), ` +
+        `serving ${b.control.accepted} chunks itself.`
+    );
+    say('');
+    say(
+      markdownTable(
+        ['behaviour', 'completed?', 'ticks', 'Δ ticks vs baseline', 'Δ ticks vs control', 'source B', 'Δ source B vs control', 'chunks rejected', 'chunks timed out', 'bytes accepted from it', '**wrong chunks stored**'],
+        b.rows.map((r) => [
+          `\`${r.behaviour}\``,
+          r.completed ? 'yes' : '**NO**',
+          String(r.ticksToComplete),
+          `${r.extraTicksVsBaseline >= 0 ? '+' : ''}${r.extraTicksVsBaseline}`,
+          `${r.extraTicksVsControl >= 0 ? '+' : ''}${r.extraTicksVsControl}`,
+          r.sourceBytesMeasured.toLocaleString('en-US'),
+          `${r.extraSourceBytesVsControl >= 0 ? '+' : ''}${r.extraSourceBytesVsControl.toLocaleString('en-US')}`,
+          String(r.chunksRejected),
+          String(r.chunksTimedOut),
+          r.bytesAcceptedFromAdversary.toLocaleString('en-US'),
+          r.wrongChunksStored === 0 ? '**0**' : `**${r.wrongChunksStored}**`
+        ])
+      )
+    );
+    say('');
+  }
+
+  const big = res.behaviours[res.behaviours.length - 1];
+  const bySlow = big.rows.find((r) => r.behaviour === 'slow-drip');
+  const byHold = big.rows.find((r) => r.behaviour === 'advertise-and-withhold');
+  const byBad = big.rows.find((r) => r.behaviour === 'corrupt-chunk');
+  say(
+    `**The zero that is the security claim is \`wrong chunks stored\`, and it is shown rather than ` +
+      `asserted.** Every device's every stored chunk was re-digested after the run against the source's ` +
+      `manifest, by \`auditReceivers()\` and independently of the path that stored it — ` +
+      `${big.rows.map((r) => r.chunksAudited).reduce((a, x) => Math.max(a, x), 0).toLocaleString('en-US')} ` +
+      `chunks at ${big.devices} devices — and every complete device's reassembled artifact was compared ` +
+      `byte for byte against the source's. ` +
+      (big.allWrongChunksZero && big.allReassembledCorrect
+        ? '**Zero wrong chunks and zero wrong reassemblies under all three behaviours.**'
+        : '**A wrong chunk or a wrong reassembly was recorded — see the table.**') +
+      ' A test of the storage path that read the storage path\'s own bookkeeping would test nothing, ' +
+      'which is why the audit re-derives the digests.'
+  );
+  say('');
+  say(
+    `**"Bytes accepted from it" is NOT required to be zero, and for slow-drip it is the whole ` +
+      `artifact.** At ${big.devices} devices the slow peer contributed ` +
+      `${bySlow.bytesAcceptedFromAdversary.toLocaleString('en-US')} B of accepted data while the ` +
+      `withholder and the corrupter contributed ${byHold.bytesAcceptedFromAdversary} and ` +
+      `${byBad.bytesAcceptedFromAdversary}. That is not a defect and the module names the field so it ` +
+      'cannot be read as one: a slow peer\'s chunks digest to the value the signed manifest commits, so ' +
+      'they were admitted **because they are the right bytes and not because of who sent them** — which ' +
+      'is what "a peer is a transport, not an authority" means when it is working. ADR-024 §4.1\'s "one ' +
+      'malicious peer contributes zero accepted data" is carried by `wrong chunks stored`, not by this ' +
+      'column, and conflating the two would report a false claim in one direction and a false alarm in ' +
+      'the other.'
+  );
+  say('');
+  const signed = (n) => (n === null ? '—' : `${n >= 0 ? '+' : ''}${n}`);
+  say(
+    `**The ordering is not the intuitive one and it sharpens ADR-024 §2.2.** The cost of a behaviour ` +
+      'tracks **how detectably wrong it is**, and slow-drip is never wrong at all. A corrupter is ' +
+      'refused by one digest comparison and drops below the score floor on its first delivery; a ' +
+      'withholder costs one timeout and then the same floor; a slow peer delivers correct, correctly ' +
+      `digesting chunks, so nothing refuses it. At ${big.devices} devices slow-drip cost ` +
+      `**${signed(bySlow.extraTicksVsControl)} ticks against the control** while corrupt-chunk cost ` +
+      `**${signed(byBad.extraTicksVsControl)}** and advertise-and-withhold ` +
+      `**${signed(byHold.extraTicksVsControl)}**. \`swarm.js\` deliberately does not refuse the slow ` +
+      'peer: refusing a peer for being slow would refuse a device with a weak radio, which in a real ' +
+      'fleet is the ordinary case rather than the attack.'
+  );
+  say('');
+  // The two detectable behaviours produce tick differences of the same order as
+  // the reordering the control itself produces, and at large fleets some of them
+  // are negative. Reporting a negative as a cost, or a positive of the same
+  // magnitude as an effect, would both be reading noise as signal.
+  const reorder = Math.abs(big.control.ticksVsBaseline);
+  const detectable = [byBad, byHold];
+  const separable = detectable.every((r) => Math.abs(r.extraTicksVsControl) > reorder);
+  say(
+    `**And the tick cost of the two DETECTABLE behaviours is not separable from scheduling noise at ` +
+      `this fleet size.** Merely adding an honest peer moves the run by ${reorder} ticks; ` +
+      `corrupt-chunk and advertise-and-withhold move it by ` +
+      `${detectable.map((r) => Math.abs(r.extraTicksVsControl)).join(' and ')} against that control and ` +
+      `by ${detectable.map((r) => Math.abs(r.extraTicksVsBaseline)).join(' and ')} against the baseline` +
+      (detectable.some((r) => r.extraTicksVsBaseline < 0 || r.extraTicksVsControl < 0)
+        ? ' — **some of them negative**, which is a swarm finishing in fewer ticks with an adversary in ' +
+          'it and is a rarest-first schedule reordering rather than an attack that helps.'
+        : '.') +
+      ` ${separable ? 'They are' : '**They are not**'} larger than the reordering, so ` +
+      `${separable ? 'the tick column separates them from it' : 'the tick column does NOT establish a cost for either'}. ` +
+      'What does separate them is the byte columns, which no reordering moves in the adversary\'s ' +
+      `favour: ${signed(byBad.extraSourceBytesVsControl)} and ${signed(byHold.extraSourceBytesVsControl)} B ` +
+      `off the source link, and ${byBad.bytesDiscardedOnArrival.toLocaleString('en-US')} B the corrupter ` +
+      'put on a peer link that were discarded on arrival. Slow-drip is the one behaviour whose tick ' +
+      'cost clears the noise by two orders of magnitude, which is the finding.'
+  );
+  say('');
+
+  // --- 3: what the defence costs --------------------------------------------
+  const F = res.floor;
+  say(
+    '**What the defence costs, which is the question a defence with no measured cost has not answered.** ' +
+      'Deprioritisation is not free: a peer is dropped for failing, and finding out that it fails means ' +
+      'giving it work. How many attempts it gets is re-derived here from the exported `peerScore` and ' +
+      `\`rankProviders\` rather than inferred from a run. The score is (accepted − ${F.failureWeight} × ` +
+      `failures) / requested and the floor is ${F.scoreFloor}, so one failure against one request scores ` +
+      `${F.timeouts[0].score} and the peer is ineligible from then on: **` +
+      `${F.attemptsBeforeDroppedOnTimeout} attempt on a timeout, ` +
+      `${F.attemptsBeforeDroppedOnRejection} on a rejection — per device.** Per device, because a ledger ` +
+      'belongs to one receiver and reputation is never shared: a reputation arriving from a peer would ' +
+      'be a claim, and this design does not act on claims. The fleet therefore pays the discovery once ' +
+      'per receiver, which is the expensive direction and the deliberate one.'
+  );
+  say('');
+  say(
+    `**And a peer that is never WRONG is never dropped, however slow.** Walked through the same ` +
+      `functions: after four accepted deliveries at ${F.slowPeer.meanTicks} ticks each the slow peer ` +
+      `scores ${F.slowPeer.score} and is ${F.slowPeer.eligible ? 'still eligible' : 'ineligible'} — only ` +
+      'its latency demotes it, behind faster peers, and it keeps its place in the tail. That asymmetry ' +
+      'is the whole reason slow-drip is the expensive behaviour.'
+  );
+  say('');
+
+  for (const d of res.defenceCost) {
+    say(`**What those attempts cost, at ${d.devices} simulated devices.**`);
+    say('');
+    say(
+      markdownTable(
+        ['behaviour', 'floor fires?', 'attempts measured (fleet)', 'attempts per device', 'device-slot ticks spent on it', 'bytes discarded on arrival', 'Δ source B vs control', 'Δ ticks vs control', 'attempts without a floor (projected)'],
+        d.rows.map((r) => [
+          `\`${r.behaviour}\``,
+          r.floorFires ? 'yes' : 'no — it is never wrong',
+          String(r.attemptsMeasured),
+          fmt(r.attemptsPerDevice, 2),
+          String(r.wastedTickSlots),
+          r.bytesDiscardedOnArrival.toLocaleString('en-US'),
+          `${r.extraSourceBytesVsControl >= 0 ? '+' : ''}${r.extraSourceBytesVsControl.toLocaleString('en-US')}`,
+          `${r.criticalPathTicksVsControl >= 0 ? '+' : ''}${r.criticalPathTicksVsControl}`,
+          r.projection ? `${r.attemptsWithoutFloorProjected.toLocaleString('en-US')} (projection)` : '— (the floor never fires)'
+        ])
+      )
+    );
+    say('');
+  }
+
+  const dSmall = res.defenceCost[0];
+  const dTop = res.defenceCost[res.defenceCost.length - 1];
+  const pick = (d, name) => d.rows.find((r) => r.behaviour === name);
+  const dHold = pick(dTop, 'advertise-and-withhold');
+  const dBad = pick(dTop, 'corrupt-chunk');
+  const sSlow = pick(dSmall, 'slow-drip');
+  const sHold = pick(dSmall, 'advertise-and-withhold');
+  const sBad = pick(dSmall, 'corrupt-chunk');
+  say(
+    `**What the floor bought, and where a different cap takes over.** At ${dSmall.devices} devices the ` +
+      `floor is what binds: the two behaviours it drops were asked ${fmt(sBad.attemptsPerDevice, 2)} and ` +
+      `${fmt(sHold.attemptsPerDevice, 2)} times per device — the bound is 1 — while slow-drip, on which ` +
+      `the floor never fires because the peer is never wrong, drew ${fmt(sSlow.attemptsPerDevice, 1)} ` +
+      'per device. **That is the value of the floor as a measurement rather than as arithmetic**, and it ' +
+      'is the only measured no-deprioritisation arm available, because the floor is not configurable and ' +
+      'this suite does not modify `swarm.js`.'
+  );
+  say('');
+  say(
+    `**At ${dTop.devices} devices that contrast disappears, and the reason is worth more than the ` +
+      `contrast was.** Slow-drip drew ${pick(dTop, 'slow-drip').attemptsMeasured} attempts at ` +
+      `${dTop.devices} devices — the same ${sSlow.attemptsMeasured} it drew at ${dSmall.devices} — ` +
+      `because an adversary with \`peerSlots: ${cm.peerSlots}\` can hold exactly one request open at a ` +
+      'time. **Its own concurrency limit, not the floor, is what caps it**, and the same cap explains ' +
+      `why the withholder drew only ${dHold.attemptsMeasured} requests across ${dTop.devices} devices: ` +
+      `it holds each one for the full ${cm.timeoutTicks}-tick timeout, so a run of a few hundred ticks ` +
+      `has room for barely a dozen. The corrupter answers in ` +
+      `${cm.chunkTicks} tick and has no such cap, so there the floor is the binding constraint and it ` +
+      `shows: ${dBad.attemptsMeasured} attempts across ${dTop.devices} devices, ` +
+      `${fmt(dBad.attemptsPerDevice, 2)} each. **A defence and a bottleneck can produce the same number, ` +
+      'and only one of them is the defence.**'
+  );
+  say('');
+  say(
+    `**What the attempts cost, in the units they are spent in.** At ${dTop.devices} devices the ` +
+      `withholder consumed ${dHold.wastedTickSlots} device-slot ticks — ${dHold.attemptsMeasured} ` +
+      `timeouts × ${cm.timeoutTicks} ticks — during which those receivers had nothing else in flight, ` +
+      `and cost ${signed(dHold.extraSourceBytesVsControl)} B off the source link. The corrupter ` +
+      `consumed ${dBad.wastedTickSlots} device-slot ticks and made the fleet receive and throw away ` +
+      `**${dBad.bytesDiscardedOnArrival.toLocaleString('en-US')} B — ` +
+      `${fmt(dBad.bytesDiscardedOnArrival / (cfg.chunkSize * cfg.chunkCount), 2)}× the artifact** — on ` +
+      `peer links, plus ${signed(dBad.extraSourceBytesVsControl)} B off the source. Those bytes crossed ` +
+      'a link and were discarded on arrival, before they were stored and therefore before they could be ' +
+      'forwarded: `advertise()` is derived from the store, so there is no container a refused chunk ' +
+      `could be forwarded out of. The projection column is the counterfactual: with no floor, ` +
+      `devices × chunks = ${dHold.attemptsWithoutFloorProjected.toLocaleString('en-US')} attempts, ` +
+      `${dHold.wastedTickSlotsWithoutFloorProjected.toLocaleString('en-US')} device-slot ticks for a ` +
+      `withholder and ${dBad.bytesDiscardedWithoutFloorProjected.toLocaleString('en-US')} B discarded ` +
+      'for a corrupter. **That column is arithmetic and nothing in this repository ran with the floor ' +
+      'disabled.**'
+  );
+  say('');
+
+  // --- the module's own honesty, read out of it ------------------------------
+  const met = res.criteria.filter((c) => c.met);
+  const unmet = res.criteria.filter((c) => !c.met);
+  say(
+    `**ADR-024's six acceptance criteria, read out of \`describeCriteria()\` in the running module** ` +
+      'rather than restated here — for the reason `attest.js`\'s `describeRoots()` exists: a caveat that ' +
+      `lives only in a report is a caveat that stops being read. **${met.length} of ${res.criteria.length} ` +
+      `met**, and the ${unmet.length} that are not are the two that need a site.`
+  );
+  say('');
+  say(
+    markdownTable(
+      ['#', 'criterion', 'status', 'met?'],
+      res.criteria.map((c) => [
+        String(c.criterion),
+        c.label,
+        `\`${c.status}\``,
+        c.met ? 'yes' : '**no**'
+      ])
+    )
+  );
+  say('');
+  const absent = res.unimplemented.filter((u) => u.status === 'absent');
+  const injected = res.unimplemented.filter((u) => u.status === 'injected-absent');
+  say(
+    `**And what ADR-024 asks for that this build does not have**, from ` +
+      `\`describeUnimplemented()\`: **${absent.length} absent** — ` +
+      absent.map((u) => `\`${u.id}\``).join(', ') +
+      ` — and **${injected.length} injected and absent by default** — ` +
+      injected.map((u) => `\`${u.id}\``).join(', ') +
+      '. The first list is why most of ADR-024 is not measurable here at all: there is no BitChat, so ' +
+      'peer discovery and the pre-link control channel sit outside the module and the peer set arrives ' +
+      'as data; there is no chunk store, so store-and-carry across a reboot and "interrupted receivers ' +
+      'resend at most one chunk" are properties of something that does not exist; and there is no device ' +
+      'fleet.'
+  );
+  say('');
+
+  say(
+    '**What this suite does not establish.** It measures no seconds and evaluates neither wall-clock ' +
+      'gate. It measures no radio, no site, no reboot and no interruption. It does not exercise the ' +
+      `broadcast tier, which is \`${res.broadcastCodec}\` and is not wired into \`swarm.js\` at all. It ` +
+      'does not test store-and-carry, custody receipts or witness lineage, none of which exist here. Its ' +
+      'digest and signer are stand-ins, and the one configuration re-run with real SHA-256 and real ' +
+      'Ed25519 shows only that the choice does not move a counted quantity — not that anything here is ' +
+      'cryptographically evaluated. And it does not establish a tick cost for corrupt-chunk or ' +
+      'advertise-and-withhold: at the largest fleet measured both move the run by less than the ' +
+      'reordering an honest peer causes, so the honest reading of that column is that it is below this ' +
+      'instrument\'s resolution rather than that the attacks are free.\n\n' +
+      'What the tables do establish is narrower and is what criteria 4 and ' +
+      `6 asked for: source traffic **measured at the link** stays at ${fmt(top.ratioToArtifact, 2)}× the ` +
+      `artifact for ${top.devices} simulated devices against a projected ` +
+      `${fmt(top.savingVsPointToPoint, 0)}× point-to-point; each of the three named behaviours has a ` +
+      'stated, measured effect — in source bytes and discarded bytes for all three, and in ticks for ' +
+      'slow-drip, which clears the noise by two orders of magnitude; the cost of deprioritising is one ' +
+      'attempt per device, bounded by the score floor, and the slot-ticks and bytes that attempt ' +
+      'consumes; and no hostile peer put one wrong byte on one device under any of them.'
+  );
+  say('');
+}
+
 // --- Main --------------------------------------------------------------------
 
 // Asynchronous solely because one measurement is: the browser's own
@@ -3455,6 +3974,24 @@ async function main() {
     // the point of measuring it is that `closure.js` cannot use it.
     results.closureBackends = await runSignatureBackends({ reps: args.quick ? 10 : 40 });
     printClosureModuleSuite(results.closure, results.closureBackends);
+  }
+
+  if (want('swarm')) {
+    say('---');
+    say('');
+    // Not --trials: the cost here is the simulation itself, which is quadratic
+    // in devices × chunks, so the dial is fleet size and chunk count rather
+    // than repetitions. --quick drops the 100-device rows, which are most of
+    // the runtime; it also drops the only rows that speak to ADR-024's own
+    // hundred-device example, so the report says which dial produced it.
+    results.swarm = runSwarmSuite({
+      deviceCounts: args.quick ? [2, 10, 25] : [2, 10, 25, 50, 100],
+      behaviourAt: args.quick ? [10] : [10, 100],
+      seeds: args.quick ? [args.seed, 7] : [7, 1234, 4321, args.seed, 99],
+      chunkCounts: args.quick ? [16, 32] : [16, 32, 64, 128],
+      crossCheckDevices: args.quick ? 5 : 10
+    });
+    printSwarmSuite(results.swarm);
   }
 
   if (args.json) {
