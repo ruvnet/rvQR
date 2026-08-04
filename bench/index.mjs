@@ -1524,20 +1524,26 @@ function printMemorySuite(res) {
   );
   say('');
   say(
-    `**Peak RSS ${fmt(res.peakRssMiB, 1)} MiB, of which ${fmt(res.peakRssAboveBaselineMiB, 1)} MiB is ` +
-      `this pipeline above an empty Node process — ${res.withinBudget ? 'inside' : 'OVER'} the ` +
-      `${res.budgetMiB} MiB budget.**`
+    '**Do not read the receiver rows of that table as the copy budget.** "Live copies" is RETAINED ' +
+      'memory at the END of each stage, so it cannot see a buffer that is allocated and freed inside ' +
+      'one — and the shipped receiver allocates exactly such a buffer, a padded copy of the whole ' +
+      `artifact, inside \`finalize\`. That is why this table said ${fmt(res.v1.receiverPeakCopies, 2)}× ` +
+      `and ${fmt(res.v2.receiverPeakCopies, 2)}× while \`artifacts/pipeline.test.js\` said 3.00× for the ` +
+      'same two receivers. The receiver section below is that measurement done properly, under three ' +
+      'named accountings; these stage rows are kept because the SENDER figures and the `toTransport` ' +
+      'result are still what they measure.'
   );
   say('');
   say(
-    `**Payload copies, receiver side: v1 peaks at ${fmt(res.v1.receiverPeakCopies, 2)}×, v2 at ` +
-      `${fmt(res.v2.receiverPeakCopies, 2)}×** against a budget of fewer than two. ` +
-      `Sender side, v1 holds ${fmt(res.v1.senderCopies, 2)}× as base64url text and v2 ` +
+    `Sender side, v1 holds ${fmt(res.v1.senderCopies, 2)}× as base64url text and v2 ` +
       `${fmt(res.v2.senderCopiesOneFrame, 2)}× with one armoured frame retained. Both transfers ` +
-      `verified byte-exact (v1 ${res.v1Verified ? 'yes' : 'NO'}, v2 ${res.v2.verified ? 'yes' : 'NO'}).`
+      `verified byte-exact (v1 ${res.v1Verified ? 'yes' : 'NO'}, v2 ${res.v2.verified ? 'yes' : 'NO'}). ` +
+      `Peak RSS for this stage process is ${fmt(res.peakRssMiB, 1)} MiB, of which ` +
+      `${fmt(res.peakRssAboveBaselineMiB, 1)} MiB is the pipeline above an empty Node process — ` +
+      `${res.withinBudget ? 'inside' : 'OVER'} the ${res.budgetMiB} MiB budget. It runs both senders ` +
+      'and both receivers back to back, so it is the highest figure in this suite and is not a ' +
+      "receiver's cost; the twelve isolated receiver cells below are."
   );
-  say('');
-  say('**Allocation sites, read out of the source rather than inferred from the numbers:**');
   say('');
   say(
     markdownTable(
@@ -1548,6 +1554,235 @@ function printMemorySuite(res) {
     )
   );
   say('');
+  printReceiverComparison(res);
+}
+
+/**
+ * The receiver comparison: the shipped buffered receivers against
+ * `artifacts/pipeline.js`'s streaming one, on every artifact and both
+ * protocols, under three accountings that do not agree — and the reconciliation
+ * that says which one the budget is about.
+ */
+function printReceiverComparison(res) {
+  if (!res.cells || !res.cells.length) return;
+  const led = res.ledger && res.ledger.available ? res.ledger : null;
+
+  say('#### Shipped receiver against the streaming receiver, ADR-025 §2.2');
+  say('');
+  say(
+    'Every artifact in the repository, both protocols, both receive paths. `shipped` is ' +
+      '`core.js`/`proto2.js` — ingest into a chunk list, `assemble`, then a one-shot SHA-256. ' +
+      '`streaming` is `artifacts/pipeline.js` — one preallocated output buffer, payloads written at ' +
+      'their offset and dropped, and a digest that advances over a hash frontier. v2 frames are fed ' +
+      'as BINARY on both paths; `toTransport` is a sender cost and is measured as one, above.'
+  );
+  say('');
+  say('**Three ways to count a copy. They do not agree, and each column says what it counts.**');
+  say('');
+  say(
+    markdownTable(
+      ['artifact', 'proto', 'path', 'ledger peak', 'ledger handover', 'retained (± band)', 'write/read passes', 'peak RSS', 'ms', 'MiB/s'],
+      res.cells.map((c) => [
+        `${c.artifact} (${c.artifactBytes} B)`,
+        c.protocol,
+        c.path,
+        `${fmt(c.ledgerPeakCopies, 4)}×${c.ledgerWithinBudget === false ? ' **OVER**' : ''}`,
+        fmt(c.ledgerHandoverCopies, 4) + '×',
+        c.retainedResolvable
+          ? `${fmt(c.retainedCopies, 3)}× ± ${fmt(c.retainedBandCopies, 3)}`
+          : `*unresolvable (± ${fmt(c.retainedBandCopies, 2)}×)*`,
+        `${fmt(c.writePasses, 0)} / ${fmt(c.hashPasses, 0)}`,
+        `${fmt(c.peakRssMiB, 1)} MiB`,
+        fmt(c.medianMs, 3),
+        fmt(c.mibPerSec, 1)
+      ])
+    )
+  );
+  say('');
+  say(
+    '**`ledger peak`** is the peak of live receiver-held bytes over the transfer, in exact payload ' +
+      'byte lengths, from the ledger inside `artifacts/pipeline.js`. **`ledger handover`** is the ' +
+      'subset of that still live when the artifact is handed over. **`retained`** is heapUsed + ' +
+      'external after a forced collection with the result held, median of five cycles after three ' +
+      'warm-ups and a discarded first cycle; the band beside it is the spread of a CONTROL cycle — ' +
+      'the identical transfer with the result discarded, which should retain zero. Where the band is ' +
+      'comparable to the answer the cell says *unresolvable* rather than printing a ratio that ' +
+      'measures the collector.'
+  );
+  say('');
+
+  const rec = res.reconciliation;
+  if (rec && rec.rows.length) {
+    const shipped = rec.rows.find((r) => r.path === 'shipped');
+    const streamed = rec.rows.find((r) => r.path === 'streaming');
+    const hp = rec.hashPadding && rec.hashPadding.length ? rec.hashPadding[0] : null;
+    say(`**The two disagreements, resolved on \`${rec.artifact}\`.**`);
+    say('');
+    if (shipped) {
+      say(
+        `The ledger rates the shipped receiver at **${fmt(shipped.ledgerPeakCopies, 2)}×** and the heap ` +
+          `at **${fmt(shipped.retainedCopies, 2)}×**, a gap of ${fmt(shipped.peakMinusRetained, 2)}×. ` +
+          'The gap is one whole copy of the artifact and the ledger is right: `core.sha256Bytes` ' +
+          'allocates a 64-byte-aligned PADDED COPY of its entire input, hashes it and drops it, so at ' +
+          'the moment of verification the chunk list, the assembled output and the padded copy are all ' +
+          'live. The retained measurement is taken after that copy is garbage, and cannot see it. ' +
+          (hp
+            ? `That copy is not modelled here, it is weighed: live bytes sampled either side of the ` +
+              `one-shot hash with no collection in between come out at **${fmt(hp.observedCopies, 4)}× ` +
+              `the artifact** against a modelled ${fmt(hp.modelledCopies, 4)}×, a ratio of ` +
+              `${fmt(hp.observedOverModelled, 4)}. `
+            : '') +
+          `ADR-025 §2.2 bounds copies that COEXIST, so the peak is the number the budget is about.`
+      );
+      say('');
+      say(
+        `The second disagreement runs the other way: the heap reads ` +
+          `${fmt(shipped.retainedMinusHandover, 2)}× ABOVE the ledger's handover figure of ` +
+          `${fmt(shipped.ledgerHandoverCopies, 2)}×. That gap is allocator overhead the exact-byte ` +
+          'ledger does not model — `core.js` keeps its chunks in a dictionary-mode ' +
+          '`Object.create(null)`, and the per-entry cost of that is real memory. The ledger counts ' +
+          'what the code asked for; the heap counts what the allocator handed back. Neither is wrong ' +
+          'about its own quantity, and reporting either one alone was what produced two different ' +
+          'answers for one receiver.'
+      );
+      say('');
+    }
+    if (streamed) {
+      say(
+        `On the streaming receiver the three accountings converge: peak ` +
+          `${fmt(streamed.ledgerPeakCopies, 4)}×, handover ${fmt(streamed.ledgerHandoverCopies, 4)}×, ` +
+          `retained ${fmt(streamed.retainedCopies, 3)}× ± ${fmt(streamed.retainedBandCopies, 3)}. There ` +
+          'is no transient copy for the peak to catch and no chunk dictionary for the allocator to ' +
+          'charge for, so the three numbers agree to inside the heap method\'s own resolution.'
+      );
+      say('');
+    }
+  }
+
+  if (led) {
+    const streamCells = res.cells.filter((c) => c.path === 'streaming');
+    const worst = streamCells.reduce((a, b) => (b.ledgerPeakCopies > a.ledgerPeakCopies ? b : a), streamCells[0]);
+    const best = streamCells.reduce((a, b) => (b.ledgerPeakCopies < a.ledgerPeakCopies ? b : a), streamCells[0]);
+    say('**Where the fixed overhead bites: the smallest artifact has the worst ratio.**');
+    say('');
+    say(
+      'The streaming receiver holds the output, one in-flight frame payload, one byte per frame of ' +
+        'index, and a 64-byte hash carry. Only the first of those scales with the payload, so the ' +
+        'ratio is 1 + (fixed overhead)/N. The overhead does not shrink when the payload does: ' +
+        `${worst.artifact} at ${worst.artifactBytes} B pays **${fmt(worst.ledgerPeakCopies, 4)}×** on ` +
+        `${worst.protocol} — ${worst.overheadBytes} B of it fixed — where ${best.artifact} at ` +
+        `${best.artifactBytes} B pays ${fmt(best.ledgerPeakCopies, 4)}×. Quoting only the megabyte ` +
+        'figure would flatter the result by a factor of ' +
+        `${fmt((worst.ledgerPeakCopies - 1) / (best.ledgerPeakCopies - 1), 0)} on the part that is ` +
+        'not the artifact itself. Every row below is a real transfer through the real receiver, not ' +
+        'the overhead formula evaluated.'
+    );
+    say('');
+    say(
+      markdownTable(
+        ['artifact size', 'v1 (512 B chunks)', 'v2 (665 B chunks)'],
+        led.ladder.map((r) => [
+          `${r.bytes} B`,
+          fmt(r.v1, 4) + '×',
+          fmt(r.v2, 4) + '×'
+        ])
+      )
+    );
+    say('');
+    say(
+      markdownTable(
+        ['protocol', 'chunk', 'drops below', 'at artifact size', 'copies there', 'one byte smaller', 'true crossing?'],
+        led.crossovers.map((c) => [
+          c.protocol,
+          `${c.chunk} B`,
+          fmt(c.threshold, 2) + '×',
+          c.bytes === null ? '—' : `**${c.bytes} B**`,
+          c.bytes === null ? '—' : fmt(c.copiesAtCrossover, 6) + '×',
+          c.bytes === null ? '—' : fmt(c.copiesOneByteSmaller, 6) + '×',
+          c.isTrueCrossing ? 'yes' : 'NO'
+        ])
+      )
+    );
+    say('');
+    say(
+      'Found by bisection over real transfers, then verified: the size one byte smaller is still at ' +
+        'or above the threshold, and every one of 24 sampled sizes above it is still below. The ' +
+        'crossover is mostly a statement about the CHUNK SIZE — the in-flight frame payload is the ' +
+        'largest single term in the overhead — so it moves with the sender\'s choice of chunk, and ' +
+        'both chunk sizes are named in the table rather than left implicit.'
+    );
+    say('');
+    say('**What the streaming receiver allocates, read out of the source:**');
+    say('');
+    say(
+      markdownTable(
+        ['ledger kind', 'what allocates', 'cost'],
+        (res.streamingSites || []).map((s) => [s.kind, s.site, s.cost])
+      )
+    );
+    say('');
+  }
+
+  const overRss = res.cells.filter((c) => c.withinRssBudget === false);
+  say(
+    `**Peak RSS across all twelve receiver cells: ${fmt(res.receiverPeakRssMiB, 1)} MiB against the ` +
+      `128 MiB budget — ${res.receiverWithinRssBudget ? 'inside' : 'OVER'}` +
+      `${overRss.length ? `, but ${overRss.length} cell(s) are over` : ''}; ` +
+      `${fmt(res.suitePeakRssMiB, 1)} MiB is the highest anywhere in this suite, in the stage process ` +
+      `that runs both senders and both receivers back to back. Each receiver cell is measured COLD ` +
+      'and alone in its own process, because peak RSS is a high-water mark that never comes back ' +
+      'down: two receivers in one process and the second inherits the first\'s peak. The streaming ' +
+      'receiver did not move this budget and does not claim to — it was green before ' +
+      '`artifacts/pipeline.js` existed, and the copy count was the red number.**'
+  );
+  say('');
+
+  const t = res.throughput;
+  if (t && t.available) {
+    const big = res.cells.filter((c) => c.artifact === 'standalone.html');
+    const sV1 = big.find((c) => c.protocol === 'v1' && c.path === 'shipped');
+    const rV1 = big.find((c) => c.protocol === 'v1' && c.path === 'streaming');
+    say(
+      '**Streaming is not slower, which was not a given.** On the 1.18 MB artifact the streaming ' +
+        (sV1 && rV1
+          ? `receiver runs v1 in ${fmt(rV1.medianMs, 1)} ms against the shipped receiver's ` +
+            `${fmt(sV1.medianMs, 1)} ms — ${fmt(sV1.medianMs / rV1.medianMs, 2)}× faster — `
+          : 'receiver is the faster of the two — ') +
+        'because it never runs the `assemble` pass and never allocates the padded hash input. On the ' +
+        'two small artifacts the two paths are within noise of each other. Frame BUILDING is the ' +
+        'sender\'s cost and is excluded from every timing above; it is reported separately by the ' +
+        'probe. These are receive-path rates in a Node process, not link rates: the optical channel ' +
+        'measured elsewhere in this document runs at 2.44 KB/s, five orders of magnitude below.'
+    );
+    say('');
+  }
+
+  if (led && led.criteria) {
+    say('**ADR-025\'s seven acceptance criteria, including the three this repository cannot meet:**');
+    say('');
+    say(
+      markdownTable(
+        ['#', 'criterion', 'status', 'where / why'],
+        led.criteria.map((c) => [
+          String(c.id),
+          c.title,
+          c.status === 'met' ? '**met**' : c.status,
+          c.where || c.reason || '—'
+        ])
+      )
+    );
+    say('');
+    say(
+      'Those reasons are read out of `ADR025_CRITERIA` in the running `artifacts/pipeline.js`, not ' +
+        'restated here, so a criterion cannot quietly disappear from this report. One figure inside ' +
+        'them is stale and is corrected rather than passed through: criterion 2 cites 75.2 MiB of ' +
+        `128 MiB for the peak-RSS budget, from an earlier run of this suite. This run measured ` +
+        `${fmt(res.suitePeakRssMiB, 1)} MiB as the suite peak and ${fmt(res.receiverPeakRssMiB, 1)} MiB ` +
+        'as the highest receiver cell. The verdict is unchanged — green, with room — and the ' +
+        'not-applicable reasoning is unaffected.'
+    );
+    say('');
+  }
 }
 
 function printSemDeltaSuite(res) {

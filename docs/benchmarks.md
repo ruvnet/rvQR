@@ -67,20 +67,30 @@ manifests. **The signatures alone do not fit, before a byte of closure
 content.** With 64-byte Ed25519 the budget is a comfortable 7,788 bytes. Neither
 ADR reaches this conclusion because it is a product of the two.
 
-**6. The pipeline is inside its memory budget and outside its copy budget.**
-MEASURED on `standalone.html` (572,166 B) in a separate process under
-`--expose-gc`: peak RSS 87.9 MiB, of which 39.9 MiB is the pipeline itself —
-comfortably inside 128 MiB. But **the receiver peaks at 2.78 payload copies for
-v1 and 2.56 for v2**, against ADR-025's budget of fewer than two. Both overshoot
-for the same structural reason: the decoded chunks and the assembled output are
-alive at the same time.
+**6. The shipped receivers are at 3.00 payload copies, not the 2.5 this document
+used to report; the streaming receiver is at 1.00.** MEASURED on all three
+artifacts, both protocols. The shipped `core.js`/`proto2.js` path peaks at
+**3.00×** the artifact — chunk list, assembled output, and the padded copy
+`core.sha256Bytes` makes of its entire input, all alive at once — against
+ADR-025's budget of fewer than two. This section previously reported 2.5×,
+because a retained-memory measurement is taken after the padded copy is garbage
+and cannot see it; that copy is weighed here at **1.0055× the artifact**.
+`artifacts/pipeline.js`'s streaming receiver holds **1.0024×** on the 1.18 MB
+artifact and **1.3186×** on the 2,304-byte demo container, where 734 bytes of
+fixed overhead do not shrink with the payload; it crosses below 1.10× at
+**5,891 bytes on v1 and 7,421 bytes on v2**. It is also **2.49× faster**, having
+no `assemble` pass to run. Peak RSS is 64.5 MiB of 128 MiB across twelve
+isolated receiver processes — that budget was green before and is untouched.
+This suite drives the modules directly and does not measure the app; see §9.6
+for what was and was not wired at the time of the run.
 
-**7. `proto2.toTransport` leaves a cons-string rope that costs about 30 bytes
-per output byte.** MEASURED: armouring every frame and retaining them cost
-37.6× the artifact in heap, against the 1.14× the armour's own expansion
-accounts for. Holding one frame at a time costs nothing
-(0.03×), so this only bites a sender that pre-armours a batch. It is a
-one-character-at-a-time `+=` loop that V8 never flattens.
+**7. `proto2.toTransport`'s cons-string rope is fixed, and cost about 30 bytes
+per output byte before it was.** MEASURED: armouring every frame and retaining
+them once cost 37.6× the artifact in heap, against the 1.14× the armour's own
+expansion accounts for — a one-character-at-a-time `+=` loop V8 never flattened.
+It now builds into a preallocated array and joins once, and the same stage
+measures **1.24×**. Holding one frame at a time always cost nothing (0.01×), so
+this only ever bit a sender that pre-armoured a batch.
 
 **8. The fountain layer is worth 2×–3.8× under frame loss, and costs 5% when
 there is none.** MEASURED and unchanged from the previous revision of this
@@ -215,7 +225,7 @@ node bench/index.mjs --suite compress    # codecs on the envelope, what compress
 node bench/index.mjs --suite objective   # G = R × C × E × P
 node bench/index.mjs --suite fleet       # N receivers, peer exchange (a model)
 node bench/index.mjs --suite closures    # progressive activation (a model)
-node bench/index.mjs --suite memory      # working memory and payload copies
+node bench/index.mjs --suite memory      # working memory, payload copies, streaming vs buffered receiver
 node bench/index.mjs --suite semdelta    # semantic delta, inside RVF segments
 node bench/index.mjs --suite planner     # strategy choice, the hard rules, inventory granularity
 node bench/index.mjs --suite attest      # the attestation state matrix, fail-closed coverage, decision cost
@@ -1165,63 +1175,271 @@ shutter, no noise, no glare, no motion.
 
 `node bench/index.mjs --suite memory`
 
-Budget: under 128 MiB of working memory and fewer than two full payload copies
-live at once ([ADR-025](adr/ADR-025-rvqr-zero-copy-pipeline.md) §2.2), on the
-largest artifact in the repository — `standalone.html`, 572,166 bytes at the
-time of this run.
+Two budgets, both from [ADR-025](adr/ADR-025-rvqr-zero-copy-pipeline.md) §2.2:
+**under 128 MiB of working memory**, and **fewer than two full payload copies
+live at once** — "one unavoidable read, one unavoidable write; anything else is
+a defect". The memory budget is not a performance goal:
+[ADR-015](adr/ADR-015-rvqr-adaptive-control.md) §2.3 lists it among the
+invariants a learned control policy may not trade away, alongside trust and
+verification.
 
-Measured in a separate process under `--expose-gc`, because both matter: without
-a forced collection `heapUsed` is whatever the collector has not got round to
-yet, and in the harness's own process the peak would be the other suites'. "Live"
-is `heapUsed + external` after a forced collection, divided by the artifact size.
-**`external` is where typed-array payloads actually are** — a copy count taken
-from `heapUsed` alone under-reports them by about half, which is a mistake this
-harness made and corrected.
+The suite runs twenty-seven child processes, because the quantities it reports
+contaminate each other: retained memory needs a warmed process, peak RSS needs a
+cold one and cannot be shared between two receivers at all, and the timings need
+neither. All three artifacts in the repository are measured, on both protocols,
+against both receive paths.
 
-| stage | heap Δ | external Δ | live copies | peak RSS |
-|---|---|---|---|---|
-| v1 sender: buildFrames | 1.70× | 0.07× | 1.78× | 54.6 MiB |
-| v1 receiver: ingest (frames drained) | −1.01× | 1.00× | 1.77× | 55.9 MiB |
-| v1 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | **2.78×** | 56.5 MiB |
-| v2 sender: buildFrames | 0.36× | 1.04× | 1.41× | 58.4 MiB |
-| v2 sender: armour, one frame retained | 0.04× | 0.00× | 1.45× | 58.7 MiB |
-| v2 harness: armour every frame, all retained | **37.60×** | 0.00× | 39.05× | 83.3 MiB |
-| v2 receiver: ingest (frames drained) | −37.50× | 0.00× | 1.55× | 87.4 MiB |
-| v2 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | **2.56×** | 87.9 MiB |
+### 9.1 The correction: this section under-reported the receiver by one whole copy
 
-Sender and receiver are measured as separate pipelines because they are separate
-devices: holding the whole frame list is something this harness does and a
-receiver never does, so the receiver stages drain the list as they consume it.
+Until this run, section 9 reported the shipped receivers at **2.78× and 2.56×**
+(and 2.62×/2.42× on the current, larger `standalone.html`), from a retained-bytes
+measurement. `artifacts/pipeline.test.js`'s instrument rated **the same two
+receivers at 3.00×**. Two suites, one subject, two numbers.
 
-**Peak RSS 87.9 MiB, of which 39.9 MiB is the pipeline above an empty Node
-process — inside the 128 MiB budget.** ADR-025 §2.4 is right that the budget is
-a system budget rather than a pipeline budget, and this measures only the
-pipeline; a browser tab's DOM, canvas backing store and camera buffers are
-outside it.
+**The instrument was right, and the missing copy is real.** `core.sha256Bytes`
+allocates `new Uint8Array(total)` where `total` is the 64-byte-aligned padded
+length of its input, copies the entire message into it, hashes it and drops it.
+At the instant that buffer exists, the chunk list and the assembled output are
+both still live — three full copies of the artifact, to deliver one. The
+retained measurement samples *after* the transfer, by which time the padded copy
+is garbage, so it cannot see it. `bench/lib/memprobe.mjs`'s own docblock had
+already said as much: "It cannot see a buffer that was allocated and freed
+inside one stage."
 
-**Both receivers are over the copy budget, and by roughly the same amount: v1
-peaks at 2.78 payload copies, v2 at 2.56, against a budget of fewer than two.**
-The cause is structural and identical in both: the per-frame chunks and the
-assembled output are alive at the same time, so the floor for the current
-`assemble`-then-verify design is 2.00 copies before any framing cost is counted.
-v1 adds 0.78 on top because its base64url frame strings are not fully released;
-v2 adds 0.56 because `proto2.ingest` stores `f.payload` as a **subarray view of
-the whole frame buffer**, so all 693 bytes of a frame stay alive to keep 665
-bytes of payload — 1.04× rather than 1.00×.
+ADR-025 §2.2 bounds copies that **coexist**, so the peak is the number the
+budget is about and the retained figure was answering a different question. The
+suite now reports three quantities under three names instead of one under an
+ambiguous one:
 
-Getting under two copies means not materialising the assembled artifact
-separately from the chunks: writing each chunk into its final position as it
-arrives, and hashing incrementally. That is a design change, not a tuning knob.
+| accounting | what it counts | what it misses |
+|---|---|---|
+| **ledger peak** | peak live receiver-held bytes over the transfer, in exact payload byte lengths, from the ledger inside `artifacts/pipeline.js` | per-object allocator overhead — it counts what the code asked for, not what the allocator handed back |
+| **ledger handover** | the subset of that still live when the artifact is handed over | the transient copies, and the same allocator overhead |
+| **retained** | real bytes: heapUsed + external after a forced collection, result held | anything freed before the collection — which is exactly the transient copy |
 
-**`proto2.toTransport` leaves a cons-string rope.** Armouring every frame and
-retaining them cost 37.6× the artifact in heap, where the armour's own 8/7
-expansion accounts for 1.14×.
-`toTransport` appends one character at a time with `+=`, so V8 builds a
-cons-string tree of ~792 nodes per frame and never flattens it until something
-reads the string; each node costs more than the character it carries. The next
-stage's `−37.49×` is those ropes collapsing as `fromTransport` reads them. A
-sender that armours one frame per frame period pays nothing (0.03×); a sender
-that pre-armours a batch pays about 30 bytes per output byte.
+The transient copy is not taken on trust in either direction. It is **weighed**:
+live bytes are sampled immediately before and immediately after the one-shot
+hash with *no* collection in between, so the padded buffer is still uncollected
+at the second sample. On `standalone.html` it comes out at **1.0055× the
+artifact** against a modelled 1.0000× — a ratio of 1.0054. The ledger's third
+copy is a measurement, not an assumption.
+
+### 9.2 Shipped receiver against the streaming receiver
+
+`shipped` is `core.js`/`proto2.js`: ingest into a chunk list, `assemble`, then a
+one-shot SHA-256. `streaming` is `artifacts/pipeline.js`: one preallocated
+output buffer, payloads written at their offset and dropped, and a digest that
+advances over a hash frontier. v2 frames are fed as **binary on both paths** —
+`toTransport` is a sender cost and is measured as one, in §9.5.
+
+| artifact | proto | path | ledger peak | ledger handover | retained (± band) | write/read passes | peak RSS | ms | MiB/s |
+|---|---|---|---|---|---|---|---|---|---|
+| ruvnet-demo.rvf (2,304 B) | v1 | shipped | 3.0278× **OVER** | 2.0000× | *unresolvable (± 6.37×)* | 1 / 1 | 49.3 MiB | 0.022 | 99.3 |
+| ruvnet-demo.rvf (2,304 B) | v1 | streaming | **1.2526×** | 1.0304× | *unresolvable (± 3.18×)* | 1 / 1 | 49.4 MiB | 0.026 | 83.6 |
+| ruvnet-demo.rvf (2,304 B) | v2 | shipped | 3.0278× **OVER** | 2.0000× | *unresolvable (± 4.80×)* | 1 / 1 | 49.1 MiB | 0.025 | 87.3 |
+| ruvnet-demo.rvf (2,304 B) | v2 | streaming | **1.3186×** | 1.0299× | *unresolvable (± 4.99×)* | 1 / 1 | 49.1 MiB | 0.028 | 77.5 |
+| rvf_wasm_bg.wasm (40,989 B) | v1 | shipped | 3.0009× **OVER** | 2.0000× | 2.495× ± 0.254 | 1 / 1 | 52.9 MiB | 0.314 | 124.4 |
+| rvf_wasm_bg.wasm (40,989 B) | v1 | streaming | **1.0161×** | 1.0036× | *unresolvable (± 0.40×)* | 1 / 1 | 53.1 MiB | 0.301 | 129.8 |
+| rvf_wasm_bg.wasm (40,989 B) | v2 | shipped | 3.0009× **OVER** | 2.0000× | 2.430× ± 0.237 | 1 / 1 | 52.7 MiB | 0.345 | 113.3 |
+| rvf_wasm_bg.wasm (40,989 B) | v2 | streaming | **1.0193×** | 1.0031× | 1.306× ± 0.198 | 1 / 1 | 52.8 MiB | 0.321 | 121.7 |
+| standalone.html (1,183,759 B) | v1 | shipped | 3.0000× **OVER** | 2.0000× | 2.385× ± 0.013 | 1 / 1 | 64.5 MiB | 19.658 | 57.4 |
+| standalone.html (1,183,759 B) | v1 | streaming | **1.0024×** | 1.0020× | 1.022× ± 0.025 | 1 / 1 | 63.0 MiB | 7.905 | 142.8 |
+| standalone.html (1,183,759 B) | v2 | shipped | 3.0000× **OVER** | 2.0000× | 2.301× ± 0.015 | 1 / 1 | 61.4 MiB | 16.375 | 68.9 |
+| standalone.html (1,183,759 B) | v2 | streaming | **1.0021×** | 1.0016× | 1.022× ± 0.013 | 1 / 1 | 61.5 MiB | 9.236 | 122.2 |
+
+**The shipped receivers are over the copy budget on every artifact and both
+protocols, by 50%. The streaming receiver is inside it on every artifact and
+both protocols, and on the largest one it holds 1.0024× — one copy plus 2,890
+bytes.**
+
+Both paths make exactly **one write pass and one read pass** over the payload,
+which is the other half of §2.2's sentence. That is not what distinguishes them;
+what distinguishes them is how many copies are alive while those passes happen.
+
+**The two disagreements, resolved on `standalone.html`.** The ledger rates the
+shipped v1 receiver at 3.00× and the heap at 2.38×, a gap of 0.62× — the padded
+hash copy, weighed above at 1.0055×, which the retained measurement is taken too
+late to see. The second gap runs the *other* way: the heap reads 0.38× **above**
+the ledger's handover figure of 2.00×. That is allocator overhead the exact-byte
+ledger does not model — `core.js` keeps its chunks in a dictionary-mode
+`Object.create(null)`, and the per-entry cost of that is real memory. The ledger
+counts what the code asked for; the heap counts what the allocator handed back.
+Neither is wrong about its own quantity, and reporting either one alone is what
+produced two different answers for one receiver.
+
+On the streaming receiver the three accountings converge: peak 1.0024×,
+handover 1.0020×, retained 1.022× ± 0.025. There is no transient copy for the
+peak to catch and no chunk dictionary for the allocator to charge for.
+
+**Where the retained method stops working, stated rather than discovered.** A
+*control* cycle — the identical transfer with the result discarded before the
+collection — should retain zero and instead lands anywhere in a band 7–30 KB
+wide, run to run. That band is measured per cell and printed beside every
+retained figure. On `standalone.html` it is under 2.5% and the column is a
+measurement; on the 2,304-byte demo container it is several times the artifact
+and the column is not a measurement of anything, so it is reported as
+*unresolvable* rather than printed as a ratio. **This is why the exact-byte
+ledger is the primary instrument here and the heap is the corroboration**, and
+why the first measured cycle — which reports 93 copies on the demo container, all
+of it interpreter warm-up — is discarded and the discard is stated.
+
+### 9.3 Where the fixed overhead bites, and the crossover
+
+The streaming receiver holds the output, one in-flight frame payload, one byte
+per frame of index, and a 64-byte hash carry. **Only the first of those scales
+with the payload**, so the ratio is 1 + (fixed overhead)/N and the *smallest*
+artifact has the *worst* ratio. `ruvnet-demo.rvf` at 2,304 B pays 1.3186× on v2,
+734 bytes of it fixed, where `standalone.html` pays 1.0021×. Quoting only the
+megabyte figure would flatter the result by a factor of 150 on the part that is
+not the artifact itself.
+
+Every row is a real transfer through the real receiver, not the overhead formula
+evaluated.
+
+| artifact size | v1 (512 B chunks) | v2 (665 B chunks) |
+|---|---|---|
+| 1,024 B | 1.5654× | 1.7148× |
+| 2,304 B *(demo container)* | 1.2526× | 1.3186× |
+| 4,096 B | 1.1428× | 1.1799× |
+| 8,192 B | 1.0724× | 1.0907× |
+| 16,384 B | 1.0372× | 1.0461× |
+| 40,989 B *(WASM runtime)* | 1.0161× | 1.0193× |
+| 65,536 B | 1.0108× | 1.0126× |
+| 262,144 B | 1.0042× | 1.0043× |
+| 1,048,576 B | 1.0025× | 1.0022× |
+| 1,183,759 B *(standalone.html)* | 1.0024× | 1.0021× |
+
+| protocol | chunk | drops below | at artifact size | copies there | one byte smaller | true crossing? |
+|---|---|---|---|---|---|---|
+| v1 | 512 B | 1.10× | **5,891 B** | 1.099983× | 1.100000× | yes |
+| v1 | 512 B | 1.05× | **12,021 B** | 1.049996× | 1.050000× | yes |
+| v1 | 512 B | 1.01× | **71,801 B** | 1.010000× | 1.010000× | yes |
+| v2 | 665 B | 1.10× | **7,421 B** | 1.099987× | 1.100000× | yes |
+| v2 | 665 B | 1.05× | **15,061 B** | 1.049997× | 1.050000× | yes |
+| v2 | 665 B | 1.01× | **86,001 B** | 1.010000× | 1.010000× | yes |
+
+**The streaming receiver drops below 1.10 copies at 5,891 bytes on v1 and 7,421
+bytes on v2.** Found by bisection over real transfers and then verified in both
+directions: the size one byte smaller is still at or above the threshold, and
+every one of 24 sampled sizes above it is still below.
+
+The crossover is mostly a statement about the **chunk size** — the single
+in-flight frame payload is the largest term in the fixed overhead, 512 of 577
+bytes on v1 and 665 of 730 on v2 — so it moves with the sender's choice of
+chunk. Both chunk sizes are in the table rather than left implicit. Neither
+crossover is near a budget: even the 1,024-byte row at 1.7148× is comfortably
+inside "fewer than two".
+
+**What the streaming receiver allocates:**
+
+| ledger kind | what allocates | cost |
+|---|---|---|
+| `output` | `new Uint8Array(m.size)` once, when the manifest arrives | 1× the artifact. The only allocation that scales with the payload |
+| `frame-payload` | the parser's owned payload, written into `out` at its offset and released in a `finally` | one chunk — 512 B on v1, 665 B on v2 — live for the duration of one `ingest` call |
+| `frame-index` | `new Uint8Array(state.total)` — one byte per frame, so duplicates can be refused | one byte per frame. Not payload, and charged to the receiver anyway |
+| `hash-carry` | `createSha256`'s 64-byte carry block | 64 B, fixed. The frontier absorbs whole blocks, so it stays empty until the final run |
+| `pending-payload` | data frames that arrive before the manifest, capped at a **fraction** of the transfer | up to 0.25× the artifact, and zero on an in-order transfer. A flat 256 KiB cap measured 2.0036× on a 40 KB artifact, which is why the cap is relative |
+
+### 9.4 Peak RSS, and throughput
+
+**Peak RSS across all twelve receiver cells: 64.5 MiB against the 128 MiB
+budget — inside, with room. 75.0 MiB is the highest anywhere in this suite, in
+the stage process that runs both senders and both receivers back to back.** Each
+receiver cell is measured cold and alone in its own process, because peak RSS is
+a high-water mark that never comes back down: two receivers in one process and
+the second inherits the first's peak.
+
+The streaming receiver **did not move this budget and does not claim to**. It was
+green before `artifacts/pipeline.js` existed; the copy count was the red number.
+ADR-025 §2.4 is also right that the budget is a *system* budget rather than a
+pipeline budget, and this measures only the pipeline: a browser tab's DOM, canvas
+backing store and camera buffers are outside it.
+
+**Streaming is not slower, which was not a given.** On the 1.18 MB artifact the
+streaming receiver runs v1 in **7.9 ms against the shipped receiver's 19.7 ms —
+2.49× faster** — because it never runs the `assemble` pass and never allocates
+the padded hash input. On v2 it is 9.2 ms against 16.4 ms. On the two small
+artifacts the two paths are within noise of each other, the fixed per-transfer
+costs dominating. Frame *building* is the sender's cost and is excluded from
+every timing above.
+
+These are receive-path rates in a Node process, **not link rates**. The optical
+channel measured in §1 runs at 2.44 KB/s, five orders of magnitude below; the
+receiver has never been the constraint and these numbers do not suggest it is.
+
+### 9.5 What the sender costs, and the `toTransport` rope
+
+The sender is a separate device and is measured as a separate pipeline: holding
+the whole frame list is something this harness does and a receiver never does,
+so the receiver stages drain the list as they consume it.
+
+| stage | heap Δ | external Δ | total Δ | live copies | peak RSS | ms |
+|---|---|---|---|---|---|---|
+| v1 sender: buildFrames | 1.63× | 0.05× | 1.68× | 1.68× | 60.6 MiB | 22.0 |
+| v1 receiver: ingest (frames drained) | −1.07× | 1.00× | −0.07× | 1.62× | 62.5 MiB | 19.4 |
+| v1 receiver: finalize (assemble + SHA-256) | 0.01× | 1.00× | 1.01× | 2.62× | 65.0 MiB | 7.9 |
+| v2 sender: buildFrames | 0.33× | 1.04× | 1.37× | 1.37× | 68.4 MiB | 16.4 |
+| v2 sender: armour, one frame retained | 0.01× | 0.00× | 0.01× | 1.38× | 70.0 MiB | 3.5 |
+| v2 harness: armour every frame, all retained | 1.24× | 0.00× | 1.24× | 2.62× | 70.1 MiB | 3.7 |
+| v2 receiver: ingest (frames drained) | −1.16× | −0.04× | −1.20× | 1.41× | 73.8 MiB | 17.6 |
+| v2 receiver: finalize (assemble + SHA-256) | 0.00× | 1.00× | 1.00× | 2.42× | 75.0 MiB | 4.4 |
+
+**The receiver rows of that table are the ones §9.1 corrects.** "Live copies" is
+retained memory at the *end* of each stage, so the 2.62× and 2.42× are the
+handover state plus allocator overhead and exclude the padded hash copy
+entirely. §9.2's ledger peak is the figure the budget is about. The stage table
+is kept because the *sender* figures and the `toTransport` result are still
+exactly what it measures.
+
+Sender side: v1 holds **1.68×** the artifact as base64url text plus JSON
+envelope, all retained as the frame list; v2 holds **1.38×** with one armoured
+frame retained, which is what a sender painting one symbol per frame period
+actually costs.
+
+**`proto2.toTransport` no longer leaves a cons-string rope.** An earlier run of
+this suite measured 37.6× the artifact in heap for armouring every frame and
+retaining them: `toTransport` appended one character at a time with `+=`, so V8
+built a cons-string tree of ~792 nodes per frame and never flattened it until
+something read the string, at about 31.6 bytes of heap per output byte. It now
+builds into a preallocated array and joins once, and the same stage measures
+**1.24×** — the armour's own 8/7 expansion plus the array, about 1.03 bytes
+retained per output byte. A sender that armours one frame per frame period still
+pays nothing (0.01×).
+
+### 9.6 ADR-025's acceptance criteria, including the three this repository cannot meet
+
+Read out of `ADR025_CRITERIA` in the running `artifacts/pipeline.js` rather than
+restated here, so a criterion cannot quietly disappear from this report.
+
+| # | criterion | status | where / why |
+|---|---|---|---|
+| 1 | Copy count is asserted, not inspected | **met** | `createLedger`/`copyReport`/`assertCopyBudget`, asserted in both directions in `pipeline.test.js` |
+| 2 | Peak RSS under 128 MiB for a 1 GB transfer | **not applicable** | the optical channel runs at 2.44 KB/s, so 1 GB is 4.7 days of continuous transfer. There is no such run in this repository and inventing one would be a fabricated measurement. The budget itself **is** measured, on every artifact that exists here |
+| 3 | Internal throughput ≥ 2× the measured radio ceiling | **not applicable** | there is no radio tier in this repository, so there is no ceiling to be twice. §9.4's throughput table is a comparison between two receivers, not a claim against a ceiling that does not exist |
+| 4 | The offload regression is gone (ADR-033 §4.1) | out of scope here | belongs to `artifacts/offload.js`, not to the receive path |
+| 5 | Streaming verification is byte-exact against the buffered result | **met** | `pipeline.test.js` compares bytes and digest on both demo artifacts, both protocols. The "and on a 1 GB container" half of the criterion is covered by criterion 2's reason |
+| 6 | The scalar fallback is exercised in CI on every SIMD path | **not applicable** | there are no SIMD paths: no intrinsics, no wasm-simd, no build matrix. Every routine is scalar and is the only implementation, so there is no second path that could rot unexercised |
+| 7 | The budget is checked in CI | partial | `assertCopyBudget` fails the suite; wiring the suite into CI is a separate step |
+
+ADR-025 specifies a **Rust** pipeline — memory mapping, SIMD BLAKE3, SIMD
+compression, 4–8 bounded streams. rvQR is a JavaScript static site, so three of
+its seven criteria cannot be met here and are recorded as not applicable **with
+the reason** rather than quietly dropped.
+
+One figure inside those reasons is stale and is corrected rather than passed
+through: criterion 2 cites 75.2 MiB of 128 MiB for the peak-RSS budget, from an
+earlier run of this suite. This run measured 75.0 MiB as the suite peak and
+64.5 MiB as the highest receiver cell. The verdict is unchanged — green, with
+room — and the not-applicable reasoning is unaffected.
+
+**This suite measures the modules, not the app.** Every figure above comes from
+driving `core.js`, `proto2.js` and `pipeline.js` directly in Node; nothing here
+opens `artifacts/index.html` or exercises a camera. The wiring status was
+changing while this ran: at the time of the run `index.html` loads
+`pipeline.js`, and `app.js` contains no reference to `RVQRPipeline`, so the
+app's own receive path was still the 3.00× one. That is an observation about two
+files at one moment, not a measurement, and nothing in this section should be
+read as a claim about which path a browser tab takes.
 
 ## 10. The objective function, G = R × C × E × P
 
@@ -2327,7 +2545,8 @@ in the brief for this work. Reported rather than smoothed.
 | ADR-003 §2.1 selects Zstd as the default codec and Brotli as the maximum-ratio option for WASM, HTML and metadata | A browser can run **neither**. The WHATWG Compression Streams format list is `gzip`, `deflate`, `deflate-raw`; a real Chromium 140 throws on `br`, `brotli` and `zstd` | **The ADR selects codecs for a platform that is not the one the app runs on.** Measured through the real `CompressionStream('deflate-raw')`, the reachable codec gives 55.91% envelope gain on the demo WASM against Brotli's 63.69%, and 70.12% against 76.40% on `standalone.html` — an edge of 0.48 to 7.77 points. The decision does not change (both environments compress or decline identically on every artifact here), so §2.1's *policy* survives; its *codec choice* describes Node. |
 | `compressArtifact` is synchronous; the only codec a browser has is asynchronous | `CompressionStream` has no synchronous form, so the browser's codec cannot be injected into the module's own path at all. Injecting a Promise-returning `compress` throws `CompressError`/`bad-compressed-size` | **Fail-closed, and worth recording as a property.** A Promise has no `length` or `byteLength`, so the module refuses at the point of measurement rather than building a manifest around a size nobody produced. A browser caller must compress first and hand the measured length to `choose()`, which is the seam that path exists for. |
 | §2's break-even table gives a single size at which each artifact clears the 8% gate — 6,144 B for float32 vectors | Scanning float32 prefixes at 18 sizes, the verdict **flips five times**: 2,304 B passes, 2,560 B fails, 3,072 B passes, 3,584 B fails, 4,096 B passes | Both are correct about what they measured (brotli-6 at a 512 B chunk against brotli-11 at 764 B), and neither is a break-even for the content. The ratio climbs smoothly and the frame count is a step function, so the gate is crossed repeatedly. A "break-even size" column reports the first crossing; for this content it is not the last. |
-| ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | v1 receiver peaks at 2.78×, v2 at 2.56× | The current pipeline **fails ADR-025's acceptance test** in both protocols, for the same structural reason: chunks and assembled output coexist. 2.00× is the floor for an assemble-then-verify design, so the ADR's target needs incremental placement and incremental hashing, not tuning. |
+| ADR-025 §2.2 sets a budget of fewer than 2 full payload copies and calls anything more "a defect" | The SHIPPED receivers peak at **3.00×** on both protocols and every artifact. `artifacts/pipeline.js`'s streaming receiver peaks at 1.0024× on the largest and 1.3186× on the smallest | The shipped path **fails ADR-025's acceptance test** in both protocols: chunk list, assembled output and the padded copy `core.sha256Bytes` makes of its whole input are all alive at verification. The streaming receiver is inside the budget everywhere and is 2.49× faster. This suite drives the modules directly, so it says nothing about which path a browser tab takes; §9.6 records what was wired at the time of the run. |
+| This document reported the same two receivers at 2.78×/2.56×, and `artifacts/pipeline.test.js`'s instrument reported 3.00× | Both were measuring; neither was measuring the budget's quantity on its own | The retained-memory figure is sampled after the transfer, by which time the padded hash copy is garbage — it is blind to exactly the copy that puts the receiver over. The instrument's exact-byte ledger sees it but not per-object allocator overhead, which is why the heap reads 0.38× *above* the ledger's handover figure. **Resolved in favour of the ledger's peak**, because §2.2 bounds copies that coexist; §9.1 reports all three accountings under three names and weighs the disputed copy at 1.0055× rather than modelling it. |
 | A whole artifact takes 20–40 s while the first closure takes under 3 s | A 1 MiB container takes 316 s at 5 fps and 158 s at 10 fps | 20–40 s at the default rate corresponds to a 66–133 KB artifact. ADR-022 attributes the 20–40 s figure to rvDrop, not to the optical channel, so the two targets describe different transports. |
 | ADR-022 §2.1 gates on closures 1–3; ADR-012 sizes an ML-DSA-65 signature at 3,309 B | Three signatures cost 9,927 B against a 3-second optical budget of 7,980 B of usable capacity at 5 fps (§12, counting frames). Reached independently in §10's closure subsection by counting bytes instead: **10,119 B of hybrid signature against a 7,320 B budget at the measured 2,440 B/s, a floor 38% larger than the whole budget** | **Jointly infeasible, and now by two routes that do not share a model.** Neither ADR is wrong alone. The byte-rate route also settles the wording ADR-022 §4.6 leaves open: because the floor does not move with the artifact, the answer is not "not achievable at this artifact size" but **not achievable at any**. One aggregate signature, or a hash chain committed in closure 1's signature, fixes it and stays inside ADR-022 §2.2. |
 | ADR-022 and ADR-012 budget signatures in raw bytes; `closure.js` `parseOffer` requires `signature` to be a run of lowercase hex | Measured: a 64-byte Ed25519 signature occupies **128 bytes as offered**. Every signature budget in both ADRs is therefore half the wire cost of this encoding — the hybrid optical floor is 20,238 B rather than 10,119 B, 2.76× the 3-second budget rather than 1.38× | **Both are right about different things and the gap is a factor of two.** The ADRs size a signature; the module encodes one. It moves `closure.js`'s own overhead crossover from 671 B to 927 B, and it makes the infeasibility in the row above worse rather than better, so it changes no conclusion — but a byte budget quoted from an ADR and compared against this module's wire is out by 2× and nothing currently says so. |
@@ -2410,6 +2629,9 @@ store and the camera buffers are not.
 | Peer-exchange link behaviour | **Not measured.** §11 counts bytes, not seconds, on the peer side, and models nothing about the medium. |
 | Closure activation | **Partly measured, since `artifacts/closure.js` landed.** The closure subsection (§10, after attestation) builds four-closure artifacts and activates them to `complete` through the shipped gate with a real SHA-256 and a real Ed25519. What is still not measured: nothing in the app or the transport *produces* closures — ADR-022 §3's splitting tooling does not exist, so the splits are the harness's — and nothing executes what is activated, because there is no RVM. "Activated" means the gate opened and the bytes are readable. |
 | **ADR-022's radio tier** | **Not measurable, because none exists.** There is no QUIC and no radio transport in this repository, so ADR-022 §4.5's "under 3 s at p95 on the radio tier" is not measured and no p95 for one is quoted anywhere in this document. `closure.describeUnimplemented()` reports it `absent` from inside the running module. Simulating a radio and reporting the result as observed would be worse than reporting nothing. |
+| **ADR-025 criterion 2: peak RSS for a 1 GB transfer** | **Not measurable, and not simulated.** The optical channel measured in §1 runs at 2.44 KB/s, so 1 GB is **4.7 days** of continuous transfer. There is no 1 GB run in this repository and generating one to report a number nobody paid for would be a fabricated measurement. The 128 MiB budget itself *is* measured, on all three real artifacts, in twelve isolated processes — §9.4. Criterion 5's "and on a 1 GB container" clause falls under the same reason. |
+| **ADR-025 criterion 3: internal throughput ≥ 2× the radio ceiling** | **Not applicable, because there is no radio tier.** ADR-027 lists it among the non-goals. §9.4's throughput table compares two receivers against each other; it is not a claim against a ceiling that does not exist, and no such ratio is quoted anywhere. |
+| **ADR-025 criterion 6: scalar fallback exercised on every SIMD path** | **Not applicable, because there are no SIMD paths.** No intrinsics, no wasm-simd, no build matrix. Every routine in the receive path is scalar and is the only implementation, so there is no second path that could rot unexercised. ADR-025 specifies a **Rust** pipeline with SIMD BLAKE3 and SIMD compression; rvQR is a JavaScript static site. |
 | **ML-DSA-65, or any post-quantum signature** | **Not measurable, because none exists.** `crypto.js` is Ed25519 only. Every hybrid figure anywhere in this document — §12's and the closure subsection's alike — is arithmetic over ADR-022 §3's own 3,309 bytes per signature, labelled a projection where it appears. There are no hybrid *timings* at all, since a projected size is arithmetic and a projected time would be an invention. |
 | Colour or multi-symbol frames | **Not applicable.** rvQR sends one monochrome symbol per frame. This is the single largest throughput lever the comparators use. |
 | RaptorQ interoperability | **Not applicable.** `artifacts/fountain.js` states it is not RFC 6330 conformant. |
