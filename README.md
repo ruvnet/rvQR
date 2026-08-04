@@ -227,16 +227,30 @@ single-symbol case rvQR complements by streaming.
 
 Open [`artifacts/test.html`](./artifacts/test.html) to run the self-tests in your browser. It exercises frame encoding, out-of-order and duplicate reassembly, hash-mismatch rejection, the QR encoder's structure, the decoder (encode → pixels → decode, including damaged symbols), and RVF parsing against the real demo container — no camera or second device needed — and renders two live QR codes you can scan with any reader to confirm the encoder produces real, readable symbols.
 
-That page covers the app suite — 166 assertions. Fourteen further suites run under
+That page covers the app suite — 166 assertions. Fifteen further suites run under
 Node only, because they need timing, forced garbage collection or containers too
-large to be comfortable in a browser tab: perf (60), swarm (52), planner (47), closure (46), compress (44), crypto (44),
+large to be comfortable in a browser tab: perf (60), swarm (52), presence (51), planner (47), closure (46), compress (44), crypto (44),
 fountain (39), attest (38), semdelta (34), delta (31), pipeline (30), proto2 (30), expiry (25) and
-provenance (23). 709 in total.
+provenance (23). 760 in total.
 
 ### Two modules the page does not load
 
-`swarm.js` and `p2p.js` ship in this repository and are **not reachable from the
-app**, which is stated here rather than left for someone to discover.
+`swarm.js`, `presence.js` and `p2p.js` ship in this repository and are **not
+reachable from the app**, which is stated here rather than left for someone to
+discover.
+
+`presence.js` fuses three proximity signals — optical line-of-sight, an
+ultrasonic challenge-response, and radio ranging — so that **no single one
+authorizes anything**. Each alone is a measurement an attacker can arrange: a
+screen was seen (substitution is exactly that), something answered (a speaker in
+the room answers), something is at 0.4 m (not necessarily the device on the
+screen). Corroboration is an enumerated *pair* relation rather than a count, so
+there is no threshold anyone could later set to one. **None of the three channels
+is implemented** — there is no ultrasonic code here, and no browser exposes a UWB
+API at all — so run as this repository stands, a perfect report on all three
+yields `uncorroborated` with 0 of 3 passing. **rvQR does not sense proximity.**
+And even fully built, fusion raises the cost of a relay attack without closing
+it: a determined relay with equipment in both rooms remains possible.
 
 `swarm.js` distributes one artifact across a fleet of devices trading verified
 chunks, so a source link sends far less than one copy per device — measured at

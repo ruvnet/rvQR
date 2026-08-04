@@ -123,3 +123,33 @@ Absent is absent, never assumed-good — the same rule as
 5. **Degradation is tested** on device pairs missing one and two of the three.
 6. **The UI wording is reviewed against §3's over-claiming risk** before this
    ships.
+
+> **Where this list stands at [90e8d8a](https://github.com/ruvnet/rvQR/commit/90e8d8a).**
+> Four covered, two unmet. `artifacts/presence.describeAcceptance()` reports the
+> same at runtime.
+>
+> | # | State | Evidence |
+> |---|---|---|
+> | 1 | **covered** | Three tests, one per channel, each supplying a perfect signal for that channel and nothing for the others; none authorizes. The rule is an enumerated **pair relation** over distinct channels — `CORROBORATING_PAIRS` — not a threshold, so there is no number that could later be set to 1. A caller who invents a `minChannels` has it dropped, and that is tested. |
+> | 2 | **covered** | Replay refused on every channel, each bound to session id and to a challenge issued *for that channel*: a photographed QR, a recorded acoustic response and a recorded ranging exchange all fail in a new session. A recording moved to another channel is refused, and a spent-challenge list too long to search is refused rather than searched — the defect the attestation benchmark found in `attest.js`, pre-empted here. |
+> | 3 | **covered** | All three channels appear in the transcript and the receipt on every state, with **available, attempted and passed** kept distinct. Absent is absent, never assumed-good. |
+> | 4 | **NOT MET** | A relay attempt has not been measured, and none is simulated anywhere. It needs two devices, two rooms and a relay between them. `describeRelayRequirement()` states which channels a relay must defeat *simultaneously* and labels itself `evidence: "reasoning"`, `measured: false`. Simulating a relay and reporting which channels it defeated would be reporting an invention as an observation. |
+> | 5 | **covered** | Degradation tested on pairs missing one channel and missing two. A policy that has not stated its requirement is refused rather than defaulted. |
+> | 6 | **NOT MET** | Nothing is wired to a UI, so there is no wording to review. |
+>
+> **The state of this module on this platform, which matters more than the
+> table.** None of the three channels is implemented — no ultrasonic code, no
+> `AudioContext`, no oscillator, no ranging, and **no browser exposes a UWB API
+> at all**. Every channel takes its answer from an injected reader and there is
+> no caller with hardware to supply one. Run as this repository stands, a perfect
+> report on all three channels yields `uncorroborated` with **0 of 3 passing and
+> all three `unread`**: **`corroborated` is unreachable here.** rvQR does not
+> sense proximity, and every signal in every measurement is a simulation of a
+> signal rather than a signal.
+>
+> **What fusion does and does not buy.** A relay must be in line-of-sight,
+> acoustically present, and at the measured range, at the same moment, for the
+> same session, each against its own fresh challenge. That raises the cost of the
+> attack. **It does not close it** — a determined relay with equipment in both
+> rooms remains possible, and saying otherwise is exactly the over-claim §3
+> warns about.
