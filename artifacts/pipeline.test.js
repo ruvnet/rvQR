@@ -923,10 +923,16 @@
       return 'criteria 2, 3 and 6 not applicable — no 1 GB run, no radio tier, no SIMD path';
     });
 
-    test('honesty: this module is not wired into the app', function () {
-      // The increment is a receiver, complete and tested. Claiming it is in the
-      // send or receive path when it is not would be the same class of error
-      // as claiming an unmeasured throughput number.
+    test('honesty: this module IS wired into the app, and stays wired', function () {
+      // This guard was written asserting the OPPOSITE — that the module was not
+      // yet reachable from the page — so that it would fail the moment wiring
+      // landed and force its own claim to be corrected. It did exactly that.
+      //
+      // Inverted rather than deleted, because the property worth guarding did
+      // not disappear when it flipped: a module the app cannot reach is not
+      // shipped, and a receiver that silently stops being used would otherwise
+      // leave every copy-count figure in this file describing code no user
+      // runs. A claim with an expiry date beats a comment that quietly rots.
       var wired = false;
       if (typeof require === 'function' && typeof __dirname === 'string') {
         try {
@@ -940,8 +946,8 @@
       } else {
         return 'skipped — needs a filesystem';
       }
-      eq(wired, false, 'index.html already loads pipeline.js, so this claim is stale and should be removed');
-      return 'index.html does not load pipeline.js; wiring is a separate step, as stated';
+      eq(wired, true, 'index.html no longer loads pipeline.js — the streaming receiver has been unwired, and every copy figure in this file now describes code the app does not run');
+      return 'index.html loads pipeline.js; the receiver measured here is the one that ships';
     });
 
     test('honesty: the peak-RSS budget is not what this increment moved', function () {

@@ -47,6 +47,11 @@
       // a panel that agreed with a fixture but not with the module would fail
       // here rather than ship.
       try { mods.closure = require('./closure.js'); } catch (e) { /* optional */ }
+      // The streaming receiver the receive path now runs on. Asserted against
+      // the REAL module and the REAL protocols: nothing below stubs a receiver,
+      // so a streaming path that agreed with a fixture but not with pipeline.js
+      // would fail here rather than ship.
+      try { mods.pipeline = require('./pipeline.js'); } catch (e) { /* optional */ }
       // The compression panel is asserted against REAL codec output, not a
       // stub: compress.js takes its codecs by injection precisely so a caller
       // can hand it the platform's own, and node:zlib is this runner's. A
@@ -4155,6 +4160,582 @@
         assertEqual(empty.state, null, 'a state appeared from nowhere');
         assertEqual(empty.badge, 'No activation', 'the empty badge');
         return empty.badge;
+      });
+    }
+
+    // =========================================================================
+    // STREAMING RECEIVE — pipeline.js, reached from the page
+    //
+    // pipeline.js shipped as a complete streaming receiver with 30 tests of its
+    // own that nothing on the page called. Its own ledger measures the shipped
+    // core.js and proto2.js receivers at 3.00 full payload copies and itself at
+    // 1.00, so the difference between a module that is wired in and one that is
+    // not is two copies of every artifact anyone receives.
+    //
+    // These tests drive the SAME functions the page drives — app.js's receive
+    // path is a thin driver over the model asserted here — and they assert on
+    // what is RENDERED: the title, the meta line and the frame grid, string for
+    // string and cell for cell. A receiver that reassembled correctly while
+    // drawing the wrong thing would be a receiver nobody could trust to tell
+    // them it had.
+    // =========================================================================
+
+    var PL = mods.pipeline ||
+      (typeof window !== 'undefined' ? window.RVQRPipeline : null) || null;
+    var SR = (mods.view && mods.view.streamReceive) ||
+      (typeof window !== 'undefined' ? window.RVQRStreamReceive : null) || null;
+
+    if (mods.indexHtml) {
+      test('streaming receive: the page loads pipeline.js, so the module actually ships', function () {
+        var html = mods.indexHtml;
+        var tag = html.indexOf('src="./pipeline.js"');
+        assert(tag >= 0, 'index.html does not reference pipeline.js at all');
+        // The standalone build derives its script list by regex from this
+        // document, so a tag of any other shape ships a page whose receiver is
+        // the buffered one — which is how a module with 30 green tests reaches
+        // nobody and saves nobody any memory.
+        var line = html.slice(html.lastIndexOf('<script', tag), html.indexOf('>', tag) + 1);
+        assert(/<script[^>]*src="\.\/pipeline\.js"/.test(line),
+          'the tag is not the shape the build\'s regex matches: ' + line);
+        assert(line.indexOf('defer') >= 0, 'pipeline.js should be deferred with the optional modules');
+
+        // pipeline.js's factory is handed RVQRCore and RVQRProto2 at LOAD time,
+        // so both have to have run first. core.js is eager; proto2.js is
+        // deferred, and deferred scripts run in document order, which is what
+        // makes "after proto2.js" a guarantee rather than a hope.
+        var coreTag = html.indexOf('src="./core.js"');
+        var protoTag = html.indexOf('src="./proto2.js"');
+        var appTag = html.indexOf('src="./app.js"');
+        assert(coreTag >= 0 && coreTag < tag, 'pipeline.js is not loaded after core.js');
+        assert(protoTag >= 0 && protoTag < tag, 'pipeline.js is not loaded after proto2.js');
+        assert(appTag >= 0 && tag < appTag, 'pipeline.js is not loaded before app.js');
+        return 'loaded, deferred, after core.js and proto2.js and before app.js';
+      });
+
+      test('streaming receive: the page says which receiver is holding the transfer', function () {
+        // A buffered receive and a streamed one render the same bar, the same
+        // grid and the same verdict; the difference is roughly three copies of
+        // the artifact against one, which is not a thing an operator can see.
+        // So it is said, in the receive card, above the verdict.
+        var html = mods.indexHtml;
+        var note = html.indexOf('id="rxPathNote"');
+        assert(note >= 0, 'index.html has no #rxPathNote');
+        var card = html.indexOf('id="rxCard"');
+        assert(card >= 0 && card < note, 'the path note is not inside the receive card');
+        var result = html.indexOf('id="rxResult"');
+        var formatNote = html.indexOf('id="rxFormatNote"');
+        assert(note < formatNote, 'the path note comes after the format note');
+        assert(note < result, 'the path note comes after the verdict it describes');
+        var grid = html.indexOf('id="rxGrid"');
+        assert(grid >= 0 && grid < note, 'the path note is above the progress it annotates');
+        return 'inside #rxCard, under the grid, above the format note and the result';
+      });
+    }
+
+    if (PL && SR) {
+      var STREAM_LIBS = { core: core, pipeline: PL, proto2: mods.proto2 || null };
+
+      /** Seeded xorshift32, so every shuffle below is the same every run. */
+      function streamRng(seed) {
+        var s = seed >>> 0 || 1;
+        return function () {
+          s ^= s << 13; s >>>= 0;
+          s ^= s >>> 17;
+          s ^= s << 5; s >>>= 0;
+          return s / 4294967296;
+        };
+      }
+
+      function streamShuffle(n, seed) {
+        var idx = new Array(n);
+        for (var i = 0; i < n; i++) idx[i] = i;
+        var rand = streamRng(seed);
+        for (var j = n - 1; j > 0; j--) {
+          var k = Math.floor(rand() * (j + 1));
+          var t = idx[j]; idx[j] = idx[k]; idx[k] = t;
+        }
+        return idx;
+      }
+
+      function streamBytes(n, seed) {
+        var out = new Uint8Array(n);
+        var rand = streamRng(seed);
+        for (var i = 0; i < n; i++) out[i] = Math.floor(rand() * 256) & 255;
+        return out;
+      }
+
+      // Big enough that the frame count exceeds one grid cell per frame at the
+      // chunk sizes below, so the grid tests exercise the bucketing too.
+      var STREAM_ARTIFACT = streamBytes(40989, 0xbeef);
+
+      // The data frames of a transfer, in a shuffled order, BEHIND the manifest
+      // — which is the order a looping sender and a camera actually produce: the
+      // manifest is frame 0 of every cycle, and the data is caught in whatever
+      // order it happens to be seen.
+      function manifestFirst(total, seed) {
+        return [0].concat(streamShuffle(total - 1, seed).map(function (i) { return i + 1; }));
+      }
+
+      var STREAM_PROTOS = [{
+        name: 'v1',
+        format: core.FORMAT_V1,
+        chunk: 512,
+        build: function (bytes) {
+          return core.buildFrames(bytes, {
+            chunk: 512, name: 'artifact.bin', transferId: 'aaaaaaaa'
+          });
+        },
+        // The frames a receiver would have collected, in the shape app.js's
+        // receiveView hands to the progress model for the BUFFERED receivers.
+        bufferedView: function (frames, order) {
+          var st = core.createReceiver();
+          for (var i = 0; i < order.length; i++) core.ingest(st, frames[order[i]]);
+          var m = st.manifest;
+          return {
+            format: core.FORMAT_V1, status: st.status,
+            fountain: st.mode === core.MODE_FOUNTAIN,
+            total: st.total, received: st.received, symbols: st.symbols,
+            needed: st.needed || (m ? m.k : 0),
+            duplicates: st.duplicates, rejected: st.rejected, chunks: st.chunks,
+            manifest: m, name: m ? m.name : null, size: m ? m.size : 0
+          };
+        },
+        /** Flips one payload byte, leaving the frame otherwise untouched. */
+        corrupt: function (frame) {
+          var obj = JSON.parse(frame);
+          var payload = core.b64uDecode(obj.p);
+          payload[0] ^= 0xff;
+          obj.p = core.b64uEncode(payload);
+          return JSON.stringify(obj);
+        }
+      }];
+
+      if (mods.proto2) {
+        var P2 = mods.proto2;
+        STREAM_PROTOS.push({
+          name: 'v2',
+          format: core.FORMAT_V2,
+          chunk: 665,
+          build: function (bytes) {
+            return P2.buildFrames(bytes, {
+              chunk: 665, name: 'artifact.bin', transferId: 0x11223344
+            });
+          },
+          bufferedView: function (frames, order) {
+            var st = P2.createReceiver();
+            for (var i = 0; i < order.length; i++) P2.ingest(st, frames[order[i]]);
+            var m = st.manifest;
+            return {
+              format: core.FORMAT_V2, status: st.status,
+              fountain: st.mode === P2.MODE_FOUNTAIN,
+              total: st.total, received: st.received, symbols: st.received,
+              needed: m ? m.k : st.total,
+              duplicates: st.duplicates, rejected: st.rejected, chunks: st.chunks,
+              manifest: m, name: m ? m.name : null, size: m ? m.originalSize : 0
+            };
+          },
+          // A v2 frame carries transportHash32 over its own payload, checked on
+          // parse, so a flipped byte alone is refused as damage and never
+          // reaches the manifest digest at all. The per-frame hash is therefore
+          // REPAIRED after the flip: what is under test is a corruption that
+          // survives every per-frame check, which is the only kind the
+          // manifest's digest exists to catch.
+          corrupt: function (frame) {
+            var bytes = new Uint8Array(frame);
+            bytes[28] ^= 0xff;
+            var digest = core.sha256Bytes(bytes.subarray(28));
+            bytes[24] = digest[0]; bytes[25] = digest[1];
+            bytes[26] = digest[2]; bytes[27] = digest[3];
+            return bytes;
+          }
+        });
+      }
+
+      /** Feeds an order of frames into a fresh streaming session. */
+      function streamRun(proto, frames, order, startMs) {
+        var session = SR.createSession(STREAM_LIBS, proto.format);
+        var refusals = Object.create(null);
+        var base = startMs === undefined ? 1000 : startMs;
+        for (var i = 0; i < order.length; i++) {
+          var r = SR.ingest(session, frames[order[i]], base + i);
+          if (!r.accepted && r.reason) refusals[r.reason] = (refusals[r.reason] || 0) + 1;
+        }
+        return {
+          session: session,
+          refusals: refusals,
+          view: SR.view(session, core),
+          finish: SR.finish(session)
+        };
+      }
+
+      function cellString(cells) {
+        var out = '';
+        for (var i = 0; i < cells.length; i++) out += cells[i] ? '#' : '.';
+        return out;
+      }
+
+      test('streaming receive: the route is decided from one frame, and every route has a reason', function () {
+        var b = STREAM_PROTOS[0].build(STREAM_ARTIFACT);
+        var manifest = core.parseFrame(b.frames[0]).frame;
+        var data = core.parseFrame(b.frames[3]).frame;
+        assertEqual(SR.pathFor(core.FORMAT_V1, manifest, STREAM_LIBS).route, 'stream',
+          'a v1 manifest did not route to the streaming receiver');
+        assertEqual(SR.pathFor(core.FORMAT_V1, data, STREAM_LIBS).route, 'stream',
+          'a v1 data frame did not route to the streaming receiver');
+
+        // Erasure-coded, from a DATA frame and not only from the manifest. That
+        // is the whole reason the route never has to be revised: a symbol says
+        // it is a symbol, so a receiver that joins mid-cycle never starts
+        // streaming a transfer it cannot stream.
+        if (mods.fountain) {
+          var enc = mods.fountain.encoder(STREAM_ARTIFACT, 512);
+          var stream = core.buildFountainStream(enc, {
+            name: 'artifact.bin', sha256: b.sha256, size: STREAM_ARTIFACT.length
+          });
+          var sym = core.parseFrame(stream.symbolFrame(2)).frame;
+          var fm = core.parseFrame(stream.manifest).frame;
+          var symRoute = SR.pathFor(core.FORMAT_V1, sym, STREAM_LIBS);
+          assertEqual(symRoute.route, 'buffer', 'a fountain symbol routed to the streaming receiver');
+          assertEqual(symRoute.reason, 'fountain', 'the reason a symbol cannot stream');
+          assertEqual(SR.pathFor(core.FORMAT_V1, fm, STREAM_LIBS).reason, 'fountain',
+            'a fountain manifest routed somewhere else');
+        }
+
+        // No module: a route, not an error. The page still receives, and says
+        // it is doing so the expensive way.
+        var absent = SR.pathFor(core.FORMAT_V1, data, { core: core, pipeline: null, proto2: null });
+        assertEqual(absent.route, 'buffer', 'a missing pipeline.js became something other than a route');
+        assertEqual(absent.reason, 'module-absent', 'the reason a missing module gives');
+
+        // EVERY reason has a sentence. A route with no note renders nothing,
+        // and a buffered receive that renders nothing is exactly the silent
+        // fallback this note exists to prevent.
+        ['stream', 'fountain', 'codec', 'resumed', 'module-absent'].forEach(function (key) {
+          var note = SR.PATH_NOTES[key];
+          assert(note && note.label && note.text, 'no rendered note for the route reason ' + key);
+        });
+        // And the ordinary case is not dressed as an achievement.
+        assertEqual(SR.PATH_NOTES.stream.tone, '', 'streaming renders as a pass');
+        assertEqual(SR.PATH_NOTES.fountain.tone, '', 'an erasure-coded transfer renders as a fault');
+        assertEqual(SR.PATH_NOTES['module-absent'].tone, 'bad',
+          'a module that failed to load renders as ordinary');
+        return Object.keys(SR.PATH_NOTES).length + ' routes, each with its own sentence';
+      });
+
+      if (mods.proto2) {
+        test('streaming receive: a v2 transfer declaring a codec is refused the streaming route by name', function () {
+          // v2's manifest digest covers the DECODED artifact, so verifying it as
+          // the bytes arrive would mean streaming the decompressor too. codecId
+          // is in the fixed header of EVERY frame, not only the manifest, so
+          // this is known before a byte is written rather than discovered when
+          // the manifest finally lands.
+          var b = STREAM_PROTOS[1].build(STREAM_ARTIFACT);
+          var frame = new Uint8Array(b.frames[2]);
+          assertEqual(frame[6], mods.proto2.CODEC_NONE, 'the fixture already declares a codec');
+          frame[6] = 2; // deflate-raw
+          var parsed = mods.proto2.parseFrame(frame);
+          assert(parsed.ok, 'the codec-bearing frame did not parse: ' + parsed.reason);
+          var route = SR.pathFor(core.FORMAT_V2, parsed.frame, STREAM_LIBS);
+          assertEqual(route.route, 'buffer', 'a compressed transfer routed to the streaming receiver');
+          assertEqual(route.reason, 'codec', 'the reason a compressed transfer cannot stream');
+          return 'codecId ' + frame[6] + ' → buffered, reason "' + route.reason + '"';
+        });
+      }
+
+      test('streaming receive: a shuffled transfer completes and verifies through the app, under four seeds', function () {
+        var seeds = [1, 0x9e3779b9, 0x5bf03635, 0xdeadbeef];
+        var notes = [];
+        for (var p = 0; p < STREAM_PROTOS.length; p++) {
+          var proto = STREAM_PROTOS[p];
+          var built = proto.build(STREAM_ARTIFACT);
+          for (var s = 0; s < seeds.length; s++) {
+            var order = manifestFirst(built.frames.length, seeds[s]);
+            var run = streamRun(proto, built.frames, order);
+            var where = proto.name + ' seed ' + s;
+            assert(run.finish.ok, where + ': did not verify: ' + run.finish.message);
+            assert(bytesEqual(run.finish.out.bytes, STREAM_ARTIFACT), where + ': bytes are not exact');
+            assertEqual(run.finish.out.sha256, built.sha256, where + ': digest');
+            assertEqual(Object.keys(run.refusals).length, 0,
+              where + ': frames were refused: ' + JSON.stringify(run.refusals));
+            // The whole point of the exercise, asserted rather than assumed:
+            // fewer than two full payload copies, and exactly one write pass
+            // and one read pass over the artifact.
+            PL.assertCopyBudget(run.finish.out.copies);
+            assertEqual(run.finish.out.copies.writePasses, 1, where + ': write passes');
+            assertEqual(run.finish.out.copies.hashPasses, 1, where + ': read passes');
+          }
+          notes.push(proto.name + ' x' + seeds.length);
+        }
+        return notes.join(', ') + ' shuffles, byte-exact, inside the copy budget';
+      });
+
+      test('streaming receive: the card renders the finished transfer exactly as the buffered one did', function () {
+        // The strongest form of "nothing regressed": feed the same frames to
+        // the streaming receiver and to the receiver the page shipped with, and
+        // compare the rendered title, meta line and grid string for string.
+        // Two receivers that disagreed about what they had would be worse than
+        // one that was slow.
+        var notes = [];
+        for (var p = 0; p < STREAM_PROTOS.length; p++) {
+          var proto = STREAM_PROTOS[p];
+          var built = proto.build(STREAM_ARTIFACT);
+          var order = manifestFirst(built.frames.length, 0x51ded);
+          var streamed = SR.progress(streamRun(proto, built.frames, order).view, core);
+          var buffered = SR.progress(proto.bufferedView(built.frames, order), core);
+          assertEqual(streamed.title, buffered.title, proto.name + ': the title differs');
+          assertEqual(streamed.meta, buffered.meta, proto.name + ': the meta line differs');
+          assertEqual(streamed.percent, buffered.percent, proto.name + ': the bar differs');
+          assertEqual(cellString(streamed.cells), cellString(buffered.cells),
+            proto.name + ': the grid differs');
+          assertEqual(streamed.percent, 100, proto.name + ': the transfer did not finish');
+          assert(streamed.title.indexOf('artifact.bin — 100%') === 0,
+            proto.name + ': the title does not name the artifact: ' + streamed.title);
+          assert(streamed.meta.indexOf('0 duplicates · 0 rejected') > 0,
+            proto.name + ': the meta line: ' + streamed.meta);
+          assert(cellString(streamed.cells).indexOf('.') < 0,
+            proto.name + ': the grid has holes at 100%: ' + cellString(streamed.cells));
+          notes.push(proto.name + ' "' + streamed.title + '"');
+        }
+        return notes.join(', ');
+      });
+
+      test('streaming receive: the grid fills unevenly, cell for cell, as frames arrive out of order', function () {
+        // Out-of-order arrival is the regression this rewrite could most easily
+        // have been, and the grid is where it would show: a receiver that
+        // quietly required order would light its cells left to right whatever
+        // arrived. So the cells are asserted against the frames actually fed,
+        // in the middle of a transfer rather than at the end of one.
+        var proto = STREAM_PROTOS[0];
+        var built = proto.build(streamBytes(2600, 0x1234)); // 6 data frames at 512 B
+        var order = [0, 5, 2, 6];
+        var run = streamRun(proto, built.frames, order);
+        var m = SR.progress(run.view, core);
+        assertEqual(m.plan.cells, built.frames.length - 1, 'one cell per frame at this size');
+        assertEqual(cellString(m.cells), '.#..##', 'the grid does not match what arrived');
+        assertEqual(m.percent, 50, 'the bar');
+        assertEqual(m.title, 'artifact.bin — 50%', 'the title');
+        assert(m.meta.indexOf('3 / 6 data frames') === 0, 'the meta line: ' + m.meta);
+        assert(!run.finish.ok, 'an incomplete transfer handed something over');
+        assertEqual(run.finish.message, SR.FINALIZE_COPY.incomplete, 'the incomplete sentence');
+
+        // And the holes fill in when the missing frames arrive, in the other
+        // order again.
+        [4, 1, 3].forEach(function (i, k) { SR.ingest(run.session, built.frames[i], 2000 + k); });
+        var done = SR.progress(SR.view(run.session, core), core);
+        assertEqual(cellString(done.cells), '######', 'the grid did not fill');
+        assertEqual(done.percent, 100, 'the bar did not reach the end');
+        var out = SR.finish(run.session);
+        assert(out.ok, 'the completed transfer did not verify: ' + out.message);
+        return '.#..## → ###### over 6 frames delivered 5,2,6,4,1,3';
+      });
+
+      test('streaming receive: duplicate frames are counted and discarded, and the meta line says so', function () {
+        var notes = [];
+        for (var p = 0; p < STREAM_PROTOS.length; p++) {
+          var proto = STREAM_PROTOS[p];
+          var built = proto.build(streamBytes(9000, 0x77));
+          var n = built.frames.length;
+          // Every frame three times, shuffled behind the manifest — a camera
+          // reading a looping sender does exactly this.
+          var tripled = [];
+          var shuffledData = streamShuffle(n - 1, 0x2244).map(function (i) { return i + 1; });
+          for (var i = 0; i < shuffledData.length; i++) {
+            tripled.push(shuffledData[i]); tripled.push(shuffledData[i]); tripled.push(shuffledData[i]);
+          }
+          var order = [0, 0].concat(tripled);
+          var run = streamRun(proto, built.frames, order);
+          assert(run.finish.ok, proto.name + ': did not verify under triplication: ' + run.finish.message);
+          assert(bytesEqual(run.finish.out.bytes, streamBytes(9000, 0x77)),
+            proto.name + ': bytes are not exact under triplication');
+          assertEqual(run.view.received, n - 1, proto.name + ': accepted data frames');
+          assertEqual(run.view.duplicates, 2 * (n - 1) + 1, proto.name + ': duplicates counted');
+          // A duplicate is discarded, not rewritten and not rehashed: one write
+          // pass and one read pass over the artifact, whatever arrived twice.
+          assertEqual(run.finish.out.copies.writePasses, 1, proto.name + ': write passes');
+          assertEqual(run.finish.out.copies.hashPasses, 1, proto.name + ': read passes');
+          var m = SR.progress(run.view, core);
+          assert(m.meta.indexOf(run.view.duplicates + ' duplicates · 0 rejected') > 0,
+            proto.name + ': the meta line does not report the duplicates: ' + m.meta);
+          notes.push(proto.name + ' ' + run.view.duplicates + ' duplicates over ' + order.length + ' arrivals');
+        }
+        return notes.join(', ');
+      });
+
+      test('streaming receive: a corrupted frame is refused, in the same words, and the bytes are released', function () {
+        // The security property. A transfer whose streamed digest does not match
+        // the manifest must be refused and discarded, and it must be refused
+        // IDENTICALLY however it was received — an operator cannot be expected
+        // to know which receiver caught it, so all of them say one thing.
+        var notes = [];
+        for (var p = 0; p < STREAM_PROTOS.length; p++) {
+          var proto = STREAM_PROTOS[p];
+          var built = proto.build(STREAM_ARTIFACT);
+          var frames = built.frames.slice();
+          frames[3] = proto.corrupt(frames[3]);
+          var order = manifestFirst(frames.length, 0x606);
+          var run = streamRun(proto, frames, order);
+
+          assertEqual(Object.keys(run.refusals).length, 0,
+            proto.name + ': the corruption was caught per-frame, so the digest was never tested');
+          assert(!run.finish.ok, proto.name + ': a corrupted transfer was handed over');
+          assertEqual(run.finish.out.reason, 'hash-mismatch', proto.name + ': the refusal reason');
+          assertEqual(run.session.state.status, 'REJECTED', proto.name + ': the receiver did not reject');
+          // Released at the instant the digest failed, inside the ingest call
+          // that delivered the last byte — not at finalize. There is no moment
+          // where the artifact is both complete and unverified in memory.
+          assertEqual(run.session.state.out, null,
+            proto.name + ': the corrupted artifact is still in memory');
+          assertEqual(run.finish.out.bytes, undefined,
+            proto.name + ': a refusal handed back bytes');
+
+          assert(run.finish.message.indexOf(
+            'Hash mismatch — the whole transfer was discarded. Expected ') === 0,
+            proto.name + ': the refusal is not worded as the page words it: ' + run.finish.message);
+          assert(run.finish.message.indexOf(built.sha256.slice(0, 16)) > 0,
+            proto.name + ': the expected digest is not named: ' + run.finish.message);
+          assert(run.finish.message.indexOf('…, got ') > 0,
+            proto.name + ': the digest actually computed is not named: ' + run.finish.message);
+          assert(run.finish.message.indexOf(run.finish.out.actual.slice(0, 16)) > 0,
+            proto.name + ': the actual digest in the sentence is not the one computed');
+
+          // The chunk map the frame grid and resume.js read holds VIEWS, so a
+          // released buffer leaves nothing behind to hand out.
+          var keys = Object.keys(run.view.chunks);
+          assert(keys.length > 0, proto.name + ': nothing was ever recorded as arrived');
+          assertEqual(run.view.chunks[keys[0]], null,
+            proto.name + ': a discarded transfer still hands out its bytes');
+          notes.push(proto.name + ' rejected, ' + keys.length + ' frames released');
+        }
+        return notes.join(', ');
+      });
+
+      test('streaming receive: the chunk map holds views of the one buffer, not a second copy', function () {
+        // The frame grid and resume.js both read a chunk map keyed by frame
+        // index, exactly as they did from the buffered receivers. It holds no
+        // payload: every key is an accessor over the single output buffer, so
+        // the thing that reads like the old chunk list costs nothing.
+        var proto = STREAM_PROTOS[0];
+        var artifact = streamBytes(3000, 0x99);
+        var built = proto.build(artifact);
+        var order = manifestFirst(built.frames.length, 0x31337);
+        var run = streamRun(proto, built.frames, order);
+        assert(run.finish.ok, 'the fixture transfer did not verify: ' + run.finish.message);
+
+        var seqs = Object.keys(run.view.chunks).map(Number).sort(function (a, b) { return a - b; });
+        assertEqual(seqs.length, built.frames.length - 1, 'the map does not cover every data frame');
+        assertEqual(seqs[0], 1, 'the map is not keyed from frame 1');
+        for (var i = 0; i < seqs.length; i++) {
+          var off = (seqs[i] - 1) * proto.chunk;
+          var want = artifact.subarray(off, Math.min(off + proto.chunk, artifact.length));
+          var got = run.view.chunks[seqs[i]];
+          assert(!!got, 'frame ' + seqs[i] + ' handed back nothing');
+          assert(bytesEqual(got, want), 'frame ' + seqs[i] + ' handed back the wrong bytes');
+          // A copy and not a view: structured clone follows a view to its whole
+          // underlying buffer, so persisting a subarray would persist the
+          // entire artifact with every chunk.
+          assertEqual(got.byteOffset, 0, 'frame ' + seqs[i] + ' handed back a view into the artifact');
+          assertEqual(got.buffer.byteLength, want.length,
+            'frame ' + seqs[i] + ' handed back a chunk carrying the whole artifact behind it');
+        }
+        // And the map costs no payload: the receiver is still inside the budget
+        // with every one of those keys defined.
+        PL.assertCopyBudget(run.finish.out.copies);
+        return seqs.length + ' chunk views, each exact, at ' +
+          run.finish.out.copies.copies.toFixed(4) + 'x payload copies';
+      });
+
+      test('streaming receive: data arriving before the manifest is bounded and named, and the next cycle completes it', function () {
+        // The one behaviour that is not the buffered receiver's. core.js queues
+        // pre-manifest frames without bound, which is a second full copy of the
+        // artifact; pipeline.js caps the queue at a quarter of the transfer and
+        // refuses the rest BY NAME. A receiver that joins a cycle late therefore
+        // finishes on the sender's next cycle instead of the current one, which
+        // is a cycle of time rather than a failed transfer — and it is asserted
+        // here rather than left to be discovered.
+        var notes = [];
+        for (var p = 0; p < STREAM_PROTOS.length; p++) {
+          var proto = STREAM_PROTOS[p];
+          var built = proto.build(STREAM_ARTIFACT);
+          var n = built.frames.length;
+          var cycle = [];
+          for (var i = 1; i < n; i++) cycle.push(i);
+          cycle.push(0); // the manifest last, as a receiver joining mid-cycle sees it
+          var run = streamRun(proto, built.frames, cycle);
+          assert(run.refusals['manifest-pending-overflow'] > 0,
+            proto.name + ': the queue bound was never reached, so this proves nothing');
+          assert(!run.finish.ok, proto.name + ': the first cycle completed, so the bound did nothing');
+          assertEqual(run.finish.out.reason, 'incomplete', proto.name + ': the first cycle');
+
+          for (var k = 0; k < cycle.length; k++) {
+            SR.ingest(run.session, built.frames[cycle[k]], 5000 + k);
+          }
+          var out = SR.finish(run.session);
+          assert(out.ok, proto.name + ': the second cycle did not complete it: ' + out.message);
+          assert(bytesEqual(out.out.bytes, STREAM_ARTIFACT), proto.name + ': bytes are not exact');
+          assertEqual(out.out.sha256, built.sha256, proto.name + ': digest');
+          PL.assertCopyBudget(out.out.copies);
+          notes.push(proto.name + ' ' + run.refusals['manifest-pending-overflow'] +
+            ' refused pre-manifest, complete on cycle 2');
+        }
+        return notes.join(', ');
+      });
+
+      test('streaming receive: a v1 signature survives the streaming route', function () {
+        // The streaming receiver normalises the manifest across both protocols,
+        // and `sig`/`pub` are v1's alone. A signed transfer that streamed would
+        // otherwise read as UNSIGNED — which is not a smaller claim than a bad
+        // signature, it is a different one, and with a fingerprint pinned it is
+        // the difference between refusing a transfer and admitting it.
+        var proto = STREAM_PROTOS[0];
+        var built = proto.build(streamBytes(1800, 0x5a5a));
+        var frames = built.frames.slice();
+        var obj = JSON.parse(frames[0]);
+        obj.m.sig = 'c2lnbmF0dXJl';
+        obj.m.pub = '11223344556677889900aabbccddeeff11223344556677889900aabbccddeeff';
+        frames[0] = JSON.stringify(obj);
+        var run = streamRun(proto, frames, manifestFirst(frames.length, 0xfeed));
+        assert(run.finish.ok, 'the signed transfer did not verify: ' + run.finish.message);
+        assert(!!run.session.rawManifest, 'the streaming session kept no raw manifest');
+        assertEqual(run.session.rawManifest.sig, obj.m.sig, 'the signature did not survive');
+        assertEqual(run.session.rawManifest.pub, obj.m.pub, 'the public key did not survive');
+        assertEqual(run.session.rawManifest.name, 'artifact.bin', 'the name did not survive');
+        // And the normalised view is still what the progress card reads, with
+        // no signature field leaking into it.
+        assertEqual(run.view.manifest.sha256, built.sha256, 'the view lost the digest');
+        assertEqual(run.view.manifest.chunk, proto.chunk, 'the view lost resume.js\'s spelling');
+        assertEqual(run.view.manifest.chunkSize, proto.chunk, 'the view lost proto2\'s spelling');
+        return 'sig and pub kept on the session, absent from the rendered view';
+      });
+
+      test('streaming receive: a frame of another transfer does not disturb the one in progress', function () {
+        var proto = STREAM_PROTOS[0];
+        var built = proto.build(streamBytes(2600, 0x4321));
+        var other = core.buildFrames(streamBytes(2600, 0x8765), {
+          chunk: 512, name: 'other.bin', transferId: 'bbbbbbbb'
+        });
+        var session = SR.createSession(STREAM_LIBS, proto.format);
+        SR.ingest(session, built.frames[0], 1000);
+        SR.ingest(session, built.frames[2], 1001);
+        var stray = SR.ingest(session, other.frames[1], 1002);
+        assertEqual(stray.accepted, false, 'a stray transfer\'s frame was taken');
+        assertEqual(stray.reason, 'other-transfer', 'the stray frame\'s reason');
+        var view = SR.view(session, core);
+        assertEqual(view.received, 1, 'the transfer in progress lost or gained a frame');
+        assertEqual(view.rejected, 1, 'the refusal was not counted');
+        assertEqual(view.manifest.name, 'artifact.bin', 'the transfer in progress was replaced');
+        var m = SR.progress(view, core);
+        assert(m.meta.indexOf('1 / 6 data frames · 0 duplicates · 1 rejected') === 0,
+          'the meta line does not report the refusal: ' + m.meta);
+
+        // And it DOES take over once the current transfer has visibly stalled,
+        // on core.js's own fuse rather than a second copy of the rule.
+        var late = SR.ingest(session, other.frames[0], 1002 + core.STALE_MANIFEST_MS);
+        assertEqual(late.accepted, true, 'a stale transfer would not give way');
+        assertEqual(SR.view(session, core).manifest.name, 'other.bin',
+          'the new transfer was not adopted');
+        assertEqual(SR.view(session, core).received, 0, 'the old transfer\'s frames were kept');
+        assertEqual(SR.view(session, core).rejected, 1, 'the refusal count was forgotten');
+        return 'refused while live, adopted after ' + core.STALE_MANIFEST_MS + ' ms';
       });
     }
 

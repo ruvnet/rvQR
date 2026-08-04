@@ -1252,6 +1252,15 @@
         <div class="bar" style="margin-top:.7rem"><i id="rxBar"></i></div>
         <div class="frameGrid" id="rxGrid"></div>
         <!--
+          Which receiver is holding this transfer, and — when it is not the
+          streaming one — WHY. A receiver that quietly fell back to collecting
+          every frame and assembling at the end reads exactly like a receiver
+          that streamed, so the difference is stated here rather than inferred
+          from memory use nobody can see. It sits above the format note and the
+          result because it describes the machinery, not the verdict.
+        -->
+        <div id="rxPathNote" style="margin-top:.8rem"></div>
+        <!--
           A frame in the other frame format lands here, named. It sits above the
           result so it cannot be mistaken for the verdict on the transfer, which
           carries on regardless.
@@ -1687,6 +1696,23 @@
   script list is derived from this document.
 -->
 <script src="./closure.js" defer></script>
+<!--
+  pipeline.js is the streaming receiver, and it reads BOTH RVQRCore and
+  RVQRProto2 at load time — its factory is handed the two globals the moment the
+  script runs — so it must follow core.js (eager, above) and proto2.js
+  (deferred, above). Deferred scripts run in document order, which is what makes
+  "after proto2.js" a guarantee rather than a hope; it is placed last among the
+  optional modules so that ordering is visible rather than incidental.
+
+  Without it the receiver COLLECTS EVERY FRAME AND ASSEMBLES AT THE END, which
+  is the receiver this page shipped with and which holds the artifact roughly
+  three times over at the moment it verifies it. That is a working receiver, not
+  a broken one — so the page does not refuse to receive, it says which receiver
+  it is using in #rxPathNote. A receiver that silently stopped streaming would
+  be indistinguishable from one that never did, and the memory it costs is not
+  something an operator can see.
+-->
+<script src="./pipeline.js" defer></script>
 <script src="./app.js"></script>
 </body>
 </html>

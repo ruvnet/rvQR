@@ -1922,6 +1922,431 @@
   };
 });
 
+/*
+ * The receive path, as a model — pipeline.js reached from the page.
+ *
+ * WHAT THIS IS FOR. pipeline.js is a complete streaming receiver: one
+ * preallocated output buffer, each frame written straight into it at its own
+ * offset, and an incremental SHA-256 that advances over the contiguous prefix
+ * as the bytes land. Its own ledger measures the shipped core.js and proto2.js
+ * receivers at 3.00 full payload copies and itself at 1.00. Nothing on the page
+ * called it, and a receiver nobody calls saves nobody any memory.
+ *
+ * WHY A MODEL AND NOT JUST WIRING. Everything under the IIFE below needs a
+ * document, so none of it runs under Node and none of it can be tested there.
+ * The receive path is the one place on this page where getting it wrong loses
+ * an artifact or admits a corrupted one, so the parts that decide anything live
+ * here — above the DOM, pure, and driven by the same code the page runs:
+ *
+ *   pathFor   which receiver owns a transfer, decided from ONE frame
+ *   ingest    a frame into the streaming receiver, with the chunk view and the
+ *             stale-transfer takeover core.js does for the buffered one
+ *   view      the streaming receiver in the shape the progress bar already reads
+ *   progress  the title, the meta line and the grid cells — for BOTH receivers,
+ *             so the two can never drift into describing themselves differently
+ *   finish    the handover, and the sentence a refusal is shown as
+ *
+ * THE ROUTE IS DECIDED FROM ONE FRAME, NEVER RETRIED. pipeline.js refuses two
+ * transfer shapes by name — erasure-coded ones, because a symbol has no fixed
+ * offset to stream into, and v2 ones declaring a codec, because the manifest's
+ * digest covers the DECODED artifact. Both facts are on EVERY frame of the
+ * transfer, not only the manifest: v1 data frames carry `mode`, and v2's
+ * fixed header carries `mode` and `codecId` in bytes 5 and 6. So the receiver
+ * knows which of the two it is holding from the first frame it sees, and never
+ * has to abandon a half-streamed transfer when the manifest finally arrives.
+ * The one thing it must not do is switch quietly: a buffered receive is
+ * indistinguishable from a streamed one on screen, so `pathFor` returns the
+ * REASON with the route and the page renders it.
+ *
+ * NOTHING HERE HOLDS A SECOND COPY OF A BYTE. `chunks` looks like the chunk map
+ * the buffered receivers keep — the frame grid and resume.js both read it that
+ * way — but it holds no payload at all: each key is an accessor over the one
+ * output buffer, and reading it copies exactly that chunk, for exactly as long
+ * as the caller holds it. resume.js reads only the frames it has not already
+ * written, so the map costs one chunk-sized slice per new frame and never a
+ * second copy of the artifact.
+ */
+(function (root, factory) {
+  'use strict';
+  var api = factory();
+  if (typeof module === 'object' && module.exports) {
+    module.exports.streamReceive = api;
+  } else {
+    root.RVQRStreamReceive = api;
+  }
+})(typeof self !== 'undefined' ? self : this, function () {
+  'use strict';
+
+  var PATH_STREAM = 'stream';
+  var PATH_BUFFER = 'buffer';
+
+  /**
+   * What each route is called on screen, and why this transfer got it.
+   *
+   * The streaming note is deliberately NOT toned as a pass. Streaming is how
+   * the receiver is supposed to work; rendering it green would make the
+   * ordinary case read as an achievement and leave the buffered cases looking
+   * like faults, which they are not — a fountain transfer cannot be streamed by
+   * anything, and saying so is not an apology.
+   */
+  var PATH_NOTES = {
+    stream: {
+      tone: '',
+      label: 'Streaming receive.',
+      text: 'Each frame is written straight into one buffer at its own offset and ' +
+        'the SHA-256 advances as the bytes land, so the frames and a finished copy ' +
+        'of the artifact are never both in memory.'
+    },
+    fountain: {
+      tone: '',
+      label: 'Buffered receive — this transfer is erasure-coded.',
+      text: 'A symbol has no fixed position in the artifact, so there is nothing to ' +
+        'stream it into. The symbols are collected and decoded at the end, and the ' +
+        'receiver holds the artifact more than once while it does.'
+    },
+    codec: {
+      tone: '',
+      label: 'Buffered receive — this transfer declares a codec.',
+      text: 'The manifest’s digest covers the DECODED artifact, so verifying it as ' +
+        'the bytes arrive would mean streaming the decompressor too. The stream is ' +
+        'collected, decoded and then verified, and the receiver holds the artifact ' +
+        'more than once while it does.'
+    },
+    resumed: {
+      tone: '',
+      label: 'Buffered receive — this transfer was resumed.',
+      text: 'Its frames came back from storage as a chunk list, which is the thing a ' +
+        'streaming receiver exists not to build. Rewriting them into a streaming ' +
+        'buffer would put both in memory at once, so the transfer finishes the way ' +
+        'it was stored.'
+    },
+    'module-absent': {
+      tone: 'bad',
+      label: 'Buffered receive — the streaming module did not load.',
+      text: 'Frames are collected and assembled at the end, which holds the artifact ' +
+        'roughly three times over at the moment it is verified. The transfer still ' +
+        'works and is still checked against the manifest digest.'
+    }
+  };
+
+  /**
+   * Which receiver should own a transfer, decided from one frame.
+   *
+   * `libs` is { core, pipeline, proto2 }; a missing pipeline is a route, not an
+   * error. Returns { route, reason } where reason is null for the streaming
+   * route and a key of PATH_NOTES otherwise.
+   */
+  function pathFor(format, frame, libs) {
+    libs = libs || {};
+    var core = libs.core;
+    if (!libs.pipeline) return { route: PATH_BUFFER, reason: 'module-absent' };
+    if (format === core.FORMAT_V2) {
+      var p2 = libs.proto2;
+      if (!p2) return { route: PATH_BUFFER, reason: 'module-absent' };
+      if (frame.mode !== p2.MODE_INDEXED) return { route: PATH_BUFFER, reason: 'fountain' };
+      if (frame.codecId !== p2.CODEC_NONE) return { route: PATH_BUFFER, reason: 'codec' };
+      return { route: PATH_STREAM, reason: null };
+    }
+    // v1 has no codec at all, so the mode is the whole question. It sits on the
+    // manifest under `m` and on a data frame at the top level, and absent means
+    // indexed — core.js's own reading.
+    var mode = frame.kind === 'manifest'
+      ? ((frame.m && frame.m.mode) || core.MODE_INDEXED)
+      : (frame.mode || core.MODE_INDEXED);
+    if (mode !== core.MODE_INDEXED) return { route: PATH_BUFFER, reason: 'fountain' };
+    return { route: PATH_STREAM, reason: null };
+  }
+
+  // --- the streaming session -------------------------------------------------
+
+  function newState(session, carriedRejected) {
+    session.state = session.pipeline.createReceiver(session.adapter);
+    session.state.rejected = carriedRejected || 0;
+    // A fresh map, not a cleared one: the accessors below close over the buffer
+    // they were made for, and a key left behind would read the wrong artifact.
+    session.chunks = Object.create(null);
+    session.rawManifest = null;
+  }
+
+  function createSession(libs, format) {
+    var session = {
+      pipeline: libs.pipeline,
+      core: libs.core,
+      format: format,
+      adapter: format === libs.core.FORMAT_V2 ? libs.pipeline.V2 : libs.pipeline.V1,
+      state: null,
+      chunks: null,
+      rawManifest: null,
+      lastProgressAt: null,
+      switches: 0
+    };
+    newState(session, 0);
+    return session;
+  }
+
+  /**
+   * Publishes one arrived frame in the chunk map, as a VIEW and not a copy.
+   *
+   * The getter slices on read because that is what its two callers need and
+   * neither holds the result: the frame grid reads keys only and never touches
+   * a value, and resume.js reads a value exactly once per frame — only for
+   * frames it has not already written — and hands it straight to IndexedDB.
+   * Handing back a subarray instead would be cheaper and wrong: structured
+   * clone follows a view to its whole underlying buffer, so persisting one
+   * 512-byte chunk would persist the entire artifact with it.
+   */
+  function defineChunk(session, index) {
+    var st = session.state;
+    if (!st.chunkSize || !(index >= 1)) return;
+    var offset = (index - 1) * st.chunkSize;
+    var length = Math.min(st.chunkSize, st.size - offset);
+    if (length <= 0) return;
+    Object.defineProperty(session.chunks, String(index), {
+      enumerable: true,
+      configurable: true,
+      get: function () {
+        // A rejected transfer released its buffer at the instant the digest
+        // failed. There is nothing to hand back, and saying so beats handing
+        // back bytes from a transfer that was discarded.
+        var out = session.state.out;
+        return out ? out.slice(offset, offset + length) : null;
+      }
+    });
+  }
+
+  /** Every frame the receiver holds, for the ones written without a call here. */
+  function syncChunks(session) {
+    var st = session.state;
+    if (!st.present) return;
+    for (var i = 1; i < st.total; i++) {
+      if (st.present[i] && !(String(i) in session.chunks)) defineChunk(session, i);
+    }
+  }
+
+  /**
+   * Feeds one frame into the streaming receiver.
+   *
+   * Two things happen here that pipeline.js deliberately does not do, both
+   * because core.js does them and this is meant to replace core.js on the page
+   * rather than to quietly drop half its behaviour:
+   *
+   *   - A frame from a DIFFERENT transfer takes the receiver over once the
+   *     current one has visibly stalled. core.shouldAdoptNewTransfer is called
+   *     for the decision rather than reimplemented, so the fuse — and the
+   *     shorter one a manifest gets — is the same number in both receivers.
+   *   - The chunk map is kept in step, including the frames pipeline.js writes
+   *     without returning, which is every frame that was queued waiting for a
+   *     manifest and then flushed when it arrived.
+   */
+  function ingest(session, input, nowMs) {
+    var P = session.pipeline;
+    var core = session.core;
+    var st = session.state;
+    var parsed = session.adapter.parse(input);
+    if (!parsed.ok) {
+      st.rejected++;
+      return { accepted: false, reason: parsed.reason, complete: P.isComplete(st) };
+    }
+    var f = session.adapter.view(parsed.frame);
+
+    if (st.status !== 'IDLE' && f.transferId !== st.transferId &&
+        core.shouldAdoptNewTransfer(
+          { status: st.status, lastProgressAt: session.lastProgressAt },
+          { kind: f.kind },
+          nowMs
+        )) {
+      // core.adoptTransfer keeps the refusal count and forgets the duplicates,
+      // because the refusals were about this receiver and the duplicates were
+      // about the transfer being replaced.
+      var switches = session.switches;
+      newState(session, st.rejected);
+      session.switches = switches + 1;
+      st = session.state;
+    }
+
+    var hadManifest = !!st.manifest;
+    var before = st.received;
+    var res = P.ingest(st, parsed.frame);
+    if (res.accepted) {
+      if (!hadManifest && st.manifest) {
+        // The frame as the wire spelled it, kept because the streaming
+        // receiver's manifest is normalised across both protocols and the
+        // signature fields are v1's alone.
+        session.rawManifest = session.format === core.FORMAT_V2
+          ? parsed.frame.manifest
+          : parsed.frame.m;
+        syncChunks(session);
+      } else if (st.received > before) {
+        defineChunk(session, f.index);
+      }
+      if (typeof nowMs === 'number') session.lastProgressAt = nowMs;
+    }
+    return res;
+  }
+
+  /**
+   * The streaming receiver in the shape the progress bar already reads.
+   *
+   * Both spellings of the manifest's chunk size are provided because two
+   * callers disagree about which one exists — resume.js predates the binary
+   * format and asks for `chunk`, proto2.js's own state says `chunkSize` — and
+   * a receiver that answered only one of them would silently stop being
+   * resumable in one of the two formats.
+   */
+  function view(session, core) {
+    var st = session.state;
+    var m = st.manifest;
+    return {
+      format: session.format,
+      path: PATH_STREAM,
+      status: st.status,
+      fountain: false,
+      total: st.total,
+      received: st.received,
+      symbols: st.received,
+      needed: st.total,
+      duplicates: st.duplicates,
+      rejected: st.rejected,
+      chunks: session.chunks,
+      manifest: m
+        ? {
+          name: m.name,
+          size: m.size,
+          originalSize: m.size,
+          chunk: m.chunkSize,
+          chunkSize: m.chunkSize,
+          sha256: m.sha256,
+          k: 0
+        }
+        : null,
+      name: m ? m.name : null,
+      size: m ? m.size : 0,
+      core: core || null
+    };
+  }
+
+  /**
+   * The progress card, for BOTH receivers.
+   *
+   * Written once over the view shape rather than twice, for the reason the view
+   * shape exists at all: a streaming receive and a buffered one describe the
+   * same transfer, and two renderers would be two chances for them to describe
+   * it differently. Every string below is the string the page showed before
+   * this model existed.
+   */
+  function progress(s, core) {
+    if (!s || !s.total) return null;
+    var tag = s.format === core.FORMAT_V2 ? 'v2 binary · ' : '';
+    if (s.fountain) {
+      var k = s.needed || 0;
+      var got = s.symbols;
+      var fpct = k ? Math.min(100, Math.round((got / k) * 100)) : 0;
+      return {
+        fountain: true,
+        percent: fpct,
+        title: (s.name ? core.sanitizeName(s.name) + ' — ' : '') + got + ' / ' + k + ' symbols',
+        meta: tag + 'erasure-coded · any ' + k + ' symbols rebuild it · ' +
+          s.duplicates + ' duplicates · ' + s.rejected + ' rejected' +
+          (s.manifest ? ' · ' + core.formatBytes(s.size) : ''),
+        plan: null,
+        cells: []
+      };
+    }
+    var need = s.total - 1;
+    var have = s.received;
+    var pct = need ? Math.round((have / need) * 100) : 100;
+
+    // The cell count comes from gridPlan, never straight from s.total: the
+    // frame count is attacker-controlled and must not be able to drive how many
+    // DOM nodes this builds. Past the cap each cell stands for a run of frames
+    // and lights up once that whole run has landed. v2 numbers its data frames
+    // 1..total-1 exactly as v1 does, and so does the streaming receiver, so the
+    // plan needs no notion of which of the three it is drawing.
+    var plan = core.gridPlan(s.total);
+    var counts = new Uint32Array(plan.cells);
+    for (var key in s.chunks) {
+      var idx = core.cellForSequence(plan, Number(key));
+      if (idx >= 0) counts[idx]++;
+    }
+    var cells = [];
+    for (var c = 0; c < plan.cells; c++) {
+      var first = c * plan.framesPerCell + 1;
+      var span = Math.min(plan.framesPerCell, need - (first - 1));
+      cells.push(span > 0 && counts[c] >= span);
+    }
+    var meta = tag + have + ' / ' + need + ' data frames · ' + s.duplicates +
+      ' duplicates · ' + s.rejected + ' rejected' +
+      (s.manifest ? ' · ' + core.formatBytes(s.size) : '');
+    if (plan.bucketed) meta += ' · grid shows ' + plan.framesPerCell + ' frames per cell';
+    return {
+      fountain: false,
+      percent: pct,
+      title: s.manifest
+        ? core.sanitizeName(s.name) + ' — ' + pct + '%'
+        : 'Collecting frames — ' + pct + '% (waiting for the manifest)',
+      meta: meta,
+      plan: plan,
+      cells: cells
+    };
+  }
+
+  /**
+   * Why a streaming transfer was refused, in sentences rather than reasons.
+   *
+   * `hash-mismatch` is not in this table because it is not a category of
+   * refusal — it is THE refusal, it names two digests, and it is worded
+   * identically to the buffered receivers' so an operator cannot tell which
+   * receiver caught it. There is only one right answer to a corrupted transfer
+   * and all three receivers give it.
+   */
+  var FINALIZE_COPY = {
+    incomplete: 'The transfer is not complete yet.',
+    'digest-incomplete':
+      'Every frame arrived, but the running digest never reached the end of the ' +
+      'artifact, so nothing was handed over.'
+  };
+
+  /**
+   * Hands over the artifact, or the sentence saying why not.
+   *
+   * There is no hashing here and no assembly: pipeline.js settled the digest
+   * inside the ingest call that delivered the last byte, and released the
+   * output buffer there if it did not match. `finalize` is a handover, so a
+   * complete-but-unverified artifact never exists for this to have to guard.
+   */
+  function finish(session) {
+    var out = session.pipeline.finalize(session.state);
+    if (out.ok) return { ok: true, out: out, message: null };
+    if (out.reason === 'hash-mismatch') {
+      return {
+        ok: false,
+        out: out,
+        message: 'Hash mismatch — the whole transfer was discarded. Expected ' +
+          String(out.expected).slice(0, 16) + '…, got ' +
+          String(out.actual).slice(0, 16) + '…'
+      };
+    }
+    return {
+      ok: false,
+      out: out,
+      message: FINALIZE_COPY[out.reason] || ('The transfer was refused: ' + out.reason + '.')
+    };
+  }
+
+  return {
+    PATH_STREAM: PATH_STREAM,
+    PATH_BUFFER: PATH_BUFFER,
+    PATH_NOTES: PATH_NOTES,
+    FINALIZE_COPY: FINALIZE_COPY,
+    pathFor: pathFor,
+    createSession: createSession,
+    ingest: ingest,
+    view: view,
+    progress: progress,
+    finish: finish
+  };
+});
+
 (function () {
   'use strict';
 
@@ -1954,6 +2379,7 @@
   function compressLib() { return window.RVQRCompress || null; }
   function attestLib() { return window.RVQRAttest || null; }
   function closureLib() { return window.RVQRClosure || null; }
+  function pipelineLib() { return window.RVQRPipeline || null; }
 
   // The view model above, which this file also defines. Read through a getter
   // for the same reason as the rest: a missing panel is better than a broken
@@ -1964,6 +2390,7 @@
   function compressionView() { return window.RVQRCompressionView || null; }
   function attestationView() { return window.RVQRAttestationView || null; }
   function activationView() { return window.RVQRActivationView || null; }
+  function streamReceiveView() { return window.RVQRStreamReceive || null; }
 
   var $ = function (id) { return document.getElementById(id); };
   var el = function (tag, cls, text) {
@@ -5257,8 +5684,22 @@
     // a state would mean one protocol's bug is both protocols' bug, which is
     // the reason proto2.js keeps its own in the first place.
     v2: null,
-    // Which of the two is holding the transfer in progress. Null means nothing
-    // has been adopted yet and either format may start one.
+    // The streaming receiver, over either protocol. It supersedes BOTH of the
+    // two above for the transfers it can hold — which is every indexed,
+    // uncompressed one, meaning everything this app itself sends — and holds
+    // the artifact once instead of three times while doing it. Created when a
+    // transfer is adopted, because it needs to know which protocol it is over.
+    pipe: null,
+    // Which receiver owns the transfer in progress: 'stream', 'buffer', or null
+    // before one has been adopted. `pathReason` is why, and is rendered: a
+    // buffered receive looks exactly like a streamed one from the outside.
+    path: null,
+    pathReason: null,
+    // The format of the transfer the path is holding. Distinct from `format`
+    // below, which the frame router sets to the format of the frame in hand.
+    pathFormat: null,
+    // Which of the two formats is holding the transfer in progress. Null means
+    // nothing has been adopted yet and either format may start one.
     format: null,
     formatNote: null,
     stream: null,
@@ -5277,16 +5718,22 @@
   }
 
   /**
-   * One shape over two receivers, so the progress bar, the meta line and the
-   * frame grid are written once instead of twice.
+   * One shape over three receivers, so the progress bar, the meta line and the
+   * frame grid are written once instead of three times.
    *
-   * The two states already agree on the fields that matter — total, received,
-   * duplicates, rejected, and a chunks map keyed by frame index — because
-   * proto2.js deliberately mirrored core's receiver. What differs is the
-   * manifest: v1 spells it {name,size,chunk,k,symbolSize}, v2 spells the same
-   * facts {name,originalSize,chunkSize,k}. This is the one place that knows.
+   * The two buffered states already agree on the fields that matter — total,
+   * received, duplicates, rejected, and a chunks map keyed by frame index —
+   * because proto2.js deliberately mirrored core's receiver. What differs is
+   * the manifest: v1 spells it {name,size,chunk,k,symbolSize}, v2 spells the
+   * same facts {name,originalSize,chunkSize,k}. This is the one place that
+   * knows. The streaming receiver answers the same shape through its model,
+   * including a chunks map that holds views rather than payloads.
    */
   function receiveView() {
+    if (rx.path === 'stream' && rx.pipe) {
+      var SR = streamReceiveView();
+      return SR ? SR.view(rx.pipe, core) : null;
+    }
     if (rx.format === core.FORMAT_V2) {
       var s = rx.v2;
       if (!s) return null;
@@ -5420,6 +5867,10 @@
   function resetReceiver() {
     rx.state = core.createReceiver();
     rx.v2 = null;
+    rx.pipe = null;
+    rx.path = null;
+    rx.pathReason = null;
+    rx.pathFormat = null;
     rx.format = null;
     rx.formatNote = null;
     rx.gate = core.createFrameGate();
@@ -5430,6 +5881,7 @@
     $('rxCard').hidden = true;
     $('rxResult').textContent = '';
     $('rxGrid').textContent = '';
+    $('rxPathNote').textContent = '';
     $('rxBar').style.width = '0%';
     $('rxTitle').textContent = 'Waiting for frames…';
     $('rxMeta').textContent = '—';
@@ -5729,10 +6181,32 @@
       feedFrameV2(text);
       return;
     }
+    feedFrameV1(text);
+  }
+
+  /**
+   * The v1 half of feedFrame, with a route in front of it.
+   *
+   * The frame is parsed HERE rather than inside whichever receiver takes it:
+   * the route is decided from the frame's declared mode, and re-parsing to read
+   * one field would base64-decode the payload a second time. All three
+   * receivers accept a pre-parsed frame, so the parse happens once and is
+   * handed on. A frame that does not parse is passed on as TEXT, because the
+   * reason it was refused is the parser's to give and it gives the same one
+   * either way.
+   */
+  function feedFrameV1(text) {
     rx.format = core.FORMAT_V1;
+    var parsed = core.parseFrame(text);
+    if (parsed.ok && !enterPath(core.FORMAT_V1, parsed.frame)) return;
+    if (rx.path === 'stream') {
+      feedFrameStream(parsed.ok ? parsed.frame : text);
+      return;
+    }
+
     var before = rx.state.status;
     var beforeManifest = rx.state.manifest;
-    core.ingest(rx.state, text, Date.now());
+    core.ingest(rx.state, parsed.ok ? parsed.frame : text, Date.now());
 
     // The manifest is what says whether this is an erasure-coded transfer, so
     // the decoder is attached the moment one arrives — before any symbol can
@@ -5750,14 +6224,178 @@
     if (core.isComplete(rx.state)) finishReceive();
   }
 
+  // --- which receiver owns the transfer --------------------------------------
+
+  function receiveLibs() {
+    return { core: core, pipeline: pipelineLib(), proto2: proto2Lib() };
+  }
+
+  /** Whether there is a transfer in progress worth protecting from a stray frame. */
+  function receiverBusy() {
+    var v = receiveView();
+    if (!v) return false;
+    if (v.status === 'IDLE' || v.status === 'VERIFIED' || v.status === 'REJECTED') return false;
+    return !!v.manifest || v.received > 0;
+  }
+
+  // Read through rx.pathFormat and not rx.format: the caller names the format
+  // of the ARRIVING frame before either of these is consulted, and the question
+  // both of them answer is about the transfer already in progress.
+  function currentTransferId() {
+    if (rx.path === 'stream' && rx.pipe) return rx.pipe.state.transferId;
+    if (rx.pathFormat === core.FORMAT_V2) return rx.v2 ? rx.v2.transferId : null;
+    return rx.state ? rx.state.transferId : null;
+  }
+
+  function pathProgressAt() {
+    if (rx.path === 'stream' && rx.pipe) return rx.pipe.lastProgressAt;
+    // The v2 receiver is fed no clock — proto2.ingest takes none — so a v2
+    // transfer never goes stale and never gives way. That was already true
+    // before there was a second receiver to give way to.
+    if (rx.pathFormat === core.FORMAT_V2) return null;
+    return rx.state.lastProgressAt;
+  }
+
+  function carriedRejections() {
+    var v = receiveView();
+    return v ? v.rejected : 0;
+  }
+
+  /**
+   * Whether a frame from a different transfer may take the receiver over.
+   *
+   * core.shouldAdoptNewTransfer is CALLED rather than reimplemented, so the
+   * fuse — and the shorter one a manifest gets — stays one number in one file
+   * however many receivers there are.
+   */
+  function mayDisplaceTransfer(format, frame) {
+    var arriving = format === core.FORMAT_V2 ? frame.transferId : frame.t;
+    var current = currentTransferId();
+    if (current === null || current === undefined || arriving === current) return false;
+    return core.shouldAdoptNewTransfer(
+      { status: 'COLLECTING', lastProgressAt: pathProgressAt() },
+      { kind: frame.kind },
+      Date.now()
+    );
+  }
+
+  /**
+   * Points rx at the receiver this frame belongs to, and says whether it may be
+   * fed at all.
+   *
+   * THE ROUTE IS A PROPERTY OF THE TRANSFER, not of the frame in hand. It is
+   * chosen once, when a transfer is adopted, and every later frame of that
+   * transfer goes to the receiver already holding it — re-deciding mid-transfer
+   * would strand everything received so far. A frame that disagrees with its
+   * own transfer's shape is refused BY that receiver, by name, exactly as
+   * core.js refused it when there was only one.
+   *
+   * Returns false only for a frame of a DIFFERENT transfer arriving while one
+   * is in progress and has not gone stale. core.js counted that as
+   * `other-transfer` and so does this; splitting the receivers is what makes it
+   * have to happen here, because the receiver that did not adopt the transfer
+   * would otherwise adopt this frame and abandon the one in progress.
+   */
+  function enterPath(format, frame) {
+    var SR = streamReceiveView();
+    var want = SR
+      ? SR.pathFor(format, frame, receiveLibs())
+      : { route: 'buffer', reason: 'module-absent' };
+    var arriving = format === core.FORMAT_V2 ? frame.transferId : frame.t;
+    var current = currentTransferId();
+    // Hand the frame to the receiver in progress when it belongs to that
+    // transfer — whatever shape it claims, because refusing a frame of the
+    // transfer you are holding is that receiver's call and it names the reason
+    // — or when it wants the same receiver anyway, in which case adopting or
+    // refusing a new transfer is that receiver's existing job.
+    var owned = !!rx.path && rx.pathFormat === format &&
+      ((current !== null && current !== undefined && arriving === current) ||
+       rx.path === want.route);
+    if (owned) {
+      rx.pathReason = rx.path === want.route ? want.reason : rx.pathReason;
+      return true;
+    }
+    if (rx.path && receiverBusy() && !mayDisplaceTransfer(format, frame)) {
+      bumpRejected();
+      renderReceiveProgress();
+      return false;
+    }
+    // A refusal count belongs to the receiver, not to the transfer, so it
+    // carries across a takeover exactly as core.adoptTransfer carries it.
+    var carried = carriedRejections();
+    rx.pipe = null;
+    rx.v2 = null;
+    rx.state = core.createReceiver();
+    rx.state.rejected = carried;
+    rx.path = want.route;
+    rx.pathFormat = format;
+    rx.pathReason = want.reason;
+    if (want.route === 'stream') {
+      rx.pipe = SR.createSession(receiveLibs(), format);
+      rx.pipe.state.rejected = carried;
+    }
+    return true;
+  }
+
+  /**
+   * The streaming half of feedFrame, over either protocol.
+   *
+   * Same order of operations as the two buffered halves — ingest, then what a
+   * newly arrived manifest enables, then resume, then the card, then the toast,
+   * then render — because the order is the behaviour: the signature check has
+   * to start the moment a manifest lands, and the card has to appear before the
+   * first render or the first frame is invisible.
+   */
+  function feedFrameStream(frameOrText) {
+    var SR = streamReceiveView();
+    var P = pipelineLib();
+    var session = rx.pipe;
+    var before = session.state.status;
+    var out = SR.ingest(session, frameOrText, Date.now());
+
+    // A frame the streaming parser refuses because it is the other format is
+    // named rather than counted as damage — the same reading feedFrameV2 gives
+    // its own parser's answer.
+    var named = core.rejectedFormat(out.reason);
+    if (named) rx.formatNote = core.formatMismatchText(rx.format, named);
+
+    if (session.format === core.FORMAT_V2) {
+      // v2's manifest is a fixed-length binary record with no signature field,
+      // so a v2 transfer is unsigned as a property of the format rather than as
+      // an omission by the sender.
+      if (session.state.manifest && !rx.verification) {
+        rx.verification = { state: 'unsigned', note: 'binary v2 frames carry no signature' };
+        renderVerification();
+      }
+    } else if (rxV1Manifest() && !rx.verification) {
+      verifyManifestSignature();
+    }
+    recordFrameForResume();
+    if (session.state.status !== 'IDLE') $('rxCard').hidden = false;
+    if (before === 'IDLE' && session.state.status === 'COLLECTING') {
+      toast('Transfer ' + streamTransferLabel(session) + ' detected' +
+        (session.format === core.FORMAT_V2 ? ' (v2)' : ''));
+    }
+    renderReceiveProgress();
+    if (P.isComplete(session.state)) finishReceive();
+  }
+
+  function streamTransferLabel(session) {
+    var P2 = proto2Lib();
+    return session.format === core.FORMAT_V2 && P2
+      ? P2.transferIdHex(session.state.transferId)
+      : String(session.state.transferId);
+  }
+
   /** Data frames accepted so far, whichever receiver is holding the transfer. */
   function receivedCount() {
     var view = receiveView();
     return view ? view.received : 0;
   }
 
-  /** A frame refused before either parser saw it still counts as refused. */
+  /** A frame refused before any parser saw it still counts as refused. */
   function bumpRejected() {
+    if (rx.path === 'stream' && rx.pipe) { rx.pipe.state.rejected++; return; }
     var s = rx.format === core.FORMAT_V2 ? rx.v2 : rx.state;
     if (s) s.rejected++;
   }
@@ -5765,12 +6403,21 @@
   /** The v2 half of feedFrame. Same order of operations, different module. */
   function feedFrameV2(text) {
     var P = proto2Lib();
+    if (!P) return;
+    rx.format = core.FORMAT_V2;
+    // Parsed once, for feedFrameV1's reason: the route below reads the frame's
+    // mode and codec, both of which sit in the fixed header of EVERY frame.
+    var parsed = P.parseFrame(text);
+    if (parsed.ok && !enterPath(core.FORMAT_V2, parsed.frame)) return;
+    if (rx.path === 'stream') {
+      feedFrameStream(parsed.ok ? parsed.frame : text);
+      return;
+    }
     var s = v2Receiver();
     if (!s) return;
-    rx.format = core.FORMAT_V2;
     var before = s.status;
     var beforeManifest = s.manifest;
-    var out = P.ingest(s, text);
+    var out = P.ingest(s, parsed.ok ? parsed.frame : text);
 
     // A frame the v2 parser refuses because it is v1 is named rather than
     // counted as damage. This is the case the routing above cannot catch: a
@@ -5840,9 +6487,24 @@
 
   // --- signatures ------------------------------------------------------------
 
+  /**
+   * The v1 manifest as the WIRE spelled it, from whichever receiver holds it.
+   *
+   * The streaming receiver normalises the manifest across both protocols, and
+   * `sig` and `pub` are v1's alone, so the normalised copy cannot answer this
+   * question. It keeps the raw frame body for exactly this: a signed transfer
+   * that streamed must be as verifiable as one that did not.
+   */
+  function rxV1Manifest() {
+    if (rx.path === 'stream' && rx.pipe && rx.pipe.format === core.FORMAT_V1) {
+      return rx.pipe.rawManifest;
+    }
+    return rx.state.manifest;
+  }
+
   function verifyManifestSignature() {
     var lib = cryptoLib();
-    var m = rx.state.manifest;
+    var m = rxV1Manifest();
     if (!m) return;
     if (!m.sig || !m.pub) {
       rx.verification = { state: 'unsigned' };
@@ -5990,12 +6652,15 @@
    * formats draw their ids from different spaces and neither knows the other.
    */
   function resumeId() {
+    // Read through currentTransferId so the key is the same string whichever
+    // receiver is holding the transfer: a transfer that started streaming and a
+    // transfer that did not must not be able to resume as two records.
+    var id = currentTransferId();
     if (rx.format === core.FORMAT_V2) {
       var P = proto2Lib();
-      var s = rx.v2;
-      return s && s.transferId !== null ? 'v2:' + P.transferIdHex(s.transferId) : null;
+      return P && id !== null && id !== undefined ? 'v2:' + P.transferIdHex(id) : null;
     }
-    return rx.state.transferId ? 'v1:' + rx.state.transferId : null;
+    return id ? 'v1:' + id : null;
   }
 
   /**
@@ -6036,9 +6701,15 @@
     var view = resumeStateView();
     if (!id || !view) return;
     var P = proto2Lib();
-    var done = rx.format === core.FORMAT_V2
-      ? !!(P && P.isComplete(rx.v2))
-      : core.isComplete(rx.state);
+    var done;
+    if (rx.path === 'stream' && rx.pipe) {
+      var PL = pipelineLib();
+      done = !!(PL && PL.isComplete(rx.pipe.state));
+    } else {
+      done = rx.format === core.FORMAT_V2
+        ? !!(P && P.isComplete(rx.v2))
+        : core.isComplete(rx.state);
+    }
     rx.sinceSave = (rx.sinceSave || 0) + 1;
     if (rx.sinceSave < RESUME_BATCH && !done) return;
     rx.sinceSave = 0;
@@ -6137,6 +6808,16 @@
       return store.restore(id);
     }).then(function (state) {
       if (!state) { toast('That transfer could not be restored'); return; }
+      // A restored transfer comes back AS a chunk list, which is precisely the
+      // thing a streaming receiver exists not to build. Writing those chunks
+      // into a streaming buffer would put the list and the buffer in memory at
+      // once — the two copies the streaming path was written to avoid — so a
+      // resumed transfer finishes the way it was stored, and #rxPathNote says
+      // so rather than leaving it to be inferred.
+      rx.pipe = null;
+      rx.path = 'buffer';
+      rx.pathReason = 'resumed';
+      rx.pathFormat = format;
       if (format === core.FORMAT_V2) {
         var v2 = rebuildV2Receiver(id, state);
         if (!v2) { toast('That v2 transfer could not be restored'); return; }
@@ -6174,72 +6855,65 @@
     box.appendChild(el('div', 'notice bad', rx.formatNote));
   }
 
+  /**
+   * Which receiver is holding this transfer, and — when it is not the streaming
+   * one — why.
+   *
+   * A buffered receive and a streamed one look identical on screen: same bar,
+   * same grid, same verdict. The difference is roughly three copies of the
+   * artifact in memory against one, which is not a thing an operator can
+   * observe, so it is said. Nothing here is a warning except the one case that
+   * is a fault — a streaming module that did not load.
+   */
+  function renderRxPathNote() {
+    var box = $('rxPathNote');
+    if (!box) return;
+    box.textContent = '';
+    var SR = streamReceiveView();
+    if (!SR || !rx.path) return;
+    var note = SR.PATH_NOTES[rx.path === 'stream' ? 'stream' : rx.pathReason];
+    if (!note) return;
+    var n = el('div', 'notice' + (note.tone ? ' ' + note.tone : ''));
+    n.appendChild(el('strong', '', note.label + ' '));
+    n.appendChild(document.createTextNode(note.text));
+    box.appendChild(n);
+  }
+
   function renderReceiveProgress() {
+    renderRxPathNote();
     renderRxFormatNote();
-    // One shape over both receivers. Everything below reads the view, so the
-    // grid, the bar and the meta line are the same code for either format.
+    // One shape over all three receivers, and one model over that shape, so the
+    // grid, the bar and the meta line are the same code whichever receiver and
+    // whichever format is holding the transfer.
     var s = receiveView();
-    if (!s || !s.total) return;
-    var tag = s.format === core.FORMAT_V2 ? 'v2 binary · ' : '';
-    if (s.fountain) {
-      var k = s.needed || 0;
-      var got = s.symbols;
-      var fpct = k ? Math.min(100, Math.round((got / k) * 100)) : 0;
-      $('rxBar').style.width = fpct + '%';
-      $('rxTitle').textContent = (s.name ? core.sanitizeName(s.name) + ' — ' : '') +
-        got + ' / ' + k + ' symbols';
-      $('rxMeta').textContent = tag + 'erasure-coded · any ' + k + ' symbols rebuild it · ' +
-        s.duplicates + ' duplicates · ' + s.rejected + ' rejected' +
-        (s.manifest ? ' · ' + core.formatBytes(s.size) : '');
+    var SR = streamReceiveView();
+    if (!s || !SR) return;
+    var m = SR.progress(s, core);
+    if (!m) return;
+    $('rxBar').style.width = m.percent + '%';
+    $('rxTitle').textContent = m.title;
+    $('rxMeta').textContent = m.meta;
+    if (m.fountain) {
       $('rxGrid').textContent = '';
       return;
     }
-    var need = s.total - 1;
-    var have = s.received;
-    var pct = need ? Math.round((have / need) * 100) : 100;
-    $('rxBar').style.width = pct + '%';
-    $('rxTitle').textContent = s.manifest
-      ? core.sanitizeName(s.name) + ' — ' + pct + '%'
-      : 'Collecting frames — ' + pct + '% (waiting for the manifest)';
-    $('rxMeta').textContent = tag +
-      have + ' / ' + need + ' data frames · ' + s.duplicates + ' duplicates · ' +
-      s.rejected + ' rejected' +
-      (s.manifest ? ' · ' + core.formatBytes(s.size) : '');
-
-    // The cell count comes from gridPlan, never straight from s.total: the
-    // frame count is attacker-controlled and must not be able to drive how
-    // many DOM nodes this builds. Past the cap each cell stands for a run of
-    // frames and lights up once that whole run has landed. v2 numbers its data
-    // frames 1..total-1 exactly as v1 does, so the plan needs no notion of
-    // which format it is drawing.
-    var plan = core.gridPlan(s.total);
     var grid = $('rxGrid');
-    if (grid.childElementCount !== plan.cells) {
+    if (grid.childElementCount !== m.cells.length) {
       grid.textContent = '';
-      for (var i = 0; i < plan.cells; i++) grid.appendChild(el('i'));
+      for (var i = 0; i < m.cells.length; i++) grid.appendChild(el('i'));
     }
-    if (!plan.cells) return;
-
-    var counts = new Uint32Array(plan.cells);
-    for (var key in s.chunks) {
-      var idx = core.cellForSequence(plan, Number(key));
-      if (idx >= 0) counts[idx]++;
-    }
-    for (var c = 0; c < plan.cells; c++) {
-      var first = c * plan.framesPerCell + 1;
-      var span = Math.min(plan.framesPerCell, need - (first - 1));
-      var full = span > 0 && counts[c] >= span;
+    for (var c = 0; c < m.cells.length; c++) {
       var cell = grid.children[c];
-      if (full !== cell.classList.contains('have')) cell.classList.toggle('have', full);
-    }
-    if (plan.bucketed) {
-      $('rxMeta').textContent += ' · grid shows ' + plan.framesPerCell + ' frames per cell';
+      if (m.cells[c] !== cell.classList.contains('have')) {
+        cell.classList.toggle('have', m.cells[c]);
+      }
     }
   }
 
   function finishReceive() {
     if (rx.finalizing) return;
     rx.finalizing = true;
+    if (rx.path === 'stream' && rx.pipe) { finishReceiveStream(); return; }
     if (rx.format === core.FORMAT_V2) { finishReceiveV2(); return; }
     var s = rx.state;
     var bytes;
@@ -6302,6 +6976,30 @@
     Promise.resolve(admitAndStore(s, out.bytes, out.name)).catch(function (err) {
       showReceiveResult(false, 'Failed to store: ' + err.message);
     });
+  }
+
+  /**
+   * The streaming half of finishReceive.
+   *
+   * Shorter than either buffered half because there is nothing left to do: the
+   * artifact was written into its buffer as it arrived and the digest was
+   * settled inside the ingest call that delivered the last byte. On a mismatch
+   * that call ALREADY released the buffer, so this reports a refusal that has
+   * happened rather than performing one — and there is no moment on this path
+   * where a complete, unverified artifact exists under a name.
+   */
+  function finishReceiveStream() {
+    var SR = streamReceiveView();
+    var session = rx.pipe;
+    var res = SR.finish(session);
+    if (!res.ok) {
+      showReceiveResult(false, res.message);
+      return;
+    }
+    Promise.resolve(admitAndStore(session.state, res.out.bytes, res.out.name))
+      .catch(function (err) {
+        showReceiveResult(false, 'Failed to store: ' + err.message);
+      });
   }
 
   /**
